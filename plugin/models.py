@@ -52,6 +52,7 @@ class UploadSession(db.Model):
     task_id = db.Column(UUIDType(binary=False), nullable=False, index=True)
     actor_id = db.Column(UUIDType(binary=False), nullable=False)
     storage_connection_id = db.Column(UUIDType(binary=False), ForeignKey("plugin_vfx_files_storage_connection.id"), nullable=False)
+    working_revision_file_id = db.Column(UUIDType(binary=False), ForeignKey("plugin_vfx_files_working_revision_file.id"))
     state = db.Column(String(32), nullable=False, default="receiving")
     file_name = db.Column(String(512), nullable=False, default="unnamed")
     expected_size = db.Column(BigInteger, nullable=False)
@@ -78,6 +79,56 @@ class UploadPart(db.Model):
     staging_key = db.Column(String(512), nullable=False)
     state = db.Column(String(24), nullable=False, default="reserved")
     __table_args__ = (UniqueConstraint("session_id", "part_index", name="plugin_vfx_files_upload_part_uc"),)
+
+
+class WorkingRevision(db.Model):
+    __tablename__ = "plugin_vfx_files_working_revision"
+    id = db.Column(UUIDType(binary=False), primary_key=True, default=uuid4)
+    production_id = db.Column(UUIDType(binary=False), nullable=False, index=True)
+    task_id = db.Column(UUIDType(binary=False), nullable=False, index=True)
+    version = db.Column(Integer, nullable=False)
+    base_revision_id = db.Column(UUIDType(binary=False), ForeignKey("plugin_vfx_files_working_revision.id"))
+    created_by = db.Column(UUIDType(binary=False), nullable=False)
+    state = db.Column(String(32), nullable=False, default="receiving")
+    idempotency_key = db.Column(String(128), nullable=False, unique=True)
+    manifest_bytes = db.Column(db.LargeBinary())
+    manifest_sha256 = db.Column(String(64))
+    created_at = db.Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    completed_at = db.Column(DateTime(timezone=True))
+    __table_args__ = (UniqueConstraint("task_id", "version", name="plugin_vfx_files_working_version_uc"),)
+
+
+class WorkingRevisionFile(db.Model):
+    __tablename__ = "plugin_vfx_files_working_revision_file"
+    id = db.Column(UUIDType(binary=False), primary_key=True, default=uuid4)
+    revision_id = db.Column(UUIDType(binary=False), ForeignKey("plugin_vfx_files_working_revision.id"), nullable=False, index=True)
+    ordinal = db.Column(Integer, nullable=False)
+    file_name = db.Column(String(512), nullable=False)
+    mime_type = db.Column(String(255))
+    category = db.Column(String(32), nullable=False, default="working")
+    expected_size = db.Column(BigInteger, nullable=False)
+    expected_sha256 = db.Column(String(64), nullable=False)
+    provider_object_id = db.Column(String(255))
+    provider_size = db.Column(BigInteger)
+    provider_sha256 = db.Column(String(64))
+    state = db.Column(String(32), nullable=False, default="receiving")
+    __table_args__ = (UniqueConstraint("revision_id", "ordinal", name="plugin_vfx_files_working_file_ordinal_uc"),)
+
+
+class WorkingDependency(db.Model):
+    __tablename__ = "plugin_vfx_files_working_dependency"
+    id = db.Column(UUIDType(binary=False), primary_key=True, default=uuid4)
+    revision_id = db.Column(UUIDType(binary=False), ForeignKey("plugin_vfx_files_working_revision.id"), nullable=False, index=True)
+    dependency_type = db.Column(String(16), nullable=False)
+    dependency_id = db.Column(UUIDType(binary=False), nullable=False)
+    manifest_sha256 = db.Column(String(64), nullable=False)
+    __table_args__ = (UniqueConstraint("revision_id", "dependency_type", "dependency_id", name="plugin_vfx_files_working_dependency_uc"),)
+
+
+class LatestWorkingPointer(db.Model):
+    __tablename__ = "plugin_vfx_files_latest_working"
+    task_id = db.Column(UUIDType(binary=False), primary_key=True)
+    revision_id = db.Column(UUIDType(binary=False), ForeignKey("plugin_vfx_files_working_revision.id"), nullable=False)
 
 
 class Job(db.Model):

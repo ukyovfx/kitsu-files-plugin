@@ -79,7 +79,7 @@ class PostgresJobQueue:
             return result.rowcount == 1
 
     def complete_job(self, job_id: UUID, worker_id: UUID, generation: int, result: JobResult) -> bool:
-        from ..models import Job, UploadSession
+        from ..models import Job, UploadSession, WorkingRevision, WorkingRevisionFile
 
         if result.external_mutation and not (result.provider_object_id and result.byte_count is not None and result.sha256):
             raise ValueError("External mutation completion requires verified provider ID, byte count and SHA-256")
@@ -110,6 +110,15 @@ class PostgresJobQueue:
                     select(UploadSession).where(UploadSession.id == upload_id).with_for_update()
                 )
                 if upload is not None:
+                    working_revision = None
+                    if upload.working_revision_file_id is not None:
+                        revision_id = session.scalar(
+                            select(WorkingRevisionFile.revision_id)
+                            .where(WorkingRevisionFile.id == upload.working_revision_file_id)
+                        )
+                        working_revision = session.scalar(
+                            select(WorkingRevision).where(WorkingRevision.id == revision_id).with_for_update()
+                        ) if revision_id is not None else None
                     if result.state == "completed":
                         if not (result.external_mutation and result.provider_object_id and result.byte_count is not None and result.sha256):
                             raise ValueError("Completed upload requires verified provider evidence")
@@ -125,12 +134,43 @@ class PostgresJobQueue:
                         upload.provider_sha256 = result.sha256
                         upload.transferred_at = func.now()
                         upload.failure_code = None
+                        if upload.working_revision_file_id is not None:
+                            working_file = session.scalar(
+                                select(WorkingRevisionFile)
+                                .where(WorkingRevisionFile.id == upload.working_revision_file_id)
+                                .with_for_update()
+                            )
+                            if working_file is None:
+                                raise ValueError("Working upload has no reserved revision file")
+                            if working_file.provider_object_id not in (None, result.provider_object_id):
+                                raise ValueError("Working file provider identity cannot be replaced")
+                            working_file.provider_object_id = result.provider_object_id
+                            working_file.provider_size = result.byte_count
+                            working_file.provider_sha256 = result.sha256
+                            working_file.state = "completed"
+                            if working_revision is None:
+                                raise ValueError("Working revision reservation is unavailable")
+                            from ..working_files.service import complete_working_revision_in_session
+
+                            complete_working_revision_in_session(session, working_revision)
                     elif result.state == "reconcile_required":
                         upload.state = "reconcile_required"
                         upload.failure_code = result.error_code
+                        if upload.working_revision_file_id is not None:
+                            working_file = session.get(WorkingRevisionFile, upload.working_revision_file_id)
+                            if working_file is not None and working_file.state != "completed":
+                                working_file.state = "reconcile_required"
+                                if working_revision is not None and working_revision.state not in ("completed", "stale_base"):
+                                    working_revision.state = "reconcile_required"
                     elif result.state == "failed":
                         upload.state = "failed"
                         upload.failure_code = result.error_code
+                        if upload.working_revision_file_id is not None:
+                            working_file = session.get(WorkingRevisionFile, upload.working_revision_file_id)
+                            if working_file is not None and working_file.state != "completed":
+                                working_file.state = "failed"
+                                if working_revision is not None and working_revision.state not in ("completed", "stale_base"):
+                                    working_revision.state = "failed"
             return True
 
     def fail_exhausted(self) -> int:

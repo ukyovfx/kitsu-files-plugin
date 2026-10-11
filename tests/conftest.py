@@ -79,7 +79,7 @@ def synthetic_upload_task(authenticated_plugin_client, zou_db_factory, tmp_path)
     from zou.app.models.project import Project
     from zou.app.models.task import Task, TaskPersonLink
     from zou.app.models.task_type import TaskType
-    from plugin.models import Job, StorageConnection, UploadPart, UploadSession
+    from plugin.models import Job, LatestWorkingPointer, StorageConnection, UploadPart, UploadSession, WorkingDependency, WorkingRevision, WorkingRevisionFile
 
     app = authenticated_plugin_client.vfx_app
     with app.app_context():
@@ -111,6 +111,11 @@ def synthetic_upload_task(authenticated_plugin_client, zou_db_factory, tmp_path)
 
     project_id, entity_type_id, task_type_id, entity_id, task_id, connection_id, _actor_id = values
     with zou_db_factory.begin() as session:
+        revisions = session.scalars(select(WorkingRevision).where(WorkingRevision.task_id == task_id)).all()
+        revision_ids = [row.id for row in revisions]
+        if revision_ids:
+            session.execute(LatestWorkingPointer.__table__.delete().where(LatestWorkingPointer.task_id == task_id))
+            session.execute(WorkingDependency.__table__.delete().where(WorkingDependency.revision_id.in_(revision_ids)))
         uploads = session.scalars(select(UploadSession).where(UploadSession.task_id == task_id)).all()
         upload_ids = [row.id for row in uploads]
         if upload_ids:
@@ -120,6 +125,9 @@ def synthetic_upload_task(authenticated_plugin_client, zou_db_factory, tmp_path)
                 if job:
                     session.delete(job)
             session.execute(UploadSession.__table__.delete().where(UploadSession.id.in_(upload_ids)))
+        if revision_ids:
+            session.execute(WorkingRevisionFile.__table__.delete().where(WorkingRevisionFile.revision_id.in_(revision_ids)))
+            session.execute(WorkingRevision.__table__.delete().where(WorkingRevision.id.in_(revision_ids)))
         session.execute(StorageConnection.__table__.delete().where(StorageConnection.id == connection_id))
         session.execute(TaskPersonLink.__table__.delete().where(TaskPersonLink.task_id == task_id))
         session.execute(Task.__table__.delete().where(Task.id == task_id))

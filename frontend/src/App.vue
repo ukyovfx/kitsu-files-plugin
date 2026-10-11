@@ -66,18 +66,6 @@ onMounted(load)
         <article class="summary-card handoff-card"><span class="card-label">Open Handoffs</span><strong>{{ overview.handoffs.filter((item) => item.state === 'pending').length }}</strong><span>awaiting a response</span></article>
       </section>
       <UploadPanel :enabled="overview.upload_ready" :tasks="overview.tasks" :api="api" @uploaded="load" />
-      <section class="files-list" aria-labelledby="files-heading">
-        <div class="section-heading"><div><p class="eyebrow">Task working files</p><h2 id="files-heading">Files</h2></div><span class="item-count">{{ overview.files?.length || 0 }} records</span></div>
-        <p v-if="!overview.files?.length" class="empty-state">Uploaded files will appear here after the worker verifies the storage transfer.</p>
-        <ul v-else class="file-rows">
-          <li v-for="file in overview.files" :key="file.id" class="file-row" :data-state="file.state">
-            <span class="file-name">{{ file.name }}</span>
-            <span class="file-state">{{ file.state === 'completed' ? 'Completed' : file.state.replaceAll('_', ' ') }}</span>
-            <span v-if="file.state === 'completed'" class="file-evidence">{{ file.size }} bytes · {{ file.sha256?.slice(0, 12) }}</span>
-            <span v-else-if="file.failure_code" class="file-evidence">{{ file.failure_code }}</span>
-          </li>
-        </ul>
-      </section>
       <div class="content-grid">
         <PublishList :publishes="overview.publishes" />
         <HandoffPanel :handoffs="overview.handoffs" :busy-id="busyId" @respond="respond" />

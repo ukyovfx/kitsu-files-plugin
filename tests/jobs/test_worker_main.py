@@ -5,7 +5,8 @@ import pytest
 pytest.importorskip("vfx_files")
 
 from plugin.jobs.queue import JobResult, LeasedJob
-from vfx_files.storage.base import AmbiguousOutcome
+from plugin.compat import SCHEMA_EPOCH, WORKER_BUILD
+from plugin.storage.base import AmbiguousOutcome
 from worker.leases import WorkerContext
 from worker.main import WorkerRuntime, process_one
 
@@ -27,7 +28,7 @@ class Queue:
 
 
 def runtime(queue, handler=None, *, allowed=True):
-    context = WorkerContext(uuid4(), "1", "1.0.94", 1)
+    context = WorkerContext(uuid4(), WORKER_BUILD, "1.0.94", SCHEMA_EPOCH)
     return WorkerRuntime(queue, context, lambda _payload: allowed, {"source_upload": handler} if handler else {})
 
 

@@ -46,6 +46,16 @@ h2 { font-size: 17px; letter-spacing: -.02em; }
 .upload-result, .upload-error, .upload-disabled { flex-basis: 100%; color: var(--muted); font-size: 10px; line-height: 1.5; }
 .upload-result { color: #8fdbca; }
 .upload-error { color: #ffb6a7; }
+.working-revisions { flex-basis: 100%; margin-top: 3px; border-top: 1px solid var(--border); }
+.revision-heading { display: flex; align-items: center; gap: 10px; padding: 12px 0 5px; color: var(--muted); font-size: 10px; }
+.text-button { margin-left: auto; padding: 4px 7px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); color: var(--text); cursor: pointer; font-size: 9px; }
+.text-button:disabled { cursor: wait; opacity: .5; }
+.revision-list { display: grid; gap: 8px; margin: 9px 0 0; padding: 0; list-style: none; }
+.revision-list > li { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; padding: 10px 11px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); }
+.revision-version { color: #96d8ca; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 11px; font-weight: 700; }
+.revision-file { display: inline-flex; align-items: baseline; gap: 7px; margin-left: auto; font-size: 10px; }
+.revision-file a { color: #8fdbca; text-decoration: underline; text-underline-offset: 2px; }
+.revision-file small { color: var(--muted); font-size: 9px; }
 .files-list { margin: 24px 0; padding: 22px 26px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); }
 .files-list h2 { margin: 4px 0 0; font-size: 19px; }
 .file-rows { margin: 16px 0 0; padding: 0; list-style: none; }

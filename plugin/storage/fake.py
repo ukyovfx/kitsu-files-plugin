@@ -23,6 +23,7 @@ class FakeStorage:
         self.drive_id = drive_id
         self.objects = {root_id: StorageObject(root_id, None, None, None, drive_id, "folder")}
         self.reservations = {}
+        self._bytes = {}
         self.lock = Lock()
         self.fail_after_create = False
         self.fail_upload_after_write = False
@@ -57,6 +58,7 @@ class FakeStorage:
                 raise AlreadyExists(reserved_id)
             obj = StorageObject(reserved_id, parent_id, size, sha256, self.drive_id, "application/octet-stream")
             self.objects[reserved_id] = obj
+            self._bytes[reserved_id] = bytes(body)
         if self.fail_upload_after_write:
             self.fail_upload_after_write = False
             raise AmbiguousOutcome("provider accepted upload but response was lost")
@@ -64,6 +66,20 @@ class FakeStorage:
 
     def get(self, object_id):
         return self.objects.get(object_id)
+
+    def download_to(self, object_id, destination):
+        obj = self.get(object_id)
+        body = self._bytes.get(object_id)
+        if obj is None or obj.trashed or body is None:
+            raise FileNotFoundError("Fake storage object is unavailable")
+        digest = hashlib.sha256()
+        count = 0
+        for offset in range(0, len(body), 1024 * 1024):
+            chunk = body[offset:offset + 1024 * 1024]
+            destination.write(chunk)
+            digest.update(chunk)
+            count += len(chunk)
+        return count, digest.hexdigest()
 
     def verify(self, object_id, size, sha256):
         obj = self.get(object_id)
@@ -180,6 +196,20 @@ class PersistentFakeStorage(FakeStorage):
 
     def get(self, object_id):
         return self.objects.get(object_id)
+
+    def download_to(self, object_id, destination):
+        obj = self.get(object_id)
+        path = self._blob_path(object_id)
+        if obj is None or obj.trashed or not path.is_file():
+            raise FileNotFoundError("Fake storage object is unavailable")
+        digest = hashlib.sha256()
+        count = 0
+        with path.open("rb") as source:
+            while chunk := source.read(1024 * 1024):
+                destination.write(chunk)
+                digest.update(chunk)
+                count += len(chunk)
+        return count, digest.hexdigest()
 
     def verify(self, object_id, size, sha256):
         obj = self.get(object_id)

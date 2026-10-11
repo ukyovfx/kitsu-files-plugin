@@ -50,3 +50,26 @@ def test_duplicate_display_names_remain_distinct_by_provider_id():
     tree = discover_template_tree(storage, allowed_root_id="allowed-root", template_folder_id="template-root")
 
     assert [(node.name, node.provider_folder_id) for node in tree.children] == [("Work", "left"), ("Work", "right")]
+
+
+def test_template_discovery_follows_all_pages_before_accepting_tree():
+    from plugin.storage.base import Listing
+
+    class PagedStorage(FakeStorage):
+        def list_children(self, parent_id, page_token=None):
+            if parent_id == "template-root" and page_token is None:
+                return Listing((self.objects["page-a"],), complete=True, next_page_token="page-2")
+            if parent_id == "template-root" and page_token == "page-2":
+                return Listing((self.objects["page-b"],), complete=True)
+            return super().list_children(parent_id, page_token)
+
+    storage = PagedStorage(root_id="allowed-root")
+    storage.objects.update({
+        "template-root": StorageObject("template-root", "allowed-root", 0, None, None, "folder", name="Template"),
+        "page-a": StorageObject("page-a", "template-root", 0, None, None, "folder", name="A"),
+        "page-b": StorageObject("page-b", "template-root", 0, None, None, "folder", name="B"),
+    })
+
+    tree = discover_template_tree(storage, allowed_root_id="allowed-root", template_folder_id="template-root")
+
+    assert [node.provider_folder_id for node in tree.children] == ["page-a", "page-b"]

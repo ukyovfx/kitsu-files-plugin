@@ -18,6 +18,20 @@ def test_fake_upload_verifies_exact_size_and_hash():
 
     assert obj.object_id == object_id
     assert adapter.verify(object_id, len(content), digest)
+
+
+def test_fake_storage_downloads_exact_bytes_by_provider_identity():
+    adapter = FakeStorage()
+    content = b"immutable working file"
+    digest = hashlib.sha256(content).hexdigest()
+    object_id = adapter.reserve_id("working-file")
+    adapter.upload(io.BytesIO(content), object_id, len(content), digest, "fake-root")
+    target = io.BytesIO()
+
+    count, downloaded_hash = adapter.download_to(object_id, target)
+
+    assert target.getvalue() == content
+    assert (count, downloaded_hash) == (len(content), digest)
     assert not adapter.verify(object_id, len(content) + 1, digest)
 
 

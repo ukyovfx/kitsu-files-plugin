@@ -93,4 +93,4 @@ def test_cross_origin_mutation_rejected():
 
 def test_worker_rejects_schema_epoch_mismatch():
     with pytest.raises(RuntimeError):
-        assert_compatible_host("1.0.94", 2, "1")
+        assert_compatible_host("1.0.94", 3, "2")

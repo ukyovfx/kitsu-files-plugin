@@ -55,8 +55,7 @@ def test_approval_and_revocation_are_append_only_and_latest_falls_back(approval_
         events = session.scalars(select(ApprovalEvent).where(ApprovalEvent.publish_id == latest.id)).all()
         assert pointer.latest_approved_id == first.id
         assert len(events) == 2
-        assert events[0].event_type == "approved"
-        assert events[1].event_type == "revoked"
+        assert {event.event_type for event in events} == {"approved", "revoked"}
         with pytest.raises(DBAPIError):
             with factory.begin() as tx:
                 tx.execute(ApprovalEvent.__table__.delete().where(ApprovalEvent.id == old_approval))

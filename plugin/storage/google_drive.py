@@ -185,6 +185,29 @@ class GoogleDriveStorageAdapter:
                 digest.update(chunk)
         return count == size and digest.hexdigest() == sha256_hex
 
+    def download_to(self, object_id: str, destination: BinaryIO) -> tuple[int, str]:
+        if not self._root_verified:
+            raise PermissionFailure("Allowed root must be verified before download")
+        obj = self.get(object_id)
+        if obj is None or obj.trashed or obj.parent_id is None:
+            raise PermissionFailure("Drive object is unavailable")
+        self.assert_parent_within_root(obj.parent_id)
+        response = self._request("GET", f"{API}/files/{object_id}", params={"alt": "media", "supportsAllDrives": "true"})
+        if response.status_code in (401, 403):
+            raise PermissionFailure("Drive object is not readable")
+        if response.status_code != 200:
+            raise AmbiguousOutcome("Drive download result is not confirmed")
+        digest = sha256()
+        count = 0
+        for chunk in response.iter_content(chunk_size=1024 * 1024):
+            if chunk:
+                destination.write(chunk)
+                digest.update(chunk)
+                count += len(chunk)
+        if obj.size is not None and count != obj.size:
+            raise AmbiguousOutcome("Drive download byte count differs from metadata")
+        return count, digest.hexdigest()
+
     def list_children(self, parent_id: str, page_token: str | None = None):
         if not self._root_verified:
             raise PermissionFailure("Allowed root must be verified before listing")
@@ -206,7 +229,9 @@ class GoogleDriveStorageAdapter:
         from .base import Listing
 
         objects = tuple(self._object(obj) for obj in data.get("files", ()))
-        return Listing(objects, complete=not data.get("incompleteSearch", False) and not bool(data.get("nextPageToken")), next_page_token=data.get("nextPageToken"))
+        # `complete` represents Drive's incompleteSearch flag only; a next page
+        # token means more results remain and must be followed by the caller.
+        return Listing(objects, complete=not data.get("incompleteSearch", False), next_page_token=data.get("nextPageToken"))
 
     def assert_parent_within_root(self, parent_id: str):
         current = parent_id

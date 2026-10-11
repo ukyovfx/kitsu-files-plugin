@@ -2,7 +2,7 @@
 
 **Design:** `docs/superpowers/specs/2026-10-11-vfx-kitsu-files-plugin-design.md`
 **Implementation plan:** `docs/superpowers/plans/2026-10-11-vfx-kitsu-files-plugin.md`
-**Status:** Design approved; isolated implementation in progress. Tasks 1, core Tasks 2/3/5 and the first Production page/API slice are implemented; migration rollback, shared template provisioning, immutable Working revisions, publish integration, worker/provider execution and lifecycle gates remain open.
+**Status:** Design approved; isolated implementation in progress. Core Tasks 1/2/3/5 and the first Production page/API slice are implemented. A one-file Working revision API → PostgreSQL → separate worker process → disk-backed FakeStorage → Latest Working → authorized download slice now passes on the pinned Zou host. Installed-browser, two-artist w002, multi-file recovery, shared template provisioning composition, Publish integration, migration rollback and restore gates remain open.
 
 | Audit finding | Corrected design location and disposition | Plan task(s) | Required proof / named tests |
 |---|---|---|---|
@@ -24,3 +24,19 @@
 ## Independent review record
 
 One read-only reviewer pass found a High race in native OutputFile creation: a lease successor could repeat a slow in-flight non-idempotent call. The corrected design now persists a one-shot create permit before calling Zou, disables automatic retries, and blocks ambiguous outcomes for audited reconciliation; Task 4 now has a lost-lease slow-create test. The reviewer also supplied Google’s explicit pre-generated folder ID guarantee; the spec now cites it and retains only the My Drive/Shared Drive auth/capability acceptance gate. No reviewer edits were made.
+
+## Functional acceptance snapshot — 2026-10-11
+
+Status meanings: **PASS** means the named scope was exercised end-to-end at the stated boundary; **FAIL** means a reproducible defect remains open; **BLOCKED** means an external prerequisite prevents the test; **NOT TESTED** means no adequate evidence exists yet.
+
+| Workflow slice | Status | Evidence and limits |
+|---|---|---|
+| Working revision reservation, Kitsu Task authorization, CSRF, PostgreSQL metadata and upload session creation | PASS | Pinned Zou/PostgreSQL API integration test reserves w001 and reads it back; mismatched/unauthorized actors and Production isolation still need explicit coverage. |
+| Working upload → real worker process → persistent FakeStorage → exact verification → Latest Working → authorized download | PASS | `tests/working_files/test_api_worker_e2e.py::test_working_snapshot_api_runs_real_worker_and_advances_latest` runs `python -m plugin.worker_runtime --once` against the pinned host database, then asserts the persisted manifest/pointer, provider object and returned bytes. One artist and one file only. |
+| Incomplete snapshots, stale base conflict, monotone w### allocation sequence and per-file quota | PASS | `tests/working_files/test_revision_lifecycle.py` runs against pinned PostgreSQL for lifecycle/conflict/allocation/quota. This does not prove concurrent HTTP reservations or two-browser uploads. |
+| Working snapshot browser selection, persisted revision display and refresh/recovery in the installed plugin page | NOT TESTED | Vue upload/revision/download-link UI builds and API unit tests pass; no browser session has exercised the installed page against the real host API. |
+| Artist A w001 → Artist B download → Artist B w002 with both immutable revisions retrievable | NOT TESTED | Download was exercised by the same authenticated test actor; second-person authorization and browser handoff have not been exercised. |
+| Working multi-file worker completion, interrupted transfer recovery, ambiguous provider response and duplicate retry | NOT TESTED | Service guards exist, but integrated fault injection for the multi-file worker path remains outstanding. |
+| Shared Drive template selection through installed UI/API → PostgreSQL job → provisioning worker → persisted folder bindings | NOT TESTED | URL parsing and tree discovery have focused tests. End-to-end provisioning route/UI/worker coverage remains open. |
+| Google My Drive / Shared Drive live-provider behavior | BLOCKED | External Drive credentials and a disposable authorized Drive are intentionally unavailable; FakeStorage remains the required safe development target. |
+| Publish / QC / exact-manifest approval / Handoff integrated browser and worker flow | NOT TESTED | Existing isolated service tests are not integrated acceptance. |

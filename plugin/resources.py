@@ -1,9 +1,10 @@
 """Official Zou plugin routes using host cookies and same-origin CSRF proof."""
 
 import os
+import tempfile
 from uuid import UUID
 
-from flask import abort, current_app, request
+from flask import abort, current_app, request, send_file
 from flask.views import MethodView
 from flask_jwt_extended import get_jwt_identity, jwt_required
 from werkzeug.exceptions import ServiceUnavailable
@@ -106,6 +107,20 @@ def _upload_service():
     db = current_app.extensions["sqlalchemy"]
     sessions = sessionmaker(bind=db.engine, expire_on_commit=False)
     return UploadService(sessions, FileSystemStaging(staging_root))
+
+
+def _storage_adapter(connection):
+    factory = current_app.extensions.get("vfx_files_storage_adapter_factory")
+    if factory is not None:
+        return factory(connection)
+    if _setting("VFX_FILES_STORAGE_MODE") == "fake":
+        from .storage.fake import PersistentFakeStorage
+
+        fake_root = _setting("VFX_FILES_FAKE_STORAGE_ROOT")
+        if not fake_root:
+            raise ServiceUnavailable("FakeStorage is not configured")
+        return PersistentFakeStorage(fake_root, root_id=_setting("VFX_FILES_FAKE_ROOT_ID", connection.allowed_root_id))
+    raise ServiceUnavailable("No StorageAdapter is configured for downloads")
 
 
 class Health(MethodView):
@@ -311,6 +326,165 @@ class TaskUploads(MethodView):
         return {"id": str(created.session_id), "expires_at": created.expires_at.isoformat(), "max_chunk_bytes": created.max_chunk_bytes}, 201
 
 
+def _working_revision_payload(revision):
+    from .models import UploadSession, WorkingRevisionFile
+
+    files = WorkingRevisionFile.query.filter_by(revision_id=revision.id).order_by(WorkingRevisionFile.ordinal).all()
+    upload_sessions = {
+        row.working_revision_file_id: row
+        for row in UploadSession.query.filter(UploadSession.working_revision_file_id.in_([item.id for item in files])).all()
+    } if files else {}
+    return {
+        "id": str(revision.id),
+        "production_id": str(revision.production_id),
+        "task_id": str(revision.task_id),
+        "version": revision.version,
+        "version_label": f"w{revision.version:03d}",
+        "state": revision.state,
+        "base_revision_id": str(revision.base_revision_id) if revision.base_revision_id else None,
+        "created_by": str(revision.created_by),
+        "created_at": revision.created_at.isoformat() if revision.created_at else None,
+        "completed_at": revision.completed_at.isoformat() if revision.completed_at else None,
+        "manifest_sha256": revision.manifest_sha256,
+        "files": [{
+            "id": str(row.id),
+            "name": row.file_name,
+            "category": row.category,
+            "size": row.provider_size if row.state == "completed" else row.expected_size,
+            "sha256": row.provider_sha256 if row.state == "completed" else row.expected_sha256,
+            "state": row.state,
+            "provider_object_id": row.provider_object_id if row.state == "completed" else None,
+            "upload_session_id": str(upload_sessions[row.id].id) if row.id in upload_sessions else None,
+        } for row in files],
+    }
+
+
+class TaskWorkingRevisions(MethodView):
+    @jwt_required()
+    def get(self, task_id):
+        _require_enabled()
+        _assert_compatible()
+        try:
+            parsed_task_id = UUID(str(task_id))
+            from .models import LatestWorkingPointer, WorkingRevision
+            from zou.app.models.task import Task
+            task = Task.query.filter_by(id=parsed_task_id).one_or_none()
+            if task is None:
+                abort(404)
+            actor = _request_actor(str(task.project_id))
+            scope = _resolve_scope(actor, str(task.project_id), str(parsed_task_id))
+            authorize(actor, Capability.READ, scope)
+            revisions = WorkingRevision.query.filter_by(task_id=parsed_task_id).order_by(WorkingRevision.version.desc()).limit(100).all()
+            pointer = LatestWorkingPointer.query.filter_by(task_id=parsed_task_id).one_or_none()
+        except (PermissionDenied, NotFound):
+            abort(403)
+        except (ValueError, TypeError):
+            abort(404)
+        return {
+            "task_id": str(parsed_task_id),
+            "latest_working_id": str(pointer.revision_id) if pointer else None,
+            "revisions": [_working_revision_payload(row) for row in revisions],
+        }
+
+    @jwt_required()
+    def post(self, task_id):
+        _require_enabled()
+        _assert_compatible()
+        from .working_files.service import WorkingConflict, WorkingDenied, reserve_working_revision
+        try:
+            _require_mutation_origin()
+            parsed_task_id = UUID(str(task_id))
+            actor, scope = _task_actor_scope(parsed_task_id)
+            payload = request.get_json(silent=False) or {}
+            from .models import StorageConnection
+            connections = StorageConnection.query.filter_by(production_id=scope.production_id, enabled=True).limit(2).all()
+            if len(connections) != 1:
+                raise ServiceUnavailable("Production must have exactly one enabled StorageConnection")
+            from sqlalchemy.orm import sessionmaker
+            db = current_app.extensions["sqlalchemy"]
+            sessions = sessionmaker(bind=db.engine, expire_on_commit=False)
+            from .models import WorkingRevision
+            key = request.headers.get("Idempotency-Key", "").strip()
+            receipt = reserve_working_revision(
+                sessions,
+                production_id=scope.production_id,
+                task_id=parsed_task_id,
+                storage_connection_id=connections[0].id,
+                actor_id=actor.actor_id,
+                base_revision_id=UUID(str(payload["base_revision_id"])) if payload.get("base_revision_id") else None,
+                idempotency_key=key,
+                files=payload.get("files"),
+                dependencies=payload.get("dependencies", []),
+                include_intermediate=payload.get("include_intermediate", False) is True,
+                max_chunk_bytes=int(_setting("VFX_FILES_MAX_CHUNK_BYTES", 8 * 1024 * 1024)),
+                ttl_hours=int(_setting("VFX_FILES_UPLOAD_TTL_HOURS", 168)),
+            )
+            revision = WorkingRevision.query.filter_by(id=receipt.id).one()
+        except (PermissionDenied, NotFound):
+            abort(403)
+        except (ValueError, TypeError, KeyError) as error:
+            abort(400, description=str(error))
+        except WorkingConflict as error:
+            abort(409, description=str(error))
+        except WorkingDenied as error:
+            abort(403, description=str(error))
+        result = _working_revision_payload(revision)
+        result["files"] = [
+            {**file_payload, "upload_session_id": str(file_receipt.upload_session_id)}
+            for file_payload, file_receipt in zip(result["files"], receipt.files, strict=True)
+        ]
+        return result, 201
+
+
+class WorkingFileDownload(MethodView):
+    @jwt_required()
+    def get(self, revision_file_id):
+        _require_enabled()
+        _assert_compatible()
+        try:
+            file_uuid = UUID(str(revision_file_id))
+            from .models import StorageConnection, WorkingRevision, WorkingRevisionFile
+            file_row = WorkingRevisionFile.query.filter_by(id=file_uuid).one_or_none()
+            revision = WorkingRevision.query.filter_by(id=file_row.revision_id).one_or_none() if file_row else None
+            if file_row is None or revision is None or revision.state != "completed" or file_row.state != "completed":
+                abort(404)
+            actor = _request_actor(str(revision.production_id))
+            scope = _resolve_scope(actor, str(revision.production_id), str(revision.task_id))
+            authorize(actor, Capability.READ, scope)
+            connection = StorageConnection.query.filter_by(production_id=revision.production_id, enabled=True).one_or_none()
+            if connection is None or not file_row.provider_object_id:
+                abort(404)
+            adapter = _storage_adapter(connection)
+            provider_object = adapter.get(file_row.provider_object_id)
+            if provider_object is None or provider_object.trashed or provider_object.parent_id is None:
+                abort(404)
+            adapter.assert_parent_within_root(provider_object.parent_id)
+            if not adapter.verify(file_row.provider_object_id, file_row.provider_size, file_row.provider_sha256):
+                abort(409, description="Stored Working File failed integrity verification")
+            stream = tempfile.SpooledTemporaryFile(max_size=8 * 1024 * 1024, mode="w+b")
+            try:
+                count, digest = adapter.download_to(file_row.provider_object_id, stream)
+                if count != file_row.provider_size or digest != file_row.provider_sha256:
+                    abort(409, description="Downloaded Working File failed integrity verification")
+                stream.seek(0)
+                response = send_file(
+                    stream,
+                    mimetype=file_row.mime_type or "application/octet-stream",
+                    as_attachment=True,
+                    download_name=file_row.file_name,
+                    conditional=False,
+                )
+                response.call_on_close(stream.close)
+                return response
+            except Exception:
+                stream.close()
+                raise
+        except (PermissionDenied, NotFound):
+            abort(403)
+        except (ValueError, TypeError):
+            abort(404)
+
+
 class UploadSessionResource(MethodView):
     @jwt_required()
     def get(self, session_id):
@@ -430,6 +604,8 @@ routes = [
     ("/mutation-probe", MutationProbe),
     ("/handoffs/<handoff_id>/respond", HandoffResponse),
     ("/tasks/<task_id>/uploads", TaskUploads),
+    ("/tasks/<task_id>/working-revisions", TaskWorkingRevisions),
+    ("/working-files/<revision_file_id>/download", WorkingFileDownload),
     ("/uploads/<session_id>", UploadSessionResource),
     ("/uploads/<session_id>/parts/<int:part_index>", UploadPartResource),
     ("/uploads/<session_id>/finalize", FinalizeUpload),

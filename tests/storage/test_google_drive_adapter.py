@@ -51,13 +51,14 @@ def test_shared_drive_uses_drive_scoped_listing_and_support_flags():
 
     listing = adapter.list_children("root-1")
 
-    assert listing.complete is False
     params = transport.calls[1][2]["params"]
     assert params["supportsAllDrives"] == "true"
     assert params["includeItemsFromAllDrives"] == "true"
     assert params["corpora"] == "drive"
     assert params["driveId"] == "drive-1"
     assert listing.items[0].name == "Seq 010"
+    assert listing.complete is True
+    assert listing.next_page_token == "next"
 
 
 def test_my_drive_owner_identity_must_match_configured_subject():
