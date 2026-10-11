@@ -167,6 +167,11 @@ class PersistentFakeStorage(FakeStorage):
         try:
             return super().create_folder(parent_id, reserved_id, correlation)
         finally:
+            item = self.objects.get(reserved_id)
+            if item is not None and item.mime_type == "folder":
+                blob = self._blob_path(reserved_id)
+                if not blob.exists():
+                    self._write_blob(reserved_id, b"")
             self._persist()
 
     def upload(self, source, reserved_id, size, sha256, parent_id):

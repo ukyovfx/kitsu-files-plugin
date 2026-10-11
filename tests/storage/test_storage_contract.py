@@ -102,3 +102,15 @@ def test_persistent_fake_storage_readback_survives_worker_process_restart(tmp_pa
     assert second_process.get(provider_id).size == len(data)
     assert second_process.verify(provider_id, len(data), digest)
     assert second_process.reserve_id("upload:stable-kitsu-upload-id") == provider_id
+
+
+def test_persistent_fake_storage_folder_metadata_survives_worker_restart(tmp_path):
+    state_path = tmp_path / "fake-provider" / "folders.json"
+    first_process = PersistentFakeStorage(state_path, root_id="test-root")
+    first_process.create_folder("test-root", "stable-folder-id", {"display_name": "shot"})
+
+    second_process = PersistentFakeStorage(state_path, root_id="test-root")
+
+    folder = second_process.get("stable-folder-id")
+    assert folder is not None and folder.mime_type == "folder"
+    assert folder.name == "shot"

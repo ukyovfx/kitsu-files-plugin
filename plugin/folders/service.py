@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from threading import Lock
 from typing import Protocol
 
-from ..storage.base import AmbiguousOutcome, StorageAdapter, StorageObject
+from ..storage.base import AlreadyExists, AmbiguousOutcome, StorageAdapter, StorageObject
 
 
 @dataclass
@@ -58,7 +58,44 @@ def provision_folder(
             raise FolderProvisioningError("Bound folder is missing or has changed parent/type")
         return binding
 
-    if not is_new:
+    released_unstarted = False
+    if binding.provider_folder_id is None:
+        listing = adapter.list_children(parent_id)
+        if not listing.complete or listing.next_page_token is not None:
+            store.mark_reconcile(binding)
+            raise AmbiguousOutcome("A complete child listing is required before folder adoption or creation")
+        if binding.state == "reconcile_required":
+            release = getattr(store, "release_unstarted_reservation", None)
+            if release is None or not release(binding):
+                raise FolderProvisioningError("Unstarted folder reservation could not be safely resumed")
+            binding.state = "reserved"
+            released_unstarted = True
+        matches = [
+            item for item in listing.items
+            if item.parent_id == parent_id
+            and item.mime_type == "folder"
+            and not item.trashed
+            and item.name == display_name
+        ]
+        if len(matches) > 1:
+            store.mark_reconcile(binding)
+            raise FolderProvisioningError("Multiple existing folders have this display name; adoption is ambiguous")
+        if matches:
+            candidate_id = matches[0].object_id
+            bound_elsewhere = getattr(store, "provider_id_in_use", lambda *_: False)(
+                storage_connection_id, allowed_root_id, canonical_scope_key, candidate_id
+            )
+            if bound_elsewhere:
+                store.mark_reconcile(binding)
+                raise FolderProvisioningError("Matching existing folder is already bound to another Kitsu identity")
+            if not store.set_provider_id(binding, candidate_id):
+                raise FolderProvisioningError("Folder reservation lost its owner")
+            store.mark_ready(binding, candidate_id)
+            binding.provider_folder_id = candidate_id
+            binding.state = "ready"
+            return binding
+
+    if not is_new and not released_unstarted and binding.provider_folder_id is None:
         raise FolderProvisioningError("Folder reservation is owned by another worker")
     if binding.provider_folder_id is None:
         reserved_id = adapter.reserve_id(canonical_scope_key)
@@ -67,8 +104,22 @@ def provision_folder(
         binding.provider_folder_id = reserved_id
 
     try:
-        obj = adapter.create_folder(parent_id, binding.provider_folder_id, {"scope_key": canonical_scope_key, "display_name": display_name})
+        reserved_object = adapter.get(binding.provider_folder_id)
     except AmbiguousOutcome:
+        store.mark_reconcile(binding)
+        binding.state = "reconcile_required"
+        return binding
+    if reserved_object is not None:
+        if not _matches(reserved_object, binding.provider_folder_id, parent_id):
+            store.mark_reconcile(binding)
+            raise FolderProvisioningError("Reserved provider identity exists with unexpected parent/type")
+        store.mark_ready(binding, binding.provider_folder_id)
+        binding.state = "ready"
+        return binding
+
+    try:
+        obj = adapter.create_folder(parent_id, binding.provider_folder_id, {"scope_key": canonical_scope_key, "display_name": display_name})
+    except (AmbiguousOutcome, AlreadyExists):
         try:
             obj = adapter.get(binding.provider_folder_id)
         except AmbiguousOutcome:
@@ -78,6 +129,8 @@ def provision_folder(
         if not _matches(obj, binding.provider_folder_id, parent_id):
             store.mark_reconcile(binding)
             binding.state = "reconcile_required"
+            if isinstance(obj, StorageObject):
+                raise FolderProvisioningError("Reserved provider identity exists with unexpected parent/type")
             return binding
     if not _matches(obj, binding.provider_folder_id, parent_id):
         store.mark_reconcile(binding)
@@ -122,6 +175,21 @@ class MemoryFolderStore:
     def mark_reconcile(self, reservation):
         with self._lock:
             reservation.state = "reconcile_required"
+
+    def provider_id_in_use(self, storage_connection_id, allowed_root_id, canonical_scope_key, provider_id):
+        with self._lock:
+            return any(
+                key != (storage_connection_id, allowed_root_id, canonical_scope_key)
+                and row.provider_folder_id == provider_id
+                for key, row in self._rows.items()
+            )
+
+    def release_unstarted_reservation(self, reservation):
+        with self._lock:
+            if reservation.provider_folder_id is not None or reservation.state != "reconcile_required":
+                return False
+            reservation.state = "reserved"
+            return True
 
 
 class PostgresFolderStore:
@@ -214,3 +282,37 @@ class PostgresFolderStore:
                 .where(FolderBinding.id == reservation._row_id)
                 .values(state="reconcile_required")
             )
+
+    def provider_id_in_use(self, storage_connection_id, allowed_root_id, canonical_scope_key, provider_id):
+        from sqlalchemy import select
+
+        from ..models import FolderBinding
+
+        with self.session_factory() as session:
+            return session.scalar(
+                select(FolderBinding.id)
+                .where(
+                    FolderBinding.storage_connection_id == storage_connection_id,
+                    FolderBinding.allowed_root_id == allowed_root_id,
+                    FolderBinding.provider_folder_id == provider_id,
+                    FolderBinding.canonical_scope_key != canonical_scope_key,
+                )
+                .limit(1)
+            ) is not None
+
+    def release_unstarted_reservation(self, reservation):
+        from sqlalchemy import update
+
+        from ..models import FolderBinding
+
+        with self.session_factory.begin() as session:
+            result = session.execute(
+                update(FolderBinding)
+                .where(
+                    FolderBinding.id == reservation._row_id,
+                    FolderBinding.state == "reconcile_required",
+                    FolderBinding.provider_folder_id.is_(None),
+                )
+                .values(state="reserved")
+            )
+            return result.rowcount == 1

@@ -104,3 +104,56 @@ test('Needs Fix requires feedback and Accepted persists after the page reloads',
   await expect(page.locator('[data-state="accepted"]')).toBeVisible()
   await expect(page.getByText('Latest Published')).toHaveCount(2)
 })
+
+test('template setup stays disabled until activation and refreshes folder bindings', async ({ page }) => {
+  let config = { configured: false, enabled: false }
+  let bindingsReady = false
+  const tree = { folder_id: 'template-root', name: 'Studio Shared', children: [
+    { folder_id: 'shot-role', name: '{shot}', children: [{ folder_id: 'task-role', name: '{task}', children: [] }] }
+  ] }
+  await page.route('**/api/plugins/vfx_files/**', async (route) => {
+    const request = route.request()
+    const url = new URL(request.url())
+    if (url.pathname.endsWith('/csrf-token')) return json(route, { csrf_token: 'synthetic-csrf', expires_in: 900 })
+    if (url.pathname.endsWith('/overview')) return json(route, { production_id: productionId, tasks: [{ id: taskId, task_type_id: 'comp', entity_id: 'shot-1' }], upload_ready: false, publishes: [], handoffs: [] })
+    if (url.pathname.endsWith('/shared-template/candidates')) return json(route, { templates: [tree] })
+    if (url.pathname.endsWith('/shared-template') && request.method() === 'GET') return json(route, config)
+    if (url.pathname.endsWith('/shared-template') && request.method() === 'POST') {
+      const payload = JSON.parse(request.postData())
+      expect(payload).toMatchObject({ template_folder_id: 'template-root', role_mappings: { shot: 'shot-role', task: 'task-role' } })
+      config = { configured: true, enabled: false, version: 1, allowed_root_id: 'authorized-root', template_folder_id: 'template-root', template_tree: tree, role_mappings: payload.role_mappings }
+      return json(route, { id: 'config-1', version: 1, enabled: false, template_folder_id: 'template-root' }, 201)
+    }
+    if (url.pathname.endsWith('/shared-template/activate')) {
+      config.enabled = JSON.parse(request.postData()).enabled
+      return json(route, { id: 'config-1', version: 1, enabled: config.enabled })
+    }
+    if (url.pathname.endsWith('/shared-folders') && request.method() === 'POST') return json(route, { job_id: 'job-1', state: 'queued' }, 202)
+    if (url.pathname.endsWith('/shared-folders') && request.method() === 'GET') {
+      const state = bindingsReady ? 'ready' : 'pending'
+      return json(route, { configured: true, enabled: true, folders: [
+        { scope_key: 'shot-1', name: 'sh010', state, url: bindingsReady ? 'https://drive.google.com/drive/folders/folder-1' : null },
+        { scope_key: 'task-1', name: 'comp', state, url: bindingsReady ? 'https://drive.google.com/drive/folders/folder-2' : null }
+      ] })
+    }
+    return json(route, { error: 'unexpected test request' }, 500)
+  })
+
+  await openFiles(page)
+  await page.getByRole('button', { name: /Folder template setup/ }).click()
+  await page.getByLabel('Google Drive root URL').fill('https://drive.google.com/drive/folders/authorized-root')
+  await page.getByRole('button', { name: 'Discover' }).click()
+  await page.getByLabel('Folder template', { exact: true }).selectOption('template-root')
+  await page.getByLabel('Shot mapping').selectOption('shot-role')
+  await page.getByLabel('Task mapping').selectOption('task-role')
+  await page.getByRole('button', { name: 'Save disabled configuration' }).click()
+  await expect(page.getByText('Configuration v1 · disabled')).toBeVisible()
+  await page.getByRole('button', { name: 'Activate provisioning' }).click()
+  await page.getByLabel('Provision Task folders').selectOption(taskId)
+  await page.getByRole('button', { name: 'Create or reuse' }).click()
+  await expect(page.getByText('Folder job queued: job-1')).toBeVisible()
+  await expect(page.getByText('Waiting for worker')).toHaveCount(2)
+  bindingsReady = true
+  await page.getByRole('button', { name: 'Refresh bindings' }).click()
+  await expect(page.getByRole('link', { name: 'Open folder' })).toHaveCount(2)
+})

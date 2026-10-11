@@ -4,6 +4,7 @@ import re
 
 ROOT = Path(__file__).resolve().parents[2]
 MIGRATION = ROOT / "plugin/migrations/versions/0001_plugin_foundation.py"
+FOLDER_BINDING_MIGRATION = ROOT / "plugin/migrations/versions/0005_unique_folder_provider_binding.py"
 
 
 def test_plugin_tables_are_namespaced_and_nullable_folder_identity_is_avoided():
@@ -37,3 +38,14 @@ def test_audit_history_and_publish_checkpoints_are_database_immutable():
     ):
         assert table in source
     assert 'f"CREATE TRIGGER {table_name}_immutable' in source
+
+
+def test_provider_folder_identity_index_is_partial_and_reversible():
+    source = FOLDER_BINDING_MIGRATION.read_text()
+    assert 'revision = "vxf_0005"' in source
+    assert 'down_revision = "vxf_0004"' in source
+    assert '"plugin_vfx_files_folder_provider_id_uc"' in source
+    assert 'postgresql_where=sa.text("provider_folder_id IS NOT NULL")' in source
+    downgrade = source.split("def downgrade():", 1)[1]
+    assert 'op.drop_index("plugin_vfx_files_folder_provider_id_uc"' in downgrade
+    assert "schema_epoch = 3" in downgrade

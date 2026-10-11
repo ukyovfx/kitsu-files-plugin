@@ -2,6 +2,7 @@
 import { computed, onMounted, ref } from 'vue'
 import HandoffPanel from './components/HandoffPanel.vue'
 import PublishList from './components/PublishList.vue'
+import SharedTemplateSetup from './components/SharedTemplateSetup.vue'
 import UploadPanel from './components/UploadPanel.vue'
 
 const props = defineProps({ context: { type: Object, required: true }, api: { type: Object, required: true } })
@@ -66,6 +67,7 @@ onMounted(load)
         <article class="summary-card handoff-card"><span class="card-label">Open Handoffs</span><strong>{{ overview.handoffs.filter((item) => item.state === 'pending').length }}</strong><span>awaiting a response</span></article>
       </section>
       <UploadPanel :enabled="overview.upload_ready" :tasks="overview.tasks" :api="api" @uploaded="load" />
+      <SharedTemplateSetup v-if="!overview.task_id" :production-id="productionId" :tasks="overview.tasks" :api="api" />
       <div class="content-grid">
         <PublishList :publishes="overview.publishes" />
         <HandoffPanel :handoffs="overview.handoffs" :busy-id="busyId" @respond="respond" />

@@ -33,6 +33,8 @@ def _authorize_job(payload):
     membership = ProjectPersonLink.query.filter_by(project_id=task.project_id, person_id=actor_id).one_or_none()
     role = (membership.role if membership is not None else None) or person.role
     role = getattr(role, "code", role)
+    if payload.get("job_type") == "provision_task_folders" and role not in ("admin", "manager"):
+        return False
     if role == "admin":
         return True
     if role == "manager":
@@ -59,6 +61,7 @@ def build_runtime(app):
     from .compat import SCHEMA_EPOCH, WORKER_BUILD
     from .jobs.queue import PostgresJobQueue
     from .storage.fake import PersistentFakeStorage
+    from .folders.worker import make_task_folder_handler
     from .uploads.staging import FileSystemStaging
     from .uploads.worker import make_upload_handler
     from .worker.leases import WorkerContext
@@ -66,14 +69,21 @@ def build_runtime(app):
 
     sessions = sessionmaker(bind=db.engine, expire_on_commit=False)
     queue = PostgresJobQueue(sessions)
-    adapter = PersistentFakeStorage(fake_root, root_id=os.environ.get("VFX_FILES_FAKE_ROOT_ID", "synthetic-root-id"))
+    adapter = PersistentFakeStorage(
+        fake_root,
+        root_id=os.environ.get("VFX_FILES_FAKE_ROOT_ID", "synthetic-root-id"),
+        drive_id=os.environ.get("VFX_FILES_FAKE_DRIVE_ID"),
+    )
     staging = FileSystemStaging(staging_root)
     worker_id = UUID(os.environ["VFX_FILES_WORKER_ID"]) if os.environ.get("VFX_FILES_WORKER_ID") else uuid4()
     return WorkerRuntime(
         queue=queue,
         context=WorkerContext(worker_id, WORKER_BUILD, host_version, SCHEMA_EPOCH),
         authorize=_authorize_job,
-        handlers={"publish_source": make_upload_handler(sessions, staging, adapter)},
+        handlers={
+            "publish_source": make_upload_handler(sessions, staging, adapter),
+            "provision_task_folders": make_task_folder_handler(sessions, adapter),
+        },
     )
 
 

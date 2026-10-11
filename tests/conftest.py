@@ -79,7 +79,7 @@ def synthetic_upload_task(authenticated_plugin_client, zou_db_factory, tmp_path)
     from zou.app.models.project import Project
     from zou.app.models.task import Task, TaskPersonLink
     from zou.app.models.task_type import TaskType
-    from plugin.models import Job, LatestWorkingPointer, StorageConnection, UploadPart, UploadSession, WorkingDependency, WorkingRevision, WorkingRevisionFile
+    from plugin.models import FolderBinding, Job, LatestWorkingPointer, SharedTemplateConfiguration, StorageConnection, UploadPart, UploadSession, WorkingDependency, WorkingRevision, WorkingRevisionFile
 
     app = authenticated_plugin_client.vfx_app
     with app.app_context():
@@ -128,6 +128,16 @@ def synthetic_upload_task(authenticated_plugin_client, zou_db_factory, tmp_path)
         if revision_ids:
             session.execute(WorkingRevisionFile.__table__.delete().where(WorkingRevisionFile.revision_id.in_(revision_ids)))
             session.execute(WorkingRevision.__table__.delete().where(WorkingRevision.id.in_(revision_ids)))
+        folder_jobs = session.scalars(select(Job).where(Job.job_type == "provision_task_folders")).all()
+        for job in folder_jobs:
+            if job.payload.get("task_id") == str(task_id):
+                session.delete(job)
+        session.execute(
+            SharedTemplateConfiguration.__table__.delete().where(
+                SharedTemplateConfiguration.storage_connection_id == connection_id
+            )
+        )
+        session.execute(FolderBinding.__table__.delete().where(FolderBinding.storage_connection_id == connection_id))
         session.execute(StorageConnection.__table__.delete().where(StorageConnection.id == connection_id))
         session.execute(TaskPersonLink.__table__.delete().where(TaskPersonLink.task_id == task_id))
         session.execute(Task.__table__.delete().where(Task.id == task_id))

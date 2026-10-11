@@ -1,6 +1,7 @@
 import pytest
 
 from plugin.folders.discovery import discover_template_tree
+from plugin.folders.templates import normalize_role_mappings
 from plugin.storage.base import AmbiguousOutcome, StorageObject
 from plugin.storage.fake import FakeStorage
 
@@ -73,3 +74,20 @@ def test_template_discovery_follows_all_pages_before_accepting_tree():
     tree = discover_template_tree(storage, allowed_root_id="allowed-root", template_folder_id="template-root")
 
     assert [node.provider_folder_id for node in tree.children] == ["page-a", "page-b"]
+
+
+def test_role_mapping_requires_task_beneath_shot_and_sequence_above_shot():
+    storage = FakeStorage(root_id="allowed-root")
+    storage.objects.update({
+        "template-root": StorageObject("template-root", "allowed-root", 0, None, None, "folder", name="Template"),
+        "sequence": StorageObject("sequence", "template-root", 0, None, None, "folder", name="Sequence"),
+        "shot": StorageObject("shot", "sequence", 0, None, None, "folder", name="Shot"),
+        "task": StorageObject("task", "shot", 0, None, None, "folder", name="Task"),
+        "outside": StorageObject("outside", "template-root", 0, None, None, "folder", name="Outside"),
+    })
+    tree = discover_template_tree(storage, allowed_root_id="allowed-root", template_folder_id="template-root")
+
+    with pytest.raises(ValueError, match="descendant"):
+        normalize_role_mappings(tree, {"shot": "shot", "task": "outside"})
+    with pytest.raises(ValueError, match="ancestor"):
+        normalize_role_mappings(tree, {"sequence": "outside", "shot": "shot", "task": "task"})

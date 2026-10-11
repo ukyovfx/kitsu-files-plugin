@@ -34,6 +34,39 @@ describe('Files API', () => {
     await expect(createFilesApi(client).listProduction('p-1')).rejects.toMatchObject({ status: 503 })
   })
 
+  it('discovers, saves, activates and queues Production-scoped shared folders', async () => {
+    const client = { request: vi.fn()
+      .mockResolvedValueOnce(response({ configured: false }))
+      .mockResolvedValueOnce(response({ allowed_root_id: 'root/a', templates: [] }))
+      .mockResolvedValueOnce(response({ csrf_token: 'save-csrf' }))
+      .mockResolvedValueOnce(response({ version: 1, enabled: false }))
+      .mockResolvedValueOnce(response({ csrf_token: 'activate-csrf' }))
+      .mockResolvedValueOnce(response({ enabled: true }))
+      .mockResolvedValueOnce(response({ csrf_token: 'queue-csrf' }))
+      .mockResolvedValueOnce(response({ job_id: 'job-1', state: 'queued' }))
+      .mockResolvedValueOnce(response({ configured: true, folders: [] })) }
+    const api = createFilesApi(client)
+    await api.getSharedTemplate('prod/a')
+    await api.discoverSharedTemplates('prod/a', 'https://drive.google.com/drive/folders/root/a')
+    await api.saveSharedTemplate('prod/a', { template_folder_id: 'template-1' })
+    await api.setSharedTemplateEnabled('prod/a', 1, true)
+    await api.provisionTaskFolders('prod/a', 'task/1')
+    await api.getTaskSharedFolders('prod/a', 'task/1')
+    expect(client.request.mock.calls.map(([method, path]) => [method, path])).toEqual([
+      ['GET', 'plugins/vfx_files/productions/prod%2Fa/shared-template'],
+      ['GET', 'plugins/vfx_files/productions/prod%2Fa/shared-template/candidates?root_url=https%3A%2F%2Fdrive.google.com%2Fdrive%2Ffolders%2Froot%2Fa'],
+      ['GET', 'plugins/vfx_files/csrf-token'],
+      ['POST', 'plugins/vfx_files/productions/prod%2Fa/shared-template'],
+      ['GET', 'plugins/vfx_files/csrf-token'],
+      ['POST', 'plugins/vfx_files/productions/prod%2Fa/shared-template/activate'],
+      ['GET', 'plugins/vfx_files/csrf-token'],
+      ['POST', 'plugins/vfx_files/productions/prod%2Fa/tasks/task%2F1/shared-folders'],
+      ['GET', 'plugins/vfx_files/productions/prod%2Fa/tasks/task%2F1/shared-folders']
+    ])
+    expect(JSON.parse(client.request.mock.calls[3][2].body)).toMatchObject({ template_folder_id: 'template-1' })
+    expect(JSON.parse(client.request.mock.calls[5][2].body)).toEqual({ expected_version: 1, enabled: true })
+  })
+
   it('uploads fixed chunks with checksums and finalizes only after server readback status', async () => {
     const client = { request: vi.fn()
       .mockResolvedValueOnce(response([]))

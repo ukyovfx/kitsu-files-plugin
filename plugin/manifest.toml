@@ -1,7 +1,7 @@
 id = "vfx_files"
 name = "VFX Files"
 description = "Production-scoped versioned files, publishes, approvals, and handoffs."
-version = "0.2.0"
+version = "0.4.0"
 maintainer = "VFX Studio"
 license = "MIT"
 icon = "folder-open"

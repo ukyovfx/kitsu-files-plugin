@@ -2,7 +2,7 @@
 
 from uuid import uuid4
 
-from sqlalchemy import BigInteger, Boolean, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, func
+from sqlalchemy import BigInteger, Boolean, DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint, func, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy_utils import UUIDType
 
@@ -43,7 +43,36 @@ class FolderBinding(db.Model):
     provider_folder_id = db.Column(String(255))
     state = db.Column(String(32), nullable=False, default="reserved")
     created_at = db.Column(DateTime(timezone=True), nullable=False, server_default=func.now())
-    __table_args__ = (UniqueConstraint("storage_connection_id", "allowed_root_id", "canonical_scope_key", name="plugin_vfx_files_folder_identity_uc"),)
+    __table_args__ = (
+        UniqueConstraint("storage_connection_id", "allowed_root_id", "canonical_scope_key", name="plugin_vfx_files_folder_identity_uc"),
+        Index(
+            "plugin_vfx_files_folder_provider_id_uc",
+            "storage_connection_id",
+            "allowed_root_id",
+            "provider_folder_id",
+            unique=True,
+            postgresql_where=text("provider_folder_id IS NOT NULL"),
+        ),
+    )
+
+
+class SharedTemplateConfiguration(db.Model):
+    __tablename__ = "plugin_vfx_files_shared_template"
+    id = db.Column(UUIDType(binary=False), primary_key=True, default=uuid4)
+    production_id = db.Column(UUIDType(binary=False), nullable=False, index=True)
+    storage_connection_id = db.Column(UUIDType(binary=False), ForeignKey("plugin_vfx_files_storage_connection.id"), nullable=False)
+    allowed_root_id = db.Column(String(255), nullable=False)
+    template_folder_id = db.Column(String(255), nullable=False)
+    template_tree = db.Column(JSONB, nullable=False)
+    role_mappings = db.Column(JSONB, nullable=False)
+    version = db.Column(Integer, nullable=False, default=1)
+    enabled = db.Column(Boolean, nullable=False, default=False)
+    updated_by = db.Column(UUIDType(binary=False), nullable=False)
+    created_at = db.Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at = db.Column(DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now())
+    __table_args__ = (
+        UniqueConstraint("production_id", "storage_connection_id", name="plugin_vfx_files_shared_template_scope_uc"),
+    )
 
 
 class UploadSession(db.Model):
