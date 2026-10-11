@@ -110,9 +110,9 @@ During restore, keep Files disabled, stop all workers, restore database + plugin
 
 | Surface | Current evidence | Candidate target | Compatibility rule |
 |---|---|---|---|
-| VFX Studio Kitsu Web | `UNKNOWN`; authorized read-only runtime inspection not performed | upstream `v1.0.70` | exact production context/frontend test required; no live assumption |
-| VFX Studio Zou | `UNKNOWN`; authorized read-only runtime inspection not performed | upstream `v1.0.94` | exact plugin API, auth, model bridge and migration tests required |
-| Kitsu/Zou pairing | no official pair matrix found in reviewed sources | `v1.0.70` + `v1.0.94` candidate | remains unsupported until isolated integration suite passes |
+| VFX Studio Kitsu Web | `UNKNOWN`; Production not inspected | upstream latest checked 2026-10-11: `v1.0.70` | current official release verified; Production runtime unknown |
+| VFX Studio Zou | `UNKNOWN`; Production not inspected | highest official tag checked 2026-10-11: `v1.0.94` | current official source tag verified; Production runtime unknown |
+| Kitsu/Zou pairing | no official pair matrix found | `v1.0.70` + `v1.0.94` tested in the disposable official image | plugin install, auth, migrations and upload E2E pass; no general or Production compatibility claim |
 | `kitsu-client-js` | upstream repository has no published releases; sample package points to mutable GitHub ref | immutable commit pin chosen only after compatibility spike | never ship moving `main`; if auth integration cannot be pinned and tested, replace with minimal reviewed API wrapper |
 | Kitsu file models | exact Zou models inspected: native OutputFile revision and nullable uniqueness fields; WorkingFile has own revision | adapter via Zou-supported routes/services | no direct core schema edits; exact linking semantics must pass fixture tests |
 | Plugin schema | no live plugin schema inspected | plugin-scoped Alembic version table | additive migrations only; reject mixed schema epoch/worker |
