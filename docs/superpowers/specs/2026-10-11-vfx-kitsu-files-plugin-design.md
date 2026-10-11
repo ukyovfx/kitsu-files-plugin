@@ -1,130 +1,155 @@
 # VFX Studio Kitsu Files Plugin Design
 
-**Status:** Design approved in conversation; awaiting spec review before implementation planning.
+**Status:** Architecture approved with changes; design corrections and independent delta review complete, pending implementation approval.
 **Date:** 2026-10-11
+**Audited base:** `e2788e0af2632630d2533785247c0509fd191035`
 
-## Intent and constraints
+## Goal and boundaries
 
-Build an upgrade-resilient Kitsu production files extension on official Kitsu Web and Zou. The extension adds a dedicated production-level Files page, durable file/folder workflows, versioned publishes and QC, and task handoff tracking. It must not change Kitsu Web or Zou core, the existing Task detail drawer, or the review interface. Discord delivery remains in KitsuSync. No live installation, Production change, production migration, destructive Drive operation, merge, or release is in scope.
+Build an upgrade-resilient production Files extension on official Kitsu Web and Zou. The extension adds one dedicated Production Files page, durable source ingestion and Shot/Task folder provisioning, versioned Publish and QC records, immutable-by-application published artifacts, explicit approval evidence, pinned dependencies, and Task Handoff. Keep Kitsu Web/Zou core, the Task detail drawer, review UI, and KitsuSync unchanged. Discord notifications remain in KitsuSync. Nuke integration and Japanese name-order customization are out of scope.
 
-Stable Kitsu UUIDs and Google Drive file/folder IDs are identity. Names are display/path hints only. Google credentials are optional for development; fake storage must cover every workflow. Nuke integration and Japanese name-order customization are out of scope.
+The selected design is an official Zou plugin plus a separately supervised worker. The plugin owns HTTP routes, frontend assets, plugin tables and migrations. The worker shares the pinned Zou/Python environment and PostgreSQL database, but external I/O is outside database transactions. Every external operation is a durable job with a fenced lease, idempotency key and reconciliation state. Google credentials are optional; fakes support all local tests.
 
-## Options considered
+Stable Kitsu UUIDs and Google Drive IDs are identities. Names are display/path hints only. No Production/Staging access, live install, external credential use, production migration, Drive write/delete, merge or release is included in design work or local development.
 
-1. **Zou plugin plus separate worker (selected):** use Zou's plugin system for an embedded production page, authenticated API routes, and plugin-owned tables/migrations. A separate worker polls plugin job rows and performs storage/QC/publish operations. This matches the official extension surface and isolates long-running work from Zou web workers. It adds a separately deployed process and shared-DB coordination.
-2. **Zou plugin with in-process background work:** fewer deployment components, but job execution and recovery depend on Zou process lifecycle and worker topology. Rejected for durable transfers and reconciliation.
-3. **External standalone application:** strong process isolation, but loses Kitsu's native production menu and requires separate authentication and production-context plumbing. Rejected for the requested dedicated plugin page.
+## Verified host surface and lifecycle constraints
 
-## System shape
+Candidate upstream baseline as of 2026-10-11: Kitsu Web `v1.0.70` and Zou `v1.0.94`. Exact upstream files reviewed include Zou `plugins.py`, `plugins_service.py`, `plugin_alembic_template/env.py`, `WorkingFile`, and `OutputFile` at tag `v1.0.94`. This is a candidate pair, not a verified compatibility pair. Deployed VFX Studio versions and configuration remain `UNKNOWN`; the server is not inspected in this phase.
+
+Zou `v1.0.94` runs plugin migrations through Alembic using version table `alembic_version_<plugin_id>` and filters Alembic tables by `plugin_<plugin_id>_` prefix. The install path updates or creates the core Plugin row before copying files and running migrations; there is no compensating rollback if a later step fails. Plugin hooks catch and log exceptions. Uninstall attempts downgrade, but the downgrade utility catches every exception and continues; uninstall then recursively deletes plugin files and deletes the Plugin row. A successful downgrade can drop plugin-owned tables. Therefore:
+
+- Never use plugin uninstall for rollback or routine disable.
+- Do not use plugin skeleton `force=true` on any populated plugin directory.
+- Ship strictly increasing plugin versions; Zou logs a warning but does not reject same/older package versions, so deployment must reject them before invoking install.
+- Disable by stopping the worker and setting the extension feature gate off; keep code, plugin row, migrations and data installed.
+- Upgrade only from a quiesced host with a tested, restorable snapshot of the database, plugin package/migration chain, deployment configuration references, and staged-upload storage. Zou install is not atomic; on failure keep the extension disabled and restore the consistent pre-upgrade snapshot under an approved maintenance procedure. Do not infer success from the plugin row or installer response alone.
+- Retain old migration revisions for as long as any supported package can be rolled forward or restored. For incompatible populated schema, use a forward repair or restore the complete consistent snapshot; never downgrade populated data as an ordinary rollback.
+- Test failed install and partial uninstall only in a disposable isolated Zou/PostgreSQL fixture. Assert and document the destructive uninstall behavior; do not uninstall a populated local acceptance fixture.
+
+## Product shape
 
 ```text
-Kitsu production menu
-  └─ embedded Vue 3 + Vite Files page
-      └─ authenticated Zou plugin routes (/api/plugins/vfx-files/...)
-          ├─ plugin-owned PostgreSQL tables and Alembic revisions
+Kitsu Production menu
+  └─ isolated Vue 3 + Vite Files page (official plugin static route)
+      └─ JWT-authenticated Zou plugin API (/api/plugins/vfx-files/...)
+          ├─ plugin_vfx_files_* PostgreSQL tables + Alembic history
           ├─ Kitsu file-reference adapter (WorkingFile / OutputFile)
-          └─ durable job table ← separate worker polls and reconciles
-                                  └─ StorageAdapter
-                                      ├─ Fake adapter (default in tests/dev)
-                                      └─ Google Drive adapter (My Drive + Shared Drives)
+          └─ durable jobs ← separate fenced worker
+                              ├─ StorageAdapter (fake / Google Drive)
+                              └─ QC / manifest / reconciliation services
 ```
 
-The plugin frontend uses the official production-menu context (`production_id`, `episode_id`) and the documented static frontend constraints (`base: './'`, hash routing). It does not add controls to the task drawer or review UI.
+Use the official Production menu context (`production_id`, optional `episode_id`) only as an untrusted filter hint. Resolve and validate every referenced Production, Episode, Entity and Task from Zou on every request; never authorize from iframe query parameters. Use official static plugin routes and documented frontend constraints (`base: './'`, hash routing). Do not inject into or modify the Task drawer or review interface. Pin all frontend dependencies in the extension lockfile. The upstream `kitsu-client-js` has no published GitHub releases and current sample projects point at GitHub; Stage 0 must pin an immutable commit and prove auth/API compatibility, or use an audited minimal wrapper around Zou's supported API/JWT flow. Do not consume a moving branch in a release artifact.
 
-The Zou plugin owns all extension tables; names use `plugin_vfx_files_` prefixes. It does not alter Kitsu/Zou core models or database schema. API resources require JWT authentication and enforce project/task authorization on every object access. The Kitsu file-reference adapter is the only layer allowed to interact with the existing file models/services. Its contract is covered by compatibility tests against the pinned local Zou host.
+The Kitsu file-reference adapter is the only component allowed to create or query core WorkingFile/OutputFile records. Zou `OutputFile` has an integer `revision` and a native uniqueness constraint over name, entity/asset instance, output type, task type, temporal entity, representation and revision. Several fields are nullable, so the plugin must not assume that this native constraint alone serializes all cases. `WorkingFile` likewise has its own revision namespace. Plugin Publish versions and their full SHA-256/64-bit byte counts remain plugin-owned and separate from both native revision fields.
 
-The worker shares the plugin package and Zou application environment so it can load plugin configuration and models, but runs as its own process. It consumes jobs with transactional claims, leases, attempt counts, and idempotency keys. Network transfers happen outside DB transactions. Job completion is recorded only after the adapter confirms the external object and the worker verifies its size and locally computed SHA-256. Lost or ambiguous responses trigger lookup/reconciliation by stable Drive ID or application metadata before retrying; they do not mark a transfer complete.
+## Plugin-owned data model and constraints
 
-## Plugin data model
+All plugin tables use the `plugin_vfx_files_` prefix and plugin-owned UUID primary keys. Kitsu IDs are external UUID references with no core-table FK, so Kitsu upgrades do not couple schema ownership. Migrations are additive; any destructive data-retention decision is a separate reviewed migration.
 
-- **FolderBinding:** production, episode/sequence/entity/task Kitsu UUIDs as applicable; parent binding; Drive kind, drive ID, folder ID, and last verified state. Unique constraints on the Kitsu scope and on `(drive_id, folder_id)`. Folder names are not keys.
-- **Job:** operation type, idempotency key, Kitsu scope IDs, payload reference, state (`queued`, `running`, `retryable`, `succeeded`, `failed`), lease, attempt count, next retry, and sanitized error class. Duplicate event/job keys are rejected by a unique constraint.
-- **Publish:** task ID, reserved integer version, state, source WorkingFile ID when present, OutputFile ID when linked, manifest/QC references, immutable artifact Drive IDs, content hash/size, author and timestamps. `(task_id, version)` is unique; reservation occurs under a DB row lock.
-- **Task pointers:** separate references for Latest Published and Latest Approved. Pinned dependency records point to explicit publish IDs and never follow either latest pointer implicitly.
-- **Handoff:** task ID, publish ID, sender/recipient IDs, state (`pending`, `accepted`, `needs_fix`), response/comment, and append-only transition history. Accept/Needs Fix never rewrites the publish or changes the source artifact.
+- **StorageConnection:** provider (`google_drive`), account/ownership mode (`my_drive` or `shared_drive`), owner subject or Shared Drive ID, and administrator-managed credential reference. Tokens/secrets are never stored here.
+- **AllowedRoot:** non-null `storage_connection_id`, Drive ID where applicable, root folder ID, verified root ancestry/capabilities, and administrator-set allowed operations. No path/name defines its identity.
+- **FolderBinding:** non-null `storage_connection_id`, non-null `allowed_root_id`, non-null canonical scope identity derived from Kitsu object type plus Kitsu UUID, provider Drive ID and folder ID, optional parent binding, state and audit timestamps. Enforce `UNIQUE(storage_connection_id, allowed_root_id, canonical_scope_key)` and `UNIQUE(storage_connection_id, drive_id, folder_id)`. No nullable column participates in the logical identity constraint. Parent may be null for a root binding.
+- **UploadSession / UploadPart:** Kitsu task/production UUIDs, authenticated source `person_id`, server-generated session UUID, expected byte length, chunk size, accepted non-overlapping byte ranges and SHA-256 per part, whole-file SHA-256, state, expiry and staging object key. Defaults: 100 GiB maximum file, 500 GiB active staged bytes per Production, 64 MiB chunks, seven-day resumable session expiry. Administrators may lower these limits. Over-limit or unconfigured quota fails closed. The staging object key resolves only inside a dedicated server-owned durable volume/object-store namespace; no local user path or arbitrary URL is accepted.
+- **Job:** unique idempotency key, operation/payload reference, Kitsu scope UUIDs, authorization actor, explicit state, attempt count, next retry, lease owner UUID, monotone lock generation, DB-clock lease expiry and sanitized failure class. Claims use short PostgreSQL transactions with `FOR UPDATE SKIP LOCKED`; external I/O occurs after claim commit. Heartbeat and completion updates require matching owner + generation and unexpired DB-clock lease. A stale worker cannot complete after takeover. Use bounded exponential backoff with jitter, per-provider concurrency and rate limits.
+- **OutputFamily:** plugin-owned stable UUID and configuration mapping to Zou output type/task type/representation semantics. Never key output family by a mutable display name.
+- **Publish:** task UUID, OutputFamily UUID, plugin `publish_version`, source WorkingFile UUID if present, native OutputFile UUID when linked, source owner, state/checkpoints, artifact Drive IDs, full SHA-256, bigint sizes, manifest hash, QC decision, timestamps and error state. Enforce unique `(task_id, output_family_id, publish_version)` and allocate under a PostgreSQL row lock/unique constraint. Do not reuse a reservation after a failed attempt; mark it failed/abandoned and allocate the next number.
+- **PublishArtifact / Manifest / QCRecord:** immutable-by-application records. Manifests include exact Kitsu UUIDs, plugin publish version, source and output Drive IDs, byte counts, SHA-256 hashes, QC policy/version/results, timestamps and tool/version metadata. Canonicalize before hashing; store exact manifest bytes/content-address and SHA-256. Do not store secrets or tokens.
+- **OutputFileLink:** mapping from one Publish to exact native OutputFile UUID and captured native revision. Reserve/query native revision through the adapter scoped to the complete native family tuple; serialize concurrent operations in the plugin DB. On native unique conflict, re-query/reconcile by deterministic plugin Publish identity in `OutputFile.data` when that supported field is verified; otherwise keep the Publish blocked for audited reconciliation. Never equate native revision with Publish version. Existing native outputs remain untouched and are included in native revision allocation queries.
+- **ApprovalEvent:** append-only decision (`approved`, `revoked`) bound to exact Publish UUID and exact manifest SHA-256, reviewer Kitsu UUID, policy ID/version/hash, reason and timestamp. No update/delete API. Latest Approved is a materialized cache rebuilt from the most recent still-active approval event for eligible completed publish; revocation invalidates only its exact approval, so an earlier still-active approval may again be the latest. Task status and Kitsu review previews are never approval evidence. Self-approval of one's own Publish is denied.
+- **PublishPointer:** independent Latest Published and Latest Approved caches, each pointing to a Publish UUID and updated transactionally from their separate eligibility rules. Pinned dependencies store exact Publish UUID, manifest hash and artifact IDs; they never resolve through a latest pointer.
+- **Handoff / HandoffEvent:** handoff against exact Task and Publish, sender/recipient UUIDs, state (`pending`, `accepted`, `needs_fix`), feedback and append-only transition events. Transitions never mutate artifact bytes or global Kitsu Task status.
+- **ReconciliationFinding / AuditEvent:** append-only findings/actions with IDs and sanitized classifications; no raw provider response or credentials.
 
-Use plugin-owned UUID primary keys and store Kitsu UUIDs as stable external references. Relationships to core Kitsu data are checked through the compatibility adapter rather than by changing core tables.
+If a Kitsu object UUID no longer resolves, retain plugin records as `orphaned`; do not delete, relink by name, or continue writes. Keep immutable artifacts, manifests and approval history readable by authorized administrators. Any explicit remap requires an audited administrator action and exact identity proof.
 
-## Workflows
+## Core workflows
 
-### Folder provisioning
+### Authorization and request context
 
-An authorized Kitsu event or explicit production-page action creates an idempotent provisioning job. The worker resolves or creates each folder through the configured storage adapter using Kitsu IDs as metadata and persists discovered Drive IDs. On a timeout, it searches/reconciles by the stable metadata before creating again. It never deletes or renames external folders automatically. A periodic reconciliation detects missing or mismatched external IDs and queues repair work.
+All routes require a valid Zou JWT and resolve target UUID relationships server-side. The extension permission adapter maps these logical capabilities to exact pinned Zou permission helpers and fails closed for unknown roles:
 
-### Publish and QC
+| Capability | Initial policy |
+|---|---|
+| Read Files, publish metadata, Handoff and authorized download | Active Production member with Zou view access to the resolved Task/Production |
+| Start/resume upload and create Handoff | Task assignee or Production supervisor/manager with Zou edit access |
+| Publish | Task assignee or Production supervisor/manager with Zou edit access |
+| Approve/revoke | Production supervisor/manager with explicit approval permission; publisher cannot approve own Publish |
+| Folder provisioning, connection/root configuration, reconciliation override | Zou administrator or explicitly configured Production manager |
+| Worker execution | Re-check persisted actor permission and object relationship before each queued privileged stage; revoked, deleted or changed authorization moves job to `blocked_authorization` without external mutation |
 
-1. The API validates authorization and creates a publish reservation with a per-task version allocated under a DB lock.
-2. A durable job transfers the source to a new version-specific artifact location; it never overwrites an existing published artifact.
-3. The worker verifies the external object, size, and SHA-256 before recording transfer success.
-4. A manifest records Kitsu IDs, version, source identity/hash, artifact IDs/hashes, QC results, timestamps, and tool metadata. QC failures remain visible and cannot advance Latest Approved.
-5. The Kitsu file-reference adapter creates/links an OutputFile only after the artifact is verified; the source WorkingFile link is preserved when applicable.
-6. Latest Published advances only for a completed publish. Latest Approved advances only through an authorized approval action. Pinned dependencies remain bound to their selected publish IDs.
+Mutations accept the same-origin Bearer JWT flow only after Stage 0 verifies the official plugin context/client behavior. Reject cookie-only mutation authentication. Validate `Origin`/`Referer` against the configured Kitsu origin for all mutations; if deployment uses cookies, require and validate an anti-CSRF token and SameSite cookie policy. Reject cross-origin requests and form/simple content types. Apply server-side rate limits and object-level authorization to download URLs; do not expose public links.
 
-All external artifacts are write-once from this application: each publish gets new Drive files and IDs, and normal workflows never update or delete them. For Drive binary revisions, the adapter may request `keepRevisionForever` where appropriate, but the product's immutability guarantee comes from never overwriting/deleting the published artifact and recording/verifying its ID and hash. Google Drive's retained-revision behavior is not treated as a WORM guarantee.
+### Source ingestion
 
-### Task handoff
+Browser uploads use `POST /uploads` to create an owner/task-scoped session with declared length and expected SHA-256, then `PUT /uploads/{session_id}/parts/{index}` using fixed 64 MiB chunks and byte-range/checksum headers. Server records accepted non-overlapping ranges transactionally and makes repeated identical part requests idempotent; conflicting bytes/ranges fail. Resume is permitted only to the same actor or an authorized supervisor. Finalize requires contiguous coverage from byte 0 through declared length, expected per-part checksums, and server-computed whole-file SHA-256. A successful DB state is not evidence of durable bytes: finalize fsyncs/stages to the durable staging adapter, verifies byte length and full SHA-256 by read-back, then queues work. Worker and web service share an explicit durable storage contract. Incomplete sessions expire after seven days; cleanup deletes only staging objects whose expired session state and exact object key are transactionally claimed. Never clean an object referenced by a non-expired/active session.
 
-An authorized user creates a handoff against one exact publish. The recipient can mark it Accepted or Needs Fix, with optional feedback. Transitions are idempotent and audited. A Needs Fix transition does not mutate Kitsu's global task status or the current review interface in the first release; any status mapping can be added later through an explicit, tested Kitsu adapter.
+### Folder provisioning and Google Drive identity
 
-## Storage adapter
+Provision deterministic Shot/Task folder relationships from stable Kitsu UUIDs. Each target reservation is inserted under the non-null unique key before provider I/O. Google Drive documents that IDs from `files.generateIds` can be used to create files and folders (including `application/vnd.google-apps.folder`); after successful creation, repeated creates with that ID return `409 Conflict` and do not create duplicates. Reserve the ID in PostgreSQL before `files.create` and use it as provider identity. Shared Drive requests include `supportsAllDrives=true`; list/search uses the correct `driveId`, `corpora` and `includeItemsFromAllDrives` parameters. My Drive identity is scoped to the authenticated owner subject; Shared Drive identity is scoped to exact drive ID and validated capability/role. Verify the target root's Drive ID and parent ancestry before creating anything, and reject traversal outside the configured root. Isolated validation remains required for the selected My Drive/Shared Drive authentication and capability configuration.
 
-The interface covers folder lookup/creation, resumable upload, metadata lookup, content verification, and capability reporting. It accepts stable external IDs and idempotency keys, returns provider IDs and observed metadata, and never exposes credentials to the frontend or logs.
+If provider response is lost, `files.get` by the persisted reserved ID determines whether the intended object exists. `404` is absence only when the same authenticated connection can prove visibility of the exact drive/root and the provider's semantics make that result authoritative; permission errors, partial listing, timeout or other ambiguity leave the reservation `reconcile_required` and block retries that could create another object. Never infer absence from name search. Store optional `appProperties` correlation in addition to ID, but never rely on them as the sole identity. No automated delete, move, rename or public sharing is provided. Do not create or update permissions; inherit configured root access and inspect capabilities.
 
-The Google Drive adapter supports My Drive and Shared Drives. Shared Drive calls use the required support/listing parameters and treat the Drive ID as part of the identity. OAuth credentials and target root IDs are supplied only through external local/deployment configuration; absent credentials disable the adapter cleanly. Automated destructive operations are not implemented. The fake adapter simulates success, duplicate requests, timeouts, partial transfers, mismatched hashes, permission failures, and rate limits.
+### Publish, QC and native file records
 
-## Migrations, upgrade, and rollback
+The publish job follows persisted checkpoints exactly: `reserved → source_ready → artifact_verified → qc_recorded → manifest_verified → native_linked → completed`. Each checkpoint is committed only after evidence is persisted for the operation immediately before it. Artifacts use a unique new Drive ID/object per publish and are never updated/deleted by this app. Source WorkingFile is linked when it exists and is relevant; otherwise its ID is null and manifest explains provenance. Source upload ownership remains attributed to the authenticated Kitsu actor.
 
-Migrations are additive and plugin-scoped. Each revision documents its data impact and has a tested downgrade for an empty synthetic database. A downgrade that would discard plugin data must fail closed; production rollback uses the previous plugin code only when its schema compatibility is proven, otherwise it uses a forward repair migration. Zou's documented uninstall path does not drop plugin tables, so uninstall is not a rollback mechanism and table removal is a separate data-retention decision.
+After storage upload, read back metadata and bytes (or a provider checksum plus streamed content verification where available) and persist Drive ID, size and full SHA-256. Record QC result and policy before manifest generation. A failed QC publish remains a visible failed/ineligible version unless an authorized, audited waiver policy explicitly allows completion. Verify the exact manifest bytes/hash and artifact references before the native OutputFile bridge. Native OutputFile creation uses its own revision and native uniqueness tuple; plugin stores the native mapping only after querying and verifying the returned OutputFile. Add deterministic plugin Publish identity to supported `data` JSON only after the exact Zou service/path is verified.
 
-Before any target-server install, confirm its Kitsu Web and Zou versions and test the exact pair in an isolated environment. The current upstream candidate baseline is Kitsu Web `1.0.70` and Zou `1.0.94` (both published 2026-10-07); official sources reviewed do not publish a compatible-version pairing matrix. The deployed VFX Studio versions and configuration remain unknown. The prototype must not install or migrate against that server.
+Native OutputFile create is a non-idempotent single-flight operation unless the pinned Zou API proves otherwise. Before calling Zou, atomically consume a one-shot `native_create_attempt` for the Publish under the current lease generation and commit that state. Disable automatic HTTP/client retries for create. No worker, including a lease successor, may issue a second create once the attempt is consumed. The worker then calls the verified in-process Zou service and records the returned OutputFile ID/revision. On exception, lost response, worker death or lease loss, the Publish becomes `native_create_ambiguous`; reconciliation may read the complete native family tuple and the deterministic marker, but a missing marker is not enough to retry while an original call could still be executing. If outcome remains uncertain, keep the publish blocked for audited operator resolution. Only after proving the original process/request is terminated and the authoritative native query shows no OutputFile may an explicit audited reconciliation authorize a new one-shot attempt. This intentionally trades automatic recovery for duplicate prevention. Add this single-flight behavior before implementation; generic job fencing alone does not fence a side effect already in flight.
 
-## Authentication, security, and operations
+Latest Published means the highest plugin publish version whose state is `completed`, `manifest_verified`, `native_linked`, and whose QC is `pass` or valid policy `waived`; it advances in the same DB transaction as completion. It is monotone: an older late completion cannot replace a higher eligible version. Failed/ineligible newer versions do not block a lower eligible publish from remaining Latest Published. Latest Approved is derived separately from active approval events and never inferred from native revision/status. Pinned dependencies remain exact Publish IDs even after later publishes or approval revocation.
 
-- Every route requires JWT and checks permissions against the resolved production/task before reading or mutating plugin data.
-- Validate UUIDs and request schemas; use explicit allowlists for job types and state transitions.
-- Store no Google tokens in plugin tables, manifests, fixtures, or logs. Secret injection is external and optional.
-- Bound upload size, retry rate, job concurrency, and provider error detail. Logs include job IDs and sanitized error classes, not file content, tokens, or raw responses.
-- Worker uses leases and conditional state transitions so concurrent workers cannot complete the same job twice.
-- No plugin code sends Discord notifications.
+### Disable, migration, backup and recovery
 
-## Local validation plan
+Disable is operational: flip `VFX_FILES_ENABLED=false`, stop/drain the worker and wait for all leases to expire; API mutators return a stable disabled response and the Files page explains the disabled state. Do not uninstall/unload plugin files. Upgrade requires host write quiescence, worker drain, verified backup and a tested manifest of host/plugin/worker versions. Snapshot: full Zou PostgreSQL database including plugin schema and core Plugin row, exact plugin package and migration chain, deployment/worker image digests, non-secret configuration and credential references, staged upload store, manifest/QC/pointer records (in DB and any exported copies), and all published artifact bytes in a separate operator-managed encrypted backup target with hashes. Drive alone is not backup and no WORM claim is made.
 
-Use a completely isolated local environment pinned to the recorded Kitsu/Zou baseline, an isolated PostgreSQL test DB, and synthetic fixtures. Do not reuse Production/Staging DBs, credentials, Drive folders, browser profiles, or KitsuSync services. Validation covers:
+During restore, keep Files disabled, stop all workers, restore database + plugin package + staging snapshot + backup artifacts to a consistent checkpoint, verify hashes and host/plugin/worker schema epoch, then run read-only Drive reconciliation before re-enabling jobs. Do not overwrite or delete external Drive state during reconciliation; any mismatch blocks the affected publish and requires an audited repair decision. Google Drive's `keepForever` is optional retention support subject to its API limits, not immutability. The application-level write-once promise covers only operations made through this extension; Drive owners/admins can still alter external artifacts.
 
-- Plugin registration, frontend packaging, production context, auth and task/project authorization.
-- Fresh migration, upgrade migration, tested safe downgrade, and refusal to discard populated plugin data.
-- Fake adapter success/failure and reconciliation; optional Google adapter contract tests with mocked HTTP and no real credentials.
-- Duplicate events, retries after timeouts, concurrent job claims, concurrent version reservation, and separately maintained latest/approved/pinned pointers.
-- Accepted / Needs Fix transition authorization and audit history.
-- Frontend component/unit checks and static build. Browser GUI automation and any authenticated live browser inspection remain out of scope without separate permission.
+## Compatibility and version policy
 
-## Compatibility and rollback matrix
-
-| Surface | Current verified state | Design target | Rollback/compatibility handling |
+| Surface | Current evidence | Candidate target | Compatibility rule |
 |---|---|---|---|
-| Kitsu Web | Deployed version unknown | Upstream `1.0.70` | Production page is a documented plugin frontend; test iframe/context against exact target before install |
-| Zou API/plugin host | Deployed version unknown | Upstream `1.0.94` | Use documented plugin routes/models/migrations; pin and test exact host version; do not modify core |
-| Plugin DB | No Production migration performed | Additive `plugin_vfx_files_*` schema | Test upgrade/downgrade locally; refuse destructive downgrade when rows exist; forward-fix if older code cannot safely read schema |
-| Google Drive | No credentials or external calls | Optional My Drive + Shared Drives adapter | Fake adapter is default; never overwrite/delete; reconcile ambiguous outcomes by external IDs and hashes |
-| Kitsu WorkingFile/OutputFile | Present in current upstream Zou source | Link when semantically appropriate | Isolate integration in adapter; create OutputFile only after verified transfer; test against the exact Zou baseline |
-| KitsuSync / Discord | Separate lifecycle | No change | Notifications stay in KitsuSync; no shared release or deployment step |
+| VFX Studio Kitsu Web | `UNKNOWN`; authorized read-only runtime inspection not performed | upstream `v1.0.70` | exact production context/frontend test required; no live assumption |
+| VFX Studio Zou | `UNKNOWN`; authorized read-only runtime inspection not performed | upstream `v1.0.94` | exact plugin API, auth, model bridge and migration tests required |
+| Kitsu/Zou pairing | no official pair matrix found in reviewed sources | `v1.0.70` + `v1.0.94` candidate | remains unsupported until isolated integration suite passes |
+| `kitsu-client-js` | upstream repository has no published releases; sample package points to mutable GitHub ref | immutable commit pin chosen only after compatibility spike | never ship moving `main`; if auth integration cannot be pinned and tested, replace with minimal reviewed API wrapper |
+| Kitsu file models | exact Zou models inspected: native OutputFile revision and nullable uniqueness fields; WorkingFile has own revision | adapter via Zou-supported routes/services | no direct core schema edits; exact linking semantics must pass fixture tests |
+| Plugin schema | no live plugin schema inspected | plugin-scoped Alembic version table | additive migrations only; reject mixed schema epoch/worker |
+| Google Drive | no credentials or external calls | fake by default; My Drive + Shared Drive adapters | mocked contract tests local; real provider support requires later explicit isolated-account acceptance |
+| KitsuSync / Discord | separate repository/release lifecycle | no change | no shared version, deployment or notification path |
 
-## Open gates
+Plugin code declares `schema_epoch` and host compatibility range. Worker startup compares its build's minimum/maximum schema epoch with the DB's recorded epoch and pinned Zou version; mismatch refuses all claims. Deploy one worker build at a time. Before migration, pause claims and drain in-flight leases; after schema change, old workers must stay stopped. Resume only after host, plugin and worker versions match. Never use object names to reconnect a missing Kitsu entity.
 
-1. Review and approve this written design before implementation planning.
-2. Identify the VFX Studio server's non-secret configuration source and verify deployed Kitsu/Zou versions through the authorized read-only path. If unavailable, retain `UNKNOWN` and continue local-only.
-3. Resolve API-version compatibility with a local isolated test pair; latest tags alone do not establish compatibility.
-4. Define a least-privilege identity for background Kitsu file references and the storage root/Shared Drive at a later deployment boundary. No real credentials are needed for the local prototype.
-5. Review the worker service lifecycle and deployment packaging separately before any installation. No live installation, DB migration, Production change, merge, or release is approved by this design.
+## Local validation and release gates
 
-## Sources
+All development uses an isolated checkout, isolated Python env, isolated PostgreSQL, synthetic fixtures and the candidate exact host tags. Fake storage is the default. No real Kitsu/Drive credentials, browser profiles, Staging/Production resources, or external Drive writes are used.
 
-- Kitsu plugin development: https://dev.kitsu.cloud/kitsu-plugins/development.html
-- Kitsu plugin installation and uninstall behavior: https://dev.kitsu.cloud/kitsu-plugins/installation.html
-- Kitsu release history: https://github.com/cgwire/kitsu/releases
-- Zou package release history: https://pypi.org/project/zou/
-- Zou WorkingFile: https://github.com/cgwire/zou/blob/main/zou/app/models/working_file.py
-- Zou OutputFile: https://github.com/cgwire/zou/blob/main/zou/app/models/output_file.py
-- Google Drive Shared Drive support: https://developers.google.com/workspace/drive/api/guides/enable-shareddrives
-- Google Drive revisions and retention: https://developers.google.com/workspace/drive/api/guides/manage-revisions
-- Google Drive custom properties: https://developers.google.com/workspace/drive/api/guides/properties
+Before implementation approval, independent review must pass this corrected design and plan. Before production readiness, require:
+
+1. Exact `v1.0.70` / `v1.0.94` install, plugin page, auth and API integration pass in an isolated host; otherwise revise candidate pins.
+2. Fresh install, populated-data upgrade, failed install recovery, partial uninstall behavior and migration/restore rehearsals pass in disposable PostgreSQL. Installer success alone is insufficient.
+3. Auth matrix, context spoofing, object relationship checks, CSRF, authorization revocation and worker rechecks pass.
+4. Fake-adapter tests cover all provider failures; an explicitly authorized, isolated test account later verifies Google ID reservation, Shared Drive behavior, resumable upload, ambiguous responses, visibility and capabilities. No Production or shared Drive test.
+5. Concurrency tests cover folder reservations, job lease takeover/fencing, publish numbering, OutputFile collision and pointer monotonicity.
+6. Every publish checkpoint has a crash/lost-response recovery test. Changed/missing/inaccessible/deleted Drive artifacts are detected and blocked without auto-write.
+7. Backup/restore includes Zou DB, plugin package/migrations, staged bytes, published artifact bytes, manifests and deployment records; workers remain stopped until hash verification and read-only reconciliation pass.
+8. Frontend unit/static build and authenticated local host UI smoke checks pass. No GUI automation without separate explicit permission.
+9. Security review confirms no secrets in plugin DB, browser, manifests, fixtures or logs; no public sharing or destructive API surface.
+
+## Primary sources
+
+- [Kitsu plugin development](https://dev.kitsu.cloud/kitsu-plugins/development.html)
+- [Kitsu plugin installation and uninstall guide](https://dev.kitsu.cloud/kitsu-plugins/installation.html)
+- [Kitsu Web `v1.0.70` package lock](https://github.com/cgwire/kitsu/blob/v1.0.70/package-lock.json)
+- [Zou `v1.0.94` plugin lifecycle utility](https://github.com/cgwire/zou/blob/v1.0.94/zou/app/utils/plugins.py)
+- [Zou `v1.0.94` plugin install/uninstall service](https://github.com/cgwire/zou/blob/v1.0.94/zou/app/services/plugins_service.py)
+- [Zou `v1.0.94` plugin Alembic environment](https://github.com/cgwire/zou/blob/v1.0.94/zou/app/utils/plugin_alembic_template/env.py)
+- [Zou `v1.0.94` OutputFile model](https://github.com/cgwire/zou/blob/v1.0.94/zou/app/models/output_file.py)
+- [Zou `v1.0.94` WorkingFile model](https://github.com/cgwire/zou/blob/v1.0.94/zou/app/models/working_file.py)
+- [Google Drive `files.generateIds`](https://developers.google.com/workspace/drive/api/reference/rest/v3/files/generateIds)
+- [Google Drive create files and folders with pre-generated IDs](https://developers.google.com/workspace/drive/api/guides/create-file)
+- [Google Drive Shared Drive support](https://developers.google.com/workspace/drive/api/guides/enable-shareddrives)
+- [Google Drive revision retention](https://developers.google.com/workspace/drive/api/guides/manage-revisions)
+- [Google Drive permissions and sharing](https://developers.google.com/workspace/drive/api/guides/manage-sharing)
+- [Kitsu client JS upstream](https://github.com/cgwire/kitsu-client-js)
