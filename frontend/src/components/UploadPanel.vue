@@ -55,6 +55,7 @@ async function chooseFile(event) {
     emit('uploaded')
   } catch (error) {
     problem.value = error.message || 'The source file could not be staged.'
+    await loadWorking()
   } finally {
     busy.value = false
   }

@@ -8,7 +8,7 @@ const accessToken = process.env.VFX_FILES_LIVE_ACCESS_TOKEN
 
 test.skip(!host || !productionId || !taskId || !accessToken, 'Set the synthetic pinned-host integration environment to enable live workflow proof.')
 
-test('real browser upload reaches the pinned Zou API, worker and FakeStorage, then recovers on refresh', async ({ page, context }) => {
+test('real browser Working File upload reaches pinned Zou, worker and FakeStorage, then refreshes and downloads', async ({ page, context }) => {
   const pageUrl = new URL(process.env.VFX_FILES_LIVE_BASE_URL || 'http://127.0.0.1:62089/api/plugins/vfx_files/frontend/')
   if (!pageUrl.pathname.endsWith('/')) pageUrl.pathname += '/'
   const origin = pageUrl.origin
@@ -30,7 +30,7 @@ test('real browser upload reaches the pinned Zou API, worker and FakeStorage, th
   const fileBytes = Buffer.from('browser to Zou to worker to FakeStorage')
   const fileInput = page.locator('input[type="file"]')
   await fileInput.setInputFiles({ name: fileName, mimeType: 'video/quicktime', buffer: fileBytes })
-  await expect(page.getByText(/Source staged\. Job .* is queued/)).toBeVisible({ timeout: 15_000 })
+  await expect(page.getByText(/Working w\d+ reserved\. 1 transfer job\(s\) queued\./)).toBeVisible({ timeout: 15_000 })
 
   const workerOutput = execFileSync('docker', [
     'exec',
@@ -48,15 +48,18 @@ test('real browser upload reaches the pinned Zou API, worker and FakeStorage, th
   expect(workerOutput).toContain('"result": "completed"')
 
   await page.reload()
-  const completedFile = page.locator('.file-row[data-state="completed"]').filter({ hasText: fileName })
-  await expect(completedFile).toContainText(fileName)
-  await expect(completedFile).toContainText(String(fileBytes.length))
-  const overview = await page.evaluate(async (id) => {
-    const response = await fetch(`/api/plugins/vfx_files/overview?production_id=${encodeURIComponent(id)}`, { credentials: 'same-origin' })
+  await page.getByLabel('Choose Task').selectOption(taskId)
+  const completedFile = page.getByRole('link', { name: fileName, exact: true })
+  await expect(completedFile).toBeVisible()
+  await expect(page.getByText('Latest Working')).toBeVisible()
+  const downloadUrl = await completedFile.getAttribute('href')
+  const downloaded = await page.request.get(new URL(downloadUrl, page.url()).toString())
+  expect(downloaded.status()).toBe(200)
+  expect(await downloaded.body()).toEqual(fileBytes)
+  const revisions = await page.evaluate(async (id) => {
+    const response = await fetch(`/api/plugins/vfx_files/tasks/${encodeURIComponent(id)}/working-revisions`, { credentials: 'same-origin' })
     return response.json()
-  }, productionId)
-  const record = overview.files.find((item) => item.name === fileName)
-  expect(record).toMatchObject({ state: 'completed', size: fileBytes.length })
-  expect(record.provider_object_id).toBeTruthy()
-  expect(record.sha256).toBeTruthy()
+  }, taskId)
+  expect(revisions.latest_working_id).toBeTruthy()
+  expect(revisions.revisions[0]).toMatchObject({ state: 'completed', version_label: 'w001' })
 })
