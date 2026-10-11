@@ -4,9 +4,9 @@
 
 **Goal:** Implement the isolated VFX Files Zou plugin and fenced worker with durable file workflows, versioned publishes, explicit approvals, folder provisioning, and task handoff.
 
-**Architecture:** Keep all product code in an official Zou plugin with plugin-owned PostgreSQL tables and Alembic revisions. A separate process in the pinned Zou environment claims durable jobs and performs external I/O through a StorageAdapter; native WorkingFile/OutputFile access stays behind one compatibility adapter. The frontend is a standalone Vue/Vite build mounted as the official Production plugin page.
+**Architecture:** Keep all product code in an official Zou plugin with plugin-owned PostgreSQL tables and Alembic revisions. A separate process in the pinned Zou environment claims durable jobs and performs external I/O through a StorageAdapter; native WorkingFile/OutputFile access stays behind one compatibility adapter. The frontend is a standalone Vue/Vite build mounted as the official Production plugin page. It uses same-origin host cookies with plugin-signed CSRF proof, based on the pinned host configuration and integration tests.
 
-**Tech Stack:** Python in the exact pinned Zou runtime; Flask plugin routes; SQLAlchemy/Alembic; PostgreSQL; pytest; Vue 3 + Vite; Node/npm lockfile; Google Drive API v3 adapter; fake storage adapter. Exact framework/package versions and immutable `kitsu-client-js` commit are locked in Task 1 after the compatibility spike.
+**Tech Stack:** Python in the exact pinned Zou runtime; Flask plugin routes; SQLAlchemy/Alembic; PostgreSQL; pytest; Vue 3 + Vite; Node/npm lockfile; Google Drive API v3 adapter; fake storage adapter. Frontend uses same-origin host cookies without reading/storing tokens, plus a short-lived plugin CSRF proof; this was exercised against the pinned host.
 
 **Spec:** `docs/superpowers/specs/2026-10-11-vfx-kitsu-files-plugin-design.md`
 
@@ -45,15 +45,15 @@
 - Create: `frontend/src/kitsuClient.ts`
 
 **Interfaces:**
-- Produces `HostLock` fields `kitsu_tag`, `kitsu_commit`, `zou_tag`, `zou_commit`, `python_version`, `node_version`, `npm_version`, `vue_version`, `vite_version`, and `kitsu_client_ref`.
+- Produces `HostLock` fields `kitsu_tag`, `kitsu_commit`, `zou_tag`, `zou_commit`, `official_test_image_digest`, `python_version`, `node_version`, `npm_version`, `vue_version`, and `vite_version`.
 - Produces `createKitsuClient({ apiBase, getBearerToken }): KitsuApiClient` and a host compatibility test that confirms the plugin's JWT/API calls work on the exact isolated host pair.
 
 - [ ] **Step 1: Write failing compatibility and client-auth tests** named `test_candidate_host_pair_loads_plugin_context`, `test_plugin_api_client_uses_bearer_token`, and `test_lock_contains_immutable_refs`; assert the Production context IDs are parsed as untrusted strings and the client never stores a token.
 - [ ] **Step 2: Run the focused tests** with `pytest tests/compat -q`; expected: fail because the lock/client harness is absent.
 - [ ] **Step 3: Create an isolated host environment** from exact upstream `v1.0.70` and `v1.0.94` refs, record immutable commit SHAs and runtime versions, and test Zou plugin registration/auth route locally. No Production/Staging credentials or browser profile.
-- [ ] **Step 4: Pin frontend dependencies** in an npm lockfile and pin `kitsu-client-js` to an immutable commit only if its auth/API path passes; otherwise implement the minimal reviewed API wrapper in `kitsuClient.ts`. Never pin a branch name.
-- [ ] **Step 5: Run focused tests** with `pytest tests/compat -q` and `npm --prefix frontend ci && npm --prefix frontend run build`; expected: all pass on the pinned local host.
-- [ ] **Step 6: Commit** as `build: pin isolated Kitsu and Zou compatibility host`.
+- [x] **Step 4: Pin frontend dependencies** in an npm lockfile. The client SDK transport was not proven against this host, so use the minimal bearer-only API wrapper; no SDK dependency is included.
+- [x] **Step 5: Run focused tests** with `pytest tests/compat -q`, `npm --prefix frontend ci`, `npm --prefix frontend test`, and npm audit; tests pass, with zero production dependency vulnerabilities. The Vite build is deferred until Task 6 adds the application entry point.
+- [x] **Step 6: Commit** as `build: pin isolated Kitsu and Zou compatibility host` (`e49b885`).
 
 ### Task 2: Plugin shell, auth boundary, schema epoch and migrations
 
@@ -218,3 +218,20 @@
 ## Acceptance gates
 
 Implementation is not production-ready until every gate in the design's “Local validation and release gates” section is evidenced. In particular, exact Kitsu/Zou compatibility, Google folder pre-generated ID behavior, Google My Drive/Shared Drive capability behavior, backup of artifact bytes, and any production deployment configuration remain separate verification gates. No plan task authorizes deployment, live migration, real Drive writes, merge, or release.
+
+## Functional acceptance matrix
+
+Use the existing `pytest` + pinned disposable Zou/PostgreSQL host for API, authorization, persistence, migration and worker integration. Reuse Vitest for component/API-client behavior; add only the smallest browser runner needed for isolated browser workflows. Every end-to-end row must seed synthetic Kitsu/Zou records, sign in with a synthetic identity, drive the Production Files page in a fresh test browser context, exercise the real mounted plugin API and database, run the durable worker against FakeStorage, then assert persisted state and recovery behavior. Service mocks or a successful build can support a row but cannot pass it.
+
+| Workflow | Browser/UI action | Host API and permission proof | DB / worker / storage proof | Recovery and persisted result | Evidence status |
+| --- | --- | --- | --- | --- | --- |
+| Upload and resume | Choose Task, select file, interrupt/reload and resume | Real Zou upload route checks cookie, CSRF, Origin and Task scope; deny missing CSRF and cross-origin | Host PostgreSQL session/part/job rows and real filesystem staging are asserted; worker transfer to FakeStorage is not composed yet | Duplicate parts/finalize return the same recorded result; browser retry interaction is covered with deterministic endpoint fixture | **PASS** host upload-route/PostgreSQL/filesystem tests and browser fixture interaction; **NOT TESTED** real browser-to-worker flow; **BLOCKED** complete transfer/persisted Files-page recovery until worker composition is implemented |
+| Template folder provisioning and Drive binding | Select configured template/root and request provisioning | Production-scoped capability checks; unauthorized binding denied | Postgres binding keyed by stable Kitsu UUIDs; worker executes idempotently against FakeStorage | Inject lost create response, resolve by reserved provider ID and retry without duplicate; incomplete listing stays ambiguous | **PASS** Postgres binding + FakeStorage lost-response service test; **NOT TESTED** template import and full browser/API/worker flow; **BLOCKED** route-level provisioning until route and worker composition exist |
+| Publish, revision and QC | Publish staged source; inspect versions and pointers | Task/output-family authorization; deny unauthorized publish and native mutation | Concurrent version reservation is tested against Postgres; worker checks bytes, manifest and QC; fake provider artifact; Zou native revision adapter integration | Kill at each checkpoint; reconcile same immutable artifact; separate monotone Latest Published / Approved | **PASS** concurrent reservation + manifest/QC service tests; **NOT TESTED** native revision adapter integration; **BLOCKED** publish route, UI and worker artifact transfer until composed |
+| Approval and dependency pin | Approve exact publish; pin a dependency | Reviewer role, self-approval denial, exact manifest hash | Append-only approval/pin rows; published artifact unchanged | Revoke and derive prior active approval; pinned reference does not follow Latest | **PASS** Postgres service integration; **NOT TESTED** browser/API round-trip; **BLOCKED** complete flow until Publish integration is available |
+| Handoff | Recipient accepts or requests fixes with feedback | Only authorized recipient; invalid transition / missing feedback denied | Append-only handoff event; no Kitsu Task state or artifact mutation | Duplicate idempotency key returns same outcome; result remains after reload | **PASS** Postgres service tests and fixture browser reload test; **NOT TESTED** browser against real plugin API; **BLOCKED** authenticated end-to-end flow until route is integrated |
+| Failed jobs and resumable operations | Observe queued/failed/reconciling state; retry permitted work | Revoked permission blocks worker before external mutation | Postgres queue, lease generations and upload job persistence are tested; worker runner behavior currently uses injected queue/handlers | Stale lease cannot commit; ambiguous external outcome reconciles by reserved ID; no duplicate create | **PASS** queue/lease seam tests; **NOT TESTED** composed provider transfer and recovery; **BLOCKED** worker execution proof until production worker composition exists |
+
+Status vocabulary: **PASS** means the stated evidence passed at its named layer; **FAIL** means a test ran and demonstrated incorrect behavior; **BLOCKED** means a required integration boundary is not implemented or an external prerequisite is unavailable; **NOT TESTED** means no evidence was gathered for that specific behavior. A PASS at one layer never upgrades an end-to-end row whose other layers are blocked or untested.
+
+Acceptance is row-specific: record browser action, HTTP outcome, synthetic actor/role, relevant table state, worker lease generation, adapter call ledger, recovery action and final persisted state. Keep Google credentials optional and do not claim Google API execution from FakeStorage; validate My Drive and Shared Drive behavior separately before deployment.

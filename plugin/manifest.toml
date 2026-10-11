@@ -1,0 +1,9 @@
+id = "vfx_files"
+name = "VFX Files"
+description = "Production-scoped versioned files, publishes, approvals, and handoffs."
+version = "0.1.3"
+maintainer = "VFX Studio"
+license = "MIT"
+icon = "folder-open"
+frontend_studio_enabled = false
+frontend_project_enabled = true

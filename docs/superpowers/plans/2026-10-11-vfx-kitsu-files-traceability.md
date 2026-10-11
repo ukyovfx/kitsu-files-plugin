@@ -2,7 +2,7 @@
 
 **Design:** `docs/superpowers/specs/2026-10-11-vfx-kitsu-files-plugin-design.md`
 **Implementation plan:** `docs/superpowers/plans/2026-10-11-vfx-kitsu-files-plugin.md`
-**Status:** Corrected design; implementation has not started.
+**Status:** Design approved; isolated implementation in progress. Tasks 1, core Tasks 2/3/5 and the first Production page/API slice are implemented; migration rollback, publish integration, worker/provider execution and lifecycle gates remain open.
 
 | Audit finding | Corrected design location and disposition | Plan task(s) | Required proof / named tests |
 |---|---|---|---|

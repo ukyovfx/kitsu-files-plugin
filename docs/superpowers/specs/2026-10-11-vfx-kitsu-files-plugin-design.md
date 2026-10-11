@@ -1,6 +1,6 @@
 # VFX Studio Kitsu Files Plugin Design
 
-**Status:** Architecture approved with changes; design corrections and independent delta review complete, pending implementation approval.
+**Status:** Architecture approved; isolated implementation and validation in progress.
 **Date:** 2026-10-11
 **Audited base:** `e2788e0af2632630d2533785247c0509fd191035`
 
@@ -31,7 +31,7 @@ Zou `v1.0.94` runs plugin migrations through Alembic using version table `alembi
 ```text
 Kitsu Production menu
   └─ isolated Vue 3 + Vite Files page (official plugin static route)
-      └─ JWT-authenticated Zou plugin API (/api/plugins/vfx-files/...)
+      └─ authenticated Zou plugin API (/api/plugins/vfx_files/... through the official proxy)
           ├─ plugin_vfx_files_* PostgreSQL tables + Alembic history
           ├─ Kitsu file-reference adapter (WorkingFile / OutputFile)
           └─ durable jobs ← separate fenced worker
@@ -39,7 +39,7 @@ Kitsu Production menu
                               └─ QC / manifest / reconciliation services
 ```
 
-Use the official Production menu context (`production_id`, optional `episode_id`) only as an untrusted filter hint. Resolve and validate every referenced Production, Episode, Entity and Task from Zou on every request; never authorize from iframe query parameters. Use official static plugin routes and documented frontend constraints (`base: './'`, hash routing). Do not inject into or modify the Task drawer or review interface. Pin all frontend dependencies in the extension lockfile. The upstream `kitsu-client-js` has no published GitHub releases and current sample projects point at GitHub; Stage 0 must pin an immutable commit and prove auth/API compatibility, or use an audited minimal wrapper around Zou's supported API/JWT flow. Do not consume a moving branch in a release artifact.
+Use the official Production menu context (`production_id`, optional `episode_id`) only as an untrusted filter hint. Resolve and validate every referenced Production, Episode, Entity and Task from Zou on every request; never authorize from iframe query parameters. Use official static plugin routes and documented frontend constraints (`base: './'`). The page is a Production plugin (`frontend_project_enabled = true`), not a studio-wide sidebar tool; it does not inject into or modify the Task drawer or review interface. Pin all frontend dependencies in the extension lockfile. The pinned Kitsu/Zou host uses same-origin JWT cookies for the browser, so the minimal wrapper sends same-origin credentials, never reads or stores a token, and fetches a short-lived plugin CSRF token for each mutation. Mutations also require JSON or binary content type and an exact configured Origin. Bearer headers remain accepted by Zou but are not required by the page.
 
 The Kitsu file-reference adapter is the only component allowed to create or query core WorkingFile/OutputFile records. Zou `OutputFile` has an integer `revision` and a native uniqueness constraint over name, entity/asset instance, output type, task type, temporal entity, representation and revision. Several fields are nullable, so the plugin must not assume that this native constraint alone serializes all cases. `WorkingFile` likewise has its own revision namespace. Plugin Publish versions and their full SHA-256/64-bit byte counts remain plugin-owned and separate from both native revision fields.
 
@@ -78,7 +78,7 @@ All routes require a valid Zou JWT and resolve target UUID relationships server-
 | Folder provisioning, connection/root configuration, reconciliation override | Zou administrator or explicitly configured Production manager |
 | Worker execution | Re-check persisted actor permission and object relationship before each queued privileged stage; revoked, deleted or changed authorization moves job to `blocked_authorization` without external mutation |
 
-Mutations accept the same-origin Bearer JWT flow only after Stage 0 verifies the official plugin context/client behavior. Reject cookie-only mutation authentication. Validate `Origin`/`Referer` against the configured Kitsu origin for all mutations; if deployment uses cookies, require and validate an anti-CSRF token and SameSite cookie policy. Reject cross-origin requests and form/simple content types. Apply server-side rate limits and object-level authorization to download URLs; do not expose public links.
+Mutations use the host's same-origin JWT cookie or an explicit bearer header, plus a plugin-signed short-lived CSRF token bound to the authenticated person. Validate `Origin` against the configured Kitsu origin for all mutations and require the CSRF header; reject cross-origin requests and simple/form content types. The browser uses same-origin fetch credentials and never extracts the host cookie. Apply server-side rate limits and object-level authorization to download URLs; do not expose public links.
 
 ### Source ingestion
 

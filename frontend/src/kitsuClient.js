@@ -1,10 +1,10 @@
-/** Create a stateless client that reads the current host token for every call. */
+/** Create a stateless same-origin client; host cookies remain browser-managed. */
 export function createKitsuClient({ apiBase, getBearerToken, fetch: fetchImpl = globalThis.fetch }) {
   if (typeof apiBase !== 'string' || !apiBase.trim()) {
     throw new TypeError('A Kitsu API base URL is required')
   }
-  if (typeof getBearerToken !== 'function') {
-    throw new TypeError('A bearer token provider is required')
+  if (getBearerToken !== undefined && typeof getBearerToken !== 'function') {
+    throw new TypeError('A bearer token provider must be a function')
   }
   if (typeof fetchImpl !== 'function') {
     throw new TypeError('A fetch implementation is required')
@@ -14,22 +14,29 @@ export function createKitsuClient({ apiBase, getBearerToken, fetch: fetchImpl = 
 
   return {
     async request(method, path, options = {}) {
-      const token = getBearerToken()
-      if (typeof token !== 'string' || token.length === 0) {
-        throw new Error('A Kitsu bearer token is required')
-      }
-
       if (typeof path !== 'string' || path.length === 0 || /^[a-z][a-z\d+.-]*:/i.test(path)) {
         throw new TypeError('An API-relative path is required')
       }
 
-      const headers = new Headers(options.headers)
-      headers.set('Authorization', `Bearer ${token}`)
+      const { csrfToken, ...requestOptions } = options
+      const headers = new Headers(requestOptions.headers)
+      if (getBearerToken) {
+        const token = getBearerToken()
+        if (token !== null && token !== undefined && token !== '') {
+          if (typeof token !== 'string') throw new TypeError('A Kitsu bearer token must be a string')
+          headers.set('Authorization', `Bearer ${token}`)
+        }
+      }
+      const methodUpper = method.toUpperCase()
+      if (!['GET', 'HEAD', 'OPTIONS'].includes(methodUpper)) {
+        if (!csrfToken) throw new Error('A Kitsu Files CSRF token is required for mutations')
+        headers.set('X-VFX-Files-CSRF', csrfToken)
+      }
       return fetchImpl(`${base}/${path.replace(/^\/+/, '')}`, {
-        ...options,
-        method,
+        ...requestOptions,
+        method: methodUpper,
         headers,
-        credentials: 'omit'
+        credentials: 'same-origin'
       })
     },
     close() {}
@@ -41,6 +48,8 @@ export function parseProductionContext(search) {
   const params = new URLSearchParams(search.startsWith('?') ? search.slice(1) : search)
   return {
     productionId: params.get('production_id'),
-    episodeId: params.get('episode_id')
+    episodeId: params.get('episode_id'),
+    darkTheme: params.get('dark_theme') === 'true',
+    locale: params.get('locale')
   }
 }
