@@ -93,3 +93,25 @@ def test_working_snapshot_api_runs_real_worker_and_advances_latest(
     )
     assert downloaded.status_code == 200
     assert downloaded.data == data
+
+    duplicate_worker = subprocess.run(
+        [sys.executable, "-m", "plugin.worker_runtime", "--once"],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=os.environ.copy(),
+        timeout=30,
+    )
+    assert duplicate_worker.returncode == 0, duplicate_worker.stderr
+    assert json.loads(duplicate_worker.stdout.splitlines()[-1])["result"] == "idle"
+    storage_after_retry = PersistentFakeStorage(fake_state, root_id="synthetic-root-id")
+    assert sum(1 for item in storage_after_retry.objects.values() if item.size is not None) == 1
+    assert client.get(route).json["latest_working_id"] == reserved.json["id"]
+
+    stale_base = client.post(
+        route,
+        json={"base_revision_id": None, "files": [{"name": "stale.nk", "size": 3, "sha256": hashlib.sha256(b"old").hexdigest()}]},
+        headers={**headers, "Idempotency-Key": f"working:{uuid4()}"},
+    )
+    assert stale_base.status_code == 409
+    assert client.get(route).json["latest_working_id"] == reserved.json["id"]

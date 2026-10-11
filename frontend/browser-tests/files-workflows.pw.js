@@ -156,4 +156,6 @@ test('template setup stays disabled until activation and refreshes folder bindin
   bindingsReady = true
   await page.getByRole('button', { name: 'Refresh bindings' }).click()
   await expect(page.getByRole('link', { name: 'Open folder' })).toHaveCount(2)
+  await page.reload()
+  await expect(page.getByRole('link', { name: 'Open folder' })).toHaveCount(2)
 })

@@ -41,3 +41,19 @@ def authorize_task_mutation(actor, task_id, capability):
     if role == "user" and capability in ("upload", "publish", "handoff"):
         return permissions_service.check_working_on_task(str(task.id))
     return False
+
+
+def authorize_task_read(actor, task_id):
+    """Require current Production authority and assignment for Task content."""
+    from zou.app.models.task import Task
+    from zou.app.services import permissions_service
+
+    task = Task.query.filter_by(id=task_id).one_or_none()
+    if task is None:
+        return False
+    role = actor.project_role
+    if role in ("admin", "manager"):
+        return permissions_service.has_manager_project_access(str(task.project_id))
+    if role in ("supervisor", "user"):
+        return permissions_service.check_working_on_task(str(task.id))
+    return False

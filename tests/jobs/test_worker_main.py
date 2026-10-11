@@ -4,11 +4,11 @@ import pytest
 
 pytest.importorskip("vfx_files")
 
-from plugin.jobs.queue import JobResult, LeasedJob
-from plugin.compat import SCHEMA_EPOCH, WORKER_BUILD
-from plugin.storage.base import AmbiguousOutcome
-from worker.leases import WorkerContext
-from worker.main import WorkerRuntime, process_one
+from vfx_files.plugin.jobs.queue import JobResult, LeasedJob
+from vfx_files.plugin.compat import SCHEMA_EPOCH, WORKER_BUILD
+from vfx_files.plugin.storage.base import AmbiguousOutcome
+from vfx_files.plugin.worker.leases import WorkerContext
+from vfx_files.plugin.worker.main import WorkerRuntime, process_one
 
 
 class Queue:

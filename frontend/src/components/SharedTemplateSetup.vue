@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 
 const props = defineProps({ productionId: { type: String, required: true }, tasks: { type: Array, default: () => [] }, api: { type: Object, required: true } })
 const hidden = ref(false)
@@ -15,6 +15,7 @@ const configuration = ref(null)
 const taskId = ref('')
 const folderResult = ref(null)
 const statusText = ref('')
+const selectedTaskStorageKey = computed(() => `vfx-files:shared-template-task:${props.productionId}`)
 
 function flatten(node, depth = 0, rows = []) {
   rows.push({ id: node.folder_id, name: node.name, depth })
@@ -40,6 +41,12 @@ async function loadConfiguration() {
       selectedTemplateId.value = current.template_folder_id
       mappings.value = { ...current.role_mappings }
       candidates.value = [current.template_tree]
+      const savedTaskId = window.sessionStorage.getItem(selectedTaskStorageKey.value)
+      if (savedTaskId && props.tasks.some((task) => task.id === savedTaskId)) {
+        expanded.value = true
+        taskId.value = savedTaskId
+        folderResult.value = await props.api.getTaskSharedFolders(props.productionId, savedTaskId)
+      }
     }
   } catch (cause) {
     if (cause.status === 403) hidden.value = true
@@ -48,6 +55,11 @@ async function loadConfiguration() {
     loading.value = false
   }
 }
+
+watch(taskId, (value) => {
+  if (value) window.sessionStorage.setItem(selectedTaskStorageKey.value, value)
+  else window.sessionStorage.removeItem(selectedTaskStorageKey.value)
+})
 
 async function discover() {
   busy.value = true

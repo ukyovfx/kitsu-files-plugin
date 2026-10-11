@@ -398,6 +398,9 @@ class TaskWorkingRevisions(MethodView):
             actor = _request_actor(str(task.project_id))
             scope = _resolve_scope(actor, str(task.project_id), str(parsed_task_id))
             authorize(actor, Capability.READ, scope)
+            from .compat import authorize_task_read
+            if not authorize_task_read(actor, task.id):
+                abort(403)
             revisions = WorkingRevision.query.filter_by(task_id=parsed_task_id).order_by(WorkingRevision.version.desc()).limit(100).all()
             pointer = LatestWorkingPointer.query.filter_by(task_id=parsed_task_id).one_or_none()
         except (PermissionDenied, NotFound):
@@ -475,6 +478,9 @@ class WorkingFileDownload(MethodView):
             actor = _request_actor(str(revision.production_id))
             scope = _resolve_scope(actor, str(revision.production_id), str(revision.task_id))
             authorize(actor, Capability.READ, scope)
+            from .compat import authorize_task_read
+            if not authorize_task_read(actor, revision.task_id):
+                abort(403)
             connection = StorageConnection.query.filter_by(production_id=revision.production_id, enabled=True).one_or_none()
             if connection is None or not file_row.provider_object_id:
                 abort(404)
