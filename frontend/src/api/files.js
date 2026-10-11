@@ -45,7 +45,7 @@ export function createFilesApi(client) {
       if (!session) {
         session = await readJson(await mutation('POST', `${ROOT}/tasks/${encodeURIComponent(taskId)}/uploads`, {
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ size: file.size, sha256: fileHash })
+          body: JSON.stringify({ size: file.size, sha256: fileHash, file_name: file.name })
         }))
       }
       let status = await readJson(await client.request('GET', `${ROOT}/uploads/${encodeURIComponent(session.id)}`))

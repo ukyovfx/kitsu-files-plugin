@@ -6,6 +6,7 @@ const props = defineProps({
   tasks: { type: Array, default: () => [] },
   api: { type: Object, required: true }
 })
+const emit = defineEmits(['uploaded'])
 const taskId = ref('')
 const busy = ref(false)
 const progress = ref(0)
@@ -27,6 +28,7 @@ async function chooseFile(event) {
     })
     progress.value = 1
     message.value = `Source staged. Job ${result.job_id} is queued; publishing remains a separate step.`
+    emit('uploaded')
   } catch (error) {
     problem.value = error.message || 'The source file could not be staged.'
   } finally {

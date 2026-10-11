@@ -12,7 +12,7 @@ function json(route, body, status = 200) {
 
 async function openFiles(page) {
   await page.goto(`/?production_id=${productionId}`)
-  await expect(page.getByRole('heading', { name: 'Files', exact: true })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Files', level: 1, exact: true })).toBeVisible()
 }
 
 test('upload resumes after a deterministic part-transfer failure and finalizes once', async ({ page }) => {

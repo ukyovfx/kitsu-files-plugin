@@ -4,7 +4,7 @@ import io
 import pytest
 
 from plugin.storage.base import AlreadyExists, AmbiguousOutcome
-from plugin.storage.fake import FakeStorage, MemoryStaging
+from plugin.storage.fake import FakeStorage, MemoryStaging, PersistentFakeStorage
 from plugin.uploads.staging import FileSystemStaging
 
 
@@ -61,3 +61,19 @@ def test_filesystem_staging_rejects_traversal_and_cleans_only_one_session(tmp_pa
     assert (tmp_path / other_key).read_bytes() == b"other"
     with pytest.raises(ValueError):
         staging.open("../../outside")
+
+
+def test_persistent_fake_storage_readback_survives_worker_process_restart(tmp_path):
+    state_path = tmp_path / "fake-provider" / "state.json"
+    first_process = PersistentFakeStorage(state_path, root_id="test-root")
+    provider_id = first_process.reserve_id("upload:stable-kitsu-upload-id")
+    data = b"verified fake provider bytes"
+    digest = hashlib.sha256(data).hexdigest()
+    first_process.fail_upload_after_write = True
+    with pytest.raises(AmbiguousOutcome):
+        first_process.upload(io.BytesIO(data), provider_id, len(data), digest, "test-root")
+
+    second_process = PersistentFakeStorage(state_path, root_id="test-root")
+    assert second_process.get(provider_id).size == len(data)
+    assert second_process.verify(provider_id, len(data), digest)
+    assert second_process.reserve_id("upload:stable-kitsu-upload-id") == provider_id

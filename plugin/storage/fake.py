@@ -2,8 +2,12 @@
 
 import hashlib
 import io
+import json
+import os
+import re
 from threading import Lock
 from uuid import uuid4
+from pathlib import Path
 
 from .base import (
     AlreadyExists,
@@ -88,6 +92,101 @@ class FakeStorage:
             if current is None:
                 break
         raise PermissionError("Target parent is not beneath the allowed root")
+
+
+class PersistentFakeStorage(FakeStorage):
+    """Disk-backed FakeStorage for disposable process-level integration tests."""
+
+    def __init__(self, state_path, *, root_id="fake-root", drive_id=None):
+        self.state_path = Path(state_path).resolve()
+        self.state_path.parent.mkdir(parents=True, exist_ok=True)
+        self.blob_dir = self.state_path.parent / (self.state_path.stem + "-objects")
+        self.blob_dir.mkdir(parents=True, exist_ok=True)
+        super().__init__(root_id=root_id, drive_id=drive_id)
+        if self.state_path.exists():
+            data = json.loads(self.state_path.read_text(encoding="utf-8"))
+            self.reservations.update(data.get("reservations", {}))
+            for value in data.get("objects", []):
+                item = StorageObject(**value)
+                self.objects[item.object_id] = item
+                if item.size is not None:
+                    blob = self._blob_path(item.object_id)
+                    if not blob.exists() or blob.stat().st_size != item.size:
+                        raise ValueError("Persistent fake storage object bytes are missing")
+                    if hashlib.sha256(blob.read_bytes()).hexdigest() != item.sha256:
+                        raise ValueError("Persistent fake storage object checksum mismatch")
+        else:
+            self._persist()
+
+    def _blob_path(self, object_id):
+        safe_name = hashlib.sha256(object_id.encode("utf-8")).hexdigest()
+        return self.blob_dir / safe_name
+
+    def _persist(self):
+        data = {
+            "reservations": self.reservations,
+            "objects": [
+                {
+                    "object_id": item.object_id,
+                    "parent_id": item.parent_id,
+                    "size": item.size,
+                    "sha256": item.sha256,
+                    "drive_id": item.drive_id,
+                    "mime_type": item.mime_type,
+                    "trashed": item.trashed,
+                }
+                for item in self.objects.values()
+            ],
+        }
+        temp_path = self.state_path.with_suffix(self.state_path.suffix + ".tmp")
+        temp_path.write_text(json.dumps(data, sort_keys=True), encoding="utf-8")
+        os.replace(temp_path, self.state_path)
+
+    def reserve_id(self, scope_key):
+        value = super().reserve_id(scope_key)
+        self._persist()
+        return value
+
+    def create_folder(self, parent_id, reserved_id, correlation):
+        try:
+            return super().create_folder(parent_id, reserved_id, correlation)
+        finally:
+            self._persist()
+
+    def upload(self, source, reserved_id, size, sha256, parent_id):
+        body = source.read()
+        existing = self.get(reserved_id)
+        if existing is not None:
+            if self.verify(reserved_id, size, sha256) and existing.parent_id == parent_id:
+                return existing
+            raise AlreadyExists(reserved_id)
+        try:
+            result = super().upload(io.BytesIO(body), reserved_id, size, sha256, parent_id)
+        except AmbiguousOutcome:
+            obj = self.get(reserved_id)
+            if obj is not None and obj.size == size:
+                self._write_blob(reserved_id, body)
+            self._persist()
+            raise
+        self._write_blob(reserved_id, body)
+        self._persist()
+        return result
+
+    def _write_blob(self, object_id, body):
+        path = self._blob_path(object_id)
+        temp_path = path.with_suffix(".tmp")
+        temp_path.write_bytes(body)
+        os.replace(temp_path, path)
+
+    def get(self, object_id):
+        return self.objects.get(object_id)
+
+    def verify(self, object_id, size, sha256):
+        obj = self.get(object_id)
+        if not obj or obj.size != size or obj.sha256 != sha256:
+            return False
+        path = self._blob_path(object_id)
+        return path.exists() and path.stat().st_size == size and hashlib.sha256(path.read_bytes()).hexdigest() == sha256
 
 
 class MemoryStaging:

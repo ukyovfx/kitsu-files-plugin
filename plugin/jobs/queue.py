@@ -79,7 +79,7 @@ class PostgresJobQueue:
             return result.rowcount == 1
 
     def complete_job(self, job_id: UUID, worker_id: UUID, generation: int, result: JobResult) -> bool:
-        from ..models import Job
+        from ..models import Job, UploadSession
 
         if result.external_mutation and not (result.provider_object_id and result.byte_count is not None and result.sha256):
             raise ValueError("External mutation completion requires verified provider ID, byte count and SHA-256")
@@ -101,7 +101,37 @@ class PostgresJobQueue:
                 Job.lease_generation == generation,
                 Job.lease_expires_at > func.now(),
             ).values(**update_values)
-            return session.execute(update_stmt).rowcount == 1
+            if session.execute(update_stmt).rowcount != 1:
+                return False
+            job = session.get(Job, job_id)
+            upload_id = job.payload.get("upload_session_id") if job.job_type == "publish_source" else None
+            if upload_id:
+                upload = session.scalar(
+                    select(UploadSession).where(UploadSession.id == upload_id).with_for_update()
+                )
+                if upload is not None:
+                    if result.state == "completed":
+                        if not (result.external_mutation and result.provider_object_id and result.byte_count is not None and result.sha256):
+                            raise ValueError("Completed upload requires verified provider evidence")
+                        if (
+                            result.provider_object_id != upload.provider_object_id
+                            or result.byte_count != upload.expected_size
+                            or result.sha256 != upload.expected_sha256
+                        ):
+                            raise ValueError("Completed upload evidence does not match its reserved identity and source")
+                        upload.state = "completed"
+                        upload.provider_object_id = result.provider_object_id
+                        upload.provider_size = result.byte_count
+                        upload.provider_sha256 = result.sha256
+                        upload.transferred_at = func.now()
+                        upload.failure_code = None
+                    elif result.state == "reconcile_required":
+                        upload.state = "reconcile_required"
+                        upload.failure_code = result.error_code
+                    elif result.state == "failed":
+                        upload.state = "failed"
+                        upload.failure_code = result.error_code
+            return True
 
     def fail_exhausted(self) -> int:
         from ..models import Job

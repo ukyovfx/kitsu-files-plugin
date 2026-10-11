@@ -62,9 +62,11 @@ class UploadService:
         self.max_chunk_bytes = max_chunk_bytes
         self.ttl_hours = ttl_hours
 
-    def create_upload(self, *, task_id: UUID, actor_id: UUID, storage_connection_id: UUID, size: int, sha256_hex: str) -> UploadCreated:
+    def create_upload(self, *, task_id: UUID, actor_id: UUID, storage_connection_id: UUID, size: int, sha256_hex: str, file_name: str = "unnamed") -> UploadCreated:
         if size <= 0 or not SHA256_RE.fullmatch(sha256_hex):
             raise ValueError("Upload size and expected SHA-256 are required")
+        if not file_name or len(file_name) > 512 or any(ord(char) < 32 for char in file_name) or "/" in file_name or "\\" in file_name:
+            raise ValueError("Upload file name is invalid")
         session_id = uuid4()
         with self.session_factory.begin() as session:
             connection = session.scalar(
@@ -81,6 +83,7 @@ class UploadService:
                 task_id=task_id,
                 actor_id=actor_id,
                 storage_connection_id=storage_connection_id,
+                file_name=file_name,
                 expected_size=size,
                 expected_sha256=sha256_hex,
                 received_size=0,
@@ -153,7 +156,7 @@ class UploadService:
             if upload is None or upload.actor_id != actor_id:
                 raise UploadDenied("Upload session is unavailable")
             job_key = f"upload-finalize:{session_id}"
-            if upload.state == "staged":
+            if upload.state in ("staged", "transferring", "completed", "reconcile_required"):
                 job = session.scalar(select(Job).where(Job.idempotency_key == job_key))
                 return UploadJobReceipt(job.id, job.state) if job else None
             if upload.expires_at <= session.scalar(select(func.now())):

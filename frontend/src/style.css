@@ -46,6 +46,13 @@ h2 { font-size: 17px; letter-spacing: -.02em; }
 .upload-result, .upload-error, .upload-disabled { flex-basis: 100%; color: var(--muted); font-size: 10px; line-height: 1.5; }
 .upload-result { color: #8fdbca; }
 .upload-error { color: #ffb6a7; }
+.files-list { margin: 24px 0; padding: 22px 26px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); }
+.files-list h2 { margin: 4px 0 0; font-size: 19px; }
+.file-rows { margin: 16px 0 0; padding: 0; list-style: none; }
+.file-row { display: grid; grid-template-columns: minmax(160px, 2fr) minmax(110px, 1fr) minmax(180px, 2fr); gap: 16px; padding: 13px 0; border-top: 1px solid var(--line); align-items: center; }
+.file-name { overflow-wrap: anywhere; font-weight: 600; }
+.file-state { color: var(--muted); text-transform: capitalize; }
+.file-evidence { color: var(--muted); font-family: var(--mono); font-size: 11px; }
 .content-grid { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(320px, .9fr); gap: 14px; margin-top: 14px; }
 .panel { min-width: 0; border: 1px solid var(--border); border-radius: 13px; background: var(--panel); }
 .panel-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 17px 18px 14px; }

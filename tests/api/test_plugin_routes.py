@@ -188,3 +188,28 @@ def test_cookie_mutation_requires_plugin_csrf_and_same_origin(authenticated_plug
         headers={"Origin": "https://attacker.test", "X-VFX-Files-CSRF": token},
     )
     assert cross_origin.status_code == 403
+
+
+def test_environment_worker_and_staging_settings_enable_production_uploads(
+    authenticated_plugin_client, synthetic_upload_task, tmp_path, monkeypatch
+):
+    client = authenticated_plugin_client
+    production_id, _entity_type, _task_type, _entity, task_id, _connection, _actor = synthetic_upload_task
+    app = client.vfx_app
+    app.config.pop("VFX_FILES_WORKER_ENABLED", None)
+    app.config.pop("VFX_FILES_STAGING_ROOT", None)
+    monkeypatch.setenv("VFX_FILES_WORKER_ENABLED", "true")
+    monkeypatch.setenv("VFX_FILES_STAGING_ROOT", str(tmp_path))
+
+    overview = client.get(f"/plugins/vfx_files/overview?production_id={production_id}")
+    assert overview.status_code == 200
+    assert overview.json["upload_ready"] is True
+
+    token = client.get("/plugins/vfx_files/csrf-token").json["csrf_token"]
+    created = client.post(
+        f"/plugins/vfx_files/tasks/{task_id}/uploads",
+        json={"size": 4, "sha256": hashlib.sha256(b"test").hexdigest(), "file_name": "test.mov"},
+        headers={"Origin": "https://kitsu.test", "X-VFX-Files-CSRF": token},
+    )
+    assert created.status_code == 201
+    assert created.json["id"]
