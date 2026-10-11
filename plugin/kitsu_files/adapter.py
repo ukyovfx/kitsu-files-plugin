@@ -2,6 +2,7 @@
 
 from contextlib import contextmanager
 from dataclasses import dataclass
+import os
 
 from sqlalchemy import text
 
@@ -53,6 +54,11 @@ class ZouOutputFileAdapter:
                     extension=mapping["extension"],
                     file_status_id=mapping["file_status_id"],
                 )
+                if (
+                    os.environ.get("VFX_FILES_STORAGE_MODE") == "fake"
+                    and os.environ.get("VFX_FILES_FAKE_CRASH_AFTER_NATIVE_OUTPUT_PUBLISH_ID") == str(permit.publish_id)
+                ):
+                    os._exit(87)
             except Exception as exc:
                 # The caller has already consumed the database permit. Never retry here.
                 raise NativeCreateAmbiguous("Zou OutputFile create outcome requires reconciliation") from exc

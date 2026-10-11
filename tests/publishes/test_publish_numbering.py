@@ -9,6 +9,7 @@ pytest.importorskip("sqlalchemy")
 from sqlalchemy import select
 
 from plugin.models import OutputFamilyMapping, Publish, PublishPointer
+from plugin.publishes.checkpoints import advance_latest_published
 from plugin.publishes.service import reserve_publish
 
 
@@ -76,3 +77,26 @@ def test_concurrent_publish_reservations_are_unique_and_monotone(publish_scope):
         pointer = session.get(PublishPointer, (task_id, family_id))
         assert pointer.latest_published_id is None
         assert pointer.latest_approved_id is None
+
+
+def test_late_completion_of_older_publish_cannot_move_latest_pointer_backwards(publish_scope):
+    factory, task_id, family_id, _production_id, _entity_id, _task_type_id, _entity_type_id = publish_scope
+    older_id, newer_id = uuid4(), uuid4()
+    with factory.begin() as session:
+        session.add_all([
+            Publish(
+                id=older_id, task_id=task_id, output_family_id=family_id, version=1,
+                created_by=uuid4(), state="completed", qc_state="passed",
+            ),
+            Publish(
+                id=newer_id, task_id=task_id, output_family_id=family_id, version=2,
+                created_by=uuid4(), state="completed", qc_state="passed",
+            ),
+        ])
+
+    advance_latest_published(factory, newer_id)
+    advance_latest_published(factory, older_id)
+
+    with factory() as session:
+        pointer = session.get(PublishPointer, (task_id, family_id))
+        assert pointer.latest_published_id == newer_id

@@ -55,8 +55,8 @@ def test_upload_worker_recovers_after_process_dies_post_transfer(
         "VFX_FILES_STAGING_ROOT": str(tmp_path),
         "VFX_FILES_FAKE_STORAGE_ROOT": str(tmp_path / "fake-storage" / "state.json"),
         "VFX_FILES_FAKE_ROOT_ID": "synthetic-root-id",
-        "VFX_FILES_TEST_PLUGIN_FOLDER": "/opt/zou/plugins",
-        "PYTHONPATH": "/opt/zou/plugins",
+        "VFX_FILES_TEST_PLUGIN_FOLDER": os.environ.get("VFX_FILES_TEST_PLUGIN_FOLDER", "/opt/zou/plugins"),
+        "PYTHONPATH": os.environ.get("PYTHONPATH", "/opt/zou/plugins"),
     })
     crashed = subprocess.run(
         [sys.executable, "/tmp/vfx-kitsu-test-root/tests/e2e/crash_worker_after_provider_write.py"],

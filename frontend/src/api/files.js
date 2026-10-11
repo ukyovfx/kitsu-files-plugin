@@ -1,4 +1,6 @@
 const ROOT = 'plugins/vfx_files'
+const REVIEW_POLICY_ID = 'files-page-review-v1'
+const REVIEW_POLICY = 'supervisor approval requires a completed qc-passed publish and a reviewer distinct from its publisher'
 import { sha256 } from '@noble/hashes/sha2.js'
 import { bytesToHex } from '@noble/hashes/utils.js'
 
@@ -78,6 +80,40 @@ export function createFilesApi(client) {
     async listTaskWorkingRevisions(taskId) {
       if (!taskId) throw new TypeError('A Task ID is required')
       return readJson(await client.request('GET', `${ROOT}/tasks/${encodeURIComponent(taskId)}/working-revisions`))
+    },
+
+    async getTaskPublishOptions(taskId) {
+      if (!taskId) throw new TypeError('A Task ID is required')
+      return readJson(await client.request('GET', `${ROOT}/tasks/${encodeURIComponent(taskId)}/publish-options`))
+    },
+
+    async listOutputFamilies(productionId) {
+      if (!productionId) throw new TypeError('A Production ID is required')
+      return readJson(await client.request('GET', `${ROOT}/productions/${encodeURIComponent(productionId)}/output-families`))
+    },
+
+    async createPublish(taskId, outputFamilyId, sourceRevisionFileId) {
+      if (!taskId || !outputFamilyId || !sourceRevisionFileId) throw new TypeError('A Task, output family and completed Working File are required')
+      return readJson(await mutation('POST', `${ROOT}/tasks/${encodeURIComponent(taskId)}/publishes`, {
+        headers: { 'Content-Type': 'application/json', 'Idempotency-Key': `publish:${crypto.randomUUID()}` },
+        body: JSON.stringify({ output_family_id: outputFamilyId, source_revision_file_id: sourceRevisionFileId })
+      }))
+    },
+
+    async approvePublish(publishId) {
+      if (!publishId) throw new TypeError('A Publish ID is required')
+      return readJson(await mutation('POST', `${ROOT}/publishes/${encodeURIComponent(publishId)}/approvals`, {
+        headers: { 'Content-Type': 'application/json', 'Idempotency-Key': `approval:${crypto.randomUUID()}` },
+        body: JSON.stringify({ policy_id: REVIEW_POLICY_ID, policy_sha256: bytesToHex(sha256(new TextEncoder().encode(REVIEW_POLICY))) })
+      }))
+    },
+
+    async createHandoff(publishId, recipientId) {
+      if (!publishId || !recipientId) throw new TypeError('A Publish and recipient are required')
+      return readJson(await mutation('POST', `${ROOT}/publishes/${encodeURIComponent(publishId)}/handoffs`, {
+        headers: { 'Content-Type': 'application/json', 'Idempotency-Key': `handoff:${crypto.randomUUID()}` },
+        body: JSON.stringify({ recipient_id: recipientId })
+      }))
     },
 
     workingFileDownloadUrl(fileId) {

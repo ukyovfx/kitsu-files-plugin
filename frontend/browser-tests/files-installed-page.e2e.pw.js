@@ -7,8 +7,10 @@ const taskId = process.env.VFX_FILES_LIVE_TASK_ID
 const managerToken = process.env.VFX_FILES_LIVE_MANAGER_TOKEN
 const artistAToken = process.env.VFX_FILES_LIVE_ARTIST_A_TOKEN
 const artistBToken = process.env.VFX_FILES_LIVE_ARTIST_B_TOKEN
+const supervisorToken = process.env.VFX_FILES_LIVE_SUPERVISOR_TOKEN
+const artistAId = process.env.VFX_FILES_LIVE_ARTIST_A_ID
 
-test.skip(!host || !productionId || !taskId || !managerToken || !artistAToken || !artistBToken, 'Requires synthetic identities on the pinned disposable Zou host.')
+test.skip(!host || !productionId || !taskId || !managerToken || !artistAToken || !artistBToken || !supervisorToken || !artistAId, 'Requires synthetic identities on the pinned disposable Zou host.')
 
 const baseUrl = process.env.VFX_FILES_LIVE_BASE_URL || 'http://127.0.0.1:55253/api/plugins/vfx_files/frontend/index.html'
 const cookieName = process.env.VFX_FILES_LIVE_COOKIE_NAME || 'access_token_cookie'
@@ -24,6 +26,12 @@ async function openFiles(browser, token) {
   expect(overviewResponse.status(), await overviewResponse.text()).toBe(200)
   await expect(page.getByRole('heading', { name: 'Files', level: 1, exact: true })).toBeVisible()
   return { context, page }
+}
+
+async function readOverview(page, productionId) {
+  const response = await page.request.get(`${new URL(baseUrl).origin}/api/plugins/vfx_files/overview?production_id=${encodeURIComponent(productionId)}`)
+  if (response.status() !== 200) throw new Error(`Overview API returned ${response.status()}: ${await response.text()}`)
+  return response.json()
 }
 
 function runWorker() {
@@ -109,7 +117,54 @@ test('installed Files page provisions folders and carries w001 through Artist B 
     expect(await response.body()).toEqual(bytes)
   }
 
+  await artistB.page.getByLabel('Publish Task').selectOption(taskId)
+  await artistB.page.getByLabel('Completed Working File').selectOption({ label: `w002 · ${name002}` })
+  await artistB.page.getByLabel('Output family').selectOption({ label: 'Synthetic Main' })
+  await artistB.page.getByRole('button', { name: 'Publish Working File' }).click()
+  await expect(artistB.page.getByRole('status').filter({ hasText: /Publish v001 queued/ })).toBeVisible()
+  runWorker()
+  await artistB.page.reload()
+  let overview = await readOverview(artistB.page, productionId)
+  const publish = overview.publishes.find((row) => row.task_id === taskId)
+  expect(publish).toMatchObject({ state: 'completed', qc_state: 'passed', latest_published: true })
+  expect(publish.manifest).toMatchObject({ publish_id: publish.id, task_id: taskId, source_revision_file_id: expect.any(String) })
+  expect(publish.manifest.artifact).toMatchObject({ provider_object_id: publish.provider_artifact_id, byte_count: bytes002.length })
+  expect(publish.native_output_file_id).toBeTruthy()
+  await expect(artistB.page.getByRole('link', { name: 'Open artifact' })).toBeVisible()
+
+  const unauthorizedCsrf = await artistA.page.evaluate(async () => (await (await fetch('/api/plugins/vfx_files/csrf-token', { credentials: 'same-origin' })).json()).csrf_token)
+  const unauthorizedApproval = await artistA.page.request.post(`${new URL(baseUrl).origin}/api/plugins/vfx_files/publishes/${publish.id}/approvals`, {
+    headers: { Origin: new URL(baseUrl).origin, 'X-VFX-Files-CSRF': unauthorizedCsrf, 'Idempotency-Key': `denied-approval-${publish.id}` },
+    data: { policy_id: 'files-page-review-v1', policy_sha256: '9a3d8d0e6a4d690ad97f6f6a7fcfae135c7fc2e0bd23a5e5e5bf30a55a3d93c1' }
+  })
+  expect(unauthorizedApproval.status()).toBe(403)
+
+  const supervisor = await openFiles(browser, supervisorToken)
+  await supervisor.page.getByLabel('Publish Task').selectOption(taskId)
+  await expect(supervisor.page.getByRole('button', { name: 'Approve exact Publish' })).toBeVisible()
+  await supervisor.page.getByRole('button', { name: 'Approve exact Publish' }).click()
+  await expect(supervisor.page.getByRole('button', { name: 'Approved' })).toBeVisible()
+  await supervisor.page.reload()
+  overview = await readOverview(supervisor.page, productionId)
+  expect(overview.publishes.find((row) => row.id === publish.id)).toMatchObject({ latest_published: true, latest_approved: true })
+
+  await artistB.page.getByLabel('Publish Task').selectOption(taskId)
+  await expect(artistB.page.getByLabel('Handoff Publish')).toBeVisible()
+  await artistB.page.getByLabel('Handoff Publish').selectOption(publish.id)
+  await artistB.page.getByLabel('Handoff recipient').selectOption(artistAId)
+  await artistB.page.getByRole('button', { name: 'Create Handoff' }).click()
+  await expect(artistB.page.getByRole('status').filter({ hasText: /Handoff pending/ })).toBeVisible()
+  await artistA.page.reload()
+  const incomingHandoff = artistA.page.getByRole('region', { name: 'Awaiting your response' }).getByRole('article').filter({ hasText: publish.id })
+  await expect(incomingHandoff).toBeVisible()
+  await artistA.page.getByRole('button', { name: 'Accept' }).click()
+  await expect(artistA.page.getByText('accepted', { exact: true })).toBeVisible()
+  await artistA.page.reload()
+  overview = await readOverview(artistA.page, productionId)
+  expect(overview.handoffs.find((item) => item.publish_id === publish.id)).toMatchObject({ state: 'accepted', recipient_id: artistAId })
+
   await manager.context.close()
   await artistA.context.close()
   await artistB.context.close()
+  await supervisor.context.close()
 })

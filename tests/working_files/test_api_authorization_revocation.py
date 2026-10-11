@@ -139,8 +139,8 @@ def test_authorization_revocation_blocks_download_of_completed_working_file(
             "VFX_FILES_STAGING_ROOT": str(tmp_path),
             "VFX_FILES_FAKE_STORAGE_ROOT": str(tmp_path / "revocation-fake-storage.json"),
             "VFX_FILES_FAKE_ROOT_ID": "synthetic-root-id",
-            "VFX_FILES_TEST_PLUGIN_FOLDER": "/opt/zou/plugins",
-            "PYTHONPATH": "/opt/zou/plugins",
+            "VFX_FILES_TEST_PLUGIN_FOLDER": os.environ.get("VFX_FILES_TEST_PLUGIN_FOLDER", "/opt/zou/plugins"),
+            "PYTHONPATH": os.environ.get("PYTHONPATH", "/opt/zou/plugins"),
         })
         monkeypatch.setenv("VFX_FILES_ENABLED", "true")
         monkeypatch.setenv("VFX_FILES_STORAGE_MODE", "fake")

@@ -1,5 +1,6 @@
 """Official Zou plugin routes using host cookies and same-origin CSRF proof."""
 
+import json
 import os
 import tempfile
 from uuid import UUID
@@ -307,6 +308,46 @@ class TaskPublishes(MethodView):
         return {"id": str(result.id), "version": result.version, "state": result.state}, 202
 
 
+class TaskPublishOptions(MethodView):
+    @jwt_required()
+    def get(self, task_id):
+        _require_enabled()
+        _assert_compatible()
+        try:
+            parsed_task_id = UUID(str(task_id))
+            from zou.app.models.task import Task, TaskPersonLink
+            from zou.app.models.person import Person
+            from .models import OutputFamilyMapping
+            task = Task.query.filter_by(id=parsed_task_id).one_or_none()
+            if task is None:
+                abort(404)
+            actor = _request_actor(str(task.project_id))
+            scope = _resolve_scope(actor, str(task.project_id), str(task.id))
+            authorize(actor, Capability.READ, scope)
+            from .compat import authorize_task_read
+            if not authorize_task_read(actor, task.id):
+                abort(403)
+            families = OutputFamilyMapping.query.filter_by(
+                production_id=task.project_id, task_type_id=task.task_type_id, enabled=True
+            ).order_by(OutputFamilyMapping.family_key).all()
+            assignees = (
+                Person.query.join(TaskPersonLink, TaskPersonLink.person_id == Person.id)
+                .filter(TaskPersonLink.task_id == task.id, Person.active.is_(True))
+                .order_by(Person.last_name, Person.first_name).all()
+            )
+        except (PermissionDenied, NotFound):
+            abort(403)
+        except (ValueError, TypeError):
+            abort(404)
+        return {
+            "task_id": str(task.id),
+            "actor_id": str(actor.actor_id),
+            "role": actor.project_role,
+            "families": [{"id": str(row.id), "name": row.name, "family_key": row.family_key} for row in families],
+            "recipients": [{"id": str(row.id), "name": f"{row.first_name} {row.last_name}".strip()} for row in assignees if row.id != actor.actor_id],
+        }
+
+
 class Health(MethodView):
     @jwt_required()
     def get(self):
@@ -334,7 +375,7 @@ class ProductionOverview(MethodView):
         except PermissionDenied:
             abort(403)
         from sqlalchemy import select
-        from .models import Handoff, OutputFamilyMapping, Publish, PublishPointer, StorageConnection, UploadSession
+        from .models import Handoff, Job, OutputFamilyMapping, Publish, PublishPointer, StorageConnection, UploadSession
         from zou.app.models.task import Task
 
         if scope.task_id is not None:
@@ -346,8 +387,10 @@ class ProductionOverview(MethodView):
             task_rows = task_rows[:1000]
         task_ids = [row.id for row in task_rows]
         if not task_ids:
-            return {"production_id": str(scope.production_id), "task_id": str(scope.task_id) if scope.task_id else None, "tasks": [], "tasks_truncated": False, "upload_ready": False, "files": [], "publishes": [], "handoffs": []}
+            return {"production_id": str(scope.production_id), "task_id": str(scope.task_id) if scope.task_id else None, "actor_id": str(actor.actor_id), "role": actor.project_role, "tasks": [], "tasks_truncated": False, "upload_ready": False, "files": [], "publishes": [], "handoffs": []}
         publishes = Publish.query.filter(Publish.task_id.in_(task_ids)).order_by(Publish.created_at.desc()).limit(200).all()
+        jobs = Job.query.filter_by(job_type="publish_artifact").order_by(Job.created_at.desc()).limit(500).all()
+        publish_jobs = {str(job.payload.get("publish_id")): job for job in jobs if job.payload.get("publish_id")}
         pointers = {
             (row.task_id, row.output_family_id): row
             for row in PublishPointer.query.filter(PublishPointer.task_id.in_(task_ids)).all()
@@ -365,7 +408,15 @@ class ProductionOverview(MethodView):
                 "version": publish.version,
                 "state": publish.state,
                 "qc_state": publish.qc_state,
+                "created_by": str(publish.created_by),
                 "manifest_sha256": publish.manifest_sha256,
+                "byte_count": publish.byte_count,
+                "sha256": publish.sha256,
+                "provider_artifact_id": publish.provider_artifact_id if publish.state == "completed" else None,
+                "native_output_file_id": str(publish.native_output_file_id) if publish.native_output_file_id else None,
+                "job_state": publish_jobs.get(str(publish.id)).state if publish_jobs.get(str(publish.id)) else None,
+                "job_error": publish_jobs.get(str(publish.id)).last_error_code if publish_jobs.get(str(publish.id)) else None,
+                "manifest": json.loads(publish.manifest_bytes) if publish.manifest_bytes else None,
                 "latest_published": bool(pointer and pointer.latest_published_id == publish.id),
                 "latest_approved": bool(pointer and pointer.latest_approved_id == publish.id),
             })
@@ -378,6 +429,8 @@ class ProductionOverview(MethodView):
         return {
             "production_id": str(scope.production_id),
             "task_id": str(scope.task_id) if scope.task_id else None,
+            "actor_id": str(actor.actor_id),
+            "role": actor.project_role,
             "tasks": [{"id": str(row.id), "entity_id": str(row.entity_id), "task_type_id": str(row.task_type_id)} for row in task_rows],
             "tasks_truncated": tasks_truncated,
             "upload_ready": upload_ready,
@@ -392,7 +445,7 @@ class ProductionOverview(MethodView):
                 "failure_code": row.failure_code,
             } for row in uploads],
             "publishes": publish_rows,
-            "handoffs": [{"id": str(row.id), "task_id": str(row.task_id), "publish_id": str(row.publish_id), "recipient_id": str(row.recipient_id), "state": row.state} for row in handoffs],
+            "handoffs": [{"id": str(row.id), "task_id": str(row.task_id), "publish_id": str(row.publish_id), "sender_id": str(row.sender_id), "recipient_id": str(row.recipient_id), "state": row.state} for row in handoffs],
         }
 
 
@@ -1256,6 +1309,7 @@ routes = [
     ("/productions/<production_id>/output-families", OutputFamilies),
     ("/productions/<production_id>/output-families/<family_id>/activate", OutputFamilyActivation),
     ("/tasks/<task_id>/publishes", TaskPublishes),
+    ("/tasks/<task_id>/publish-options", TaskPublishOptions),
     ("/tasks/<task_id>/uploads", TaskUploads),
     ("/tasks/<task_id>/working-revisions", TaskWorkingRevisions),
     ("/working-files/<revision_file_id>/download", WorkingFileDownload),

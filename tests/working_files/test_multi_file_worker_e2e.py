@@ -89,8 +89,8 @@ def test_multi_file_snapshot_stays_unpublished_until_every_file_is_verified(
     environment = os.environ.copy()
     environment.update({
         "SECRET_KEY": "vfx-files-isolated-test-secret-key-32-bytes-minimum",
-        "PLUGIN_FOLDER": "/opt/zou/plugins",
-        "PYTHONPATH": "/opt/zou/plugins",
+        "PLUGIN_FOLDER": os.environ.get("VFX_FILES_TEST_PLUGIN_FOLDER", "/opt/zou/plugins"),
+        "PYTHONPATH": os.environ.get("PYTHONPATH", "/opt/zou/plugins"),
     })
     crashed = subprocess.run(
         [sys.executable, "/tmp/vfx-kitsu-test-root/tests/e2e/crash_worker_after_provider_write.py"],

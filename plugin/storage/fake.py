@@ -191,6 +191,13 @@ class PersistentFakeStorage(FakeStorage):
             raise
         self._write_blob(reserved_id, body)
         self._persist()
+        if os.environ.get("VFX_FILES_FAKE_CRASH_AFTER_UPLOAD_ID") == reserved_id:
+            crash_marker = self.state_path.with_name(
+                self.state_path.name + ".crash-once-" + hashlib.sha256(reserved_id.encode("utf-8")).hexdigest()
+            )
+            if not crash_marker.exists():
+                crash_marker.write_text("consumed", encoding="ascii")
+                os._exit(86)
         return result
 
     def _write_blob(self, object_id, body):

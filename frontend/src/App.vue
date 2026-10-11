@@ -1,7 +1,8 @@
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import HandoffPanel from './components/HandoffPanel.vue'
 import PublishList from './components/PublishList.vue'
+import PublishWorkflow from './components/PublishWorkflow.vue'
 import SharedTemplateSetup from './components/SharedTemplateSetup.vue'
 import UploadPanel from './components/UploadPanel.vue'
 
@@ -11,6 +12,8 @@ const loading = ref(true)
 const error = ref('')
 const busyId = ref('')
 const productionId = computed(() => props.context.productionId)
+const receivedHandoffs = computed(() => (overview.value?.handoffs || []).filter((item) => item.recipient_id === overview.value?.actor_id))
+let pollTimer
 
 async function load() {
   loading.value = !overview.value
@@ -42,7 +45,26 @@ async function respond(handoff, target, feedback = '') {
   }
 }
 
-onMounted(load)
+async function approve(publish) {
+  busyId.value = publish.id
+  error.value = ''
+  try {
+    await props.api.approvePublish(publish.id)
+    await load()
+  } catch (cause) {
+    error.value = cause.message || 'The Publish approval could not be saved.'
+  } finally {
+    busyId.value = ''
+  }
+}
+
+onMounted(() => {
+  load()
+  pollTimer = window.setInterval(() => {
+    if (overview.value?.publishes.some((publish) => !['completed', 'failed', 'reconcile_required'].includes(publish.state))) load()
+  }, 3000)
+})
+onUnmounted(() => window.clearInterval(pollTimer))
 </script>
 
 <template>
@@ -67,10 +89,11 @@ onMounted(load)
         <article class="summary-card handoff-card"><span class="card-label">Open Handoffs</span><strong>{{ overview.handoffs.filter((item) => item.state === 'pending').length }}</strong><span>awaiting a response</span></article>
       </section>
       <UploadPanel :enabled="overview.upload_ready" :tasks="overview.tasks" :api="api" @uploaded="load" />
+      <PublishWorkflow :production-id="productionId" :tasks="overview.tasks" :publishes="overview.publishes" :api="api" @changed="load" />
       <SharedTemplateSetup v-if="!overview.task_id" :production-id="productionId" :tasks="overview.tasks" :api="api" />
       <div class="content-grid">
-        <PublishList :publishes="overview.publishes" />
-        <HandoffPanel :handoffs="overview.handoffs" :busy-id="busyId" @respond="respond" />
+        <PublishList :publishes="overview.publishes" :actor-id="overview.actor_id" :role="overview.role" :busy-id="busyId" @approve="approve" />
+        <HandoffPanel :handoffs="receivedHandoffs" :busy-id="busyId" @respond="respond" />
       </div>
       <footer class="page-footer"><span>VFX Files plugin</span><span>Published and approved versions are tracked separately.</span></footer>
     </template>

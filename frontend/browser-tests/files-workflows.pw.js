@@ -78,6 +78,7 @@ test('Needs Fix requires feedback and Accepted persists after the page reloads',
     if (url.pathname.endsWith('/csrf-token')) return json(route, { csrf_token: 'synthetic-csrf', expires_in: 900 })
     if (url.pathname.endsWith('/overview')) return json(route, {
       production_id: productionId,
+      actor_id: 'synthetic-recipient',
       tasks: [],
       upload_ready: false,
       publishes: [{ id: 'p1', task_id: taskId, output_family_id: 'family1', output_family_name: 'Comp', version: 4, state: 'completed', qc_state: 'passed', latest_published: true, latest_approved: false }, { id: 'p2', task_id: taskId, output_family_id: 'family1', output_family_name: 'Comp', version: 3, state: 'completed', qc_state: 'passed', latest_published: false, latest_approved: true }],

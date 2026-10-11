@@ -5,7 +5,7 @@ import subprocess
 import sys
 from uuid import UUID, uuid4
 
-from sqlalchemy import select
+from sqlalchemy import func, select, text, update
 
 
 def _headers(client):
@@ -13,7 +13,15 @@ def _headers(client):
     return {"Origin": "https://kitsu.test", "X-VFX-Files-CSRF": token}
 
 
-def _run_worker(tmp_path, state_path):
+def _run_worker(
+    tmp_path,
+    state_path,
+    *,
+    crash_after_upload_id=None,
+    crash_after_native_publish_id=None,
+    expect_idle=False,
+    expect_reconciliation=False,
+):
     environment = os.environ.copy()
     environment.update({
         "SECRET_KEY": "vfx-files-isolated-test-secret-key-32-bytes-minimum",
@@ -23,9 +31,13 @@ def _run_worker(tmp_path, state_path):
         "VFX_FILES_STAGING_ROOT": str(tmp_path),
         "VFX_FILES_FAKE_STORAGE_ROOT": str(state_path),
         "VFX_FILES_FAKE_ROOT_ID": "synthetic-root-id",
-        "VFX_FILES_TEST_PLUGIN_FOLDER": "/opt/zou/plugins",
-        "PYTHONPATH": "/opt/zou/plugins",
+        "VFX_FILES_TEST_PLUGIN_FOLDER": os.environ.get("VFX_FILES_TEST_PLUGIN_FOLDER", "/opt/zou/plugins"),
+        "PYTHONPATH": os.environ.get("PYTHONPATH", "/opt/zou/plugins"),
     })
+    if crash_after_upload_id:
+        environment["VFX_FILES_FAKE_CRASH_AFTER_UPLOAD_ID"] = crash_after_upload_id
+    if crash_after_native_publish_id:
+        environment["VFX_FILES_FAKE_CRASH_AFTER_NATIVE_OUTPUT_PUBLISH_ID"] = crash_after_native_publish_id
     result = subprocess.run(
         [sys.executable, "-m", "vfx_files.worker_runtime", "--once"],
         check=False,
@@ -34,8 +46,16 @@ def _run_worker(tmp_path, state_path):
         timeout=30,
         env=environment,
     )
+    if crash_after_upload_id or crash_after_native_publish_id:
+        return result
+    if expect_reconciliation:
+        assert result.returncode == 2
+        assert json.loads(result.stdout.splitlines()[-1])["result"] == "reconcile_required"
+        return result
     assert result.returncode == 0, result.stderr
-    assert json.loads(result.stdout.splitlines()[-1])["result"] == "completed"
+    expected = "idle" if expect_idle else "completed"
+    assert json.loads(result.stdout.splitlines()[-1])["result"] == expected
+    return result
 
 
 def test_working_file_publish_runs_api_database_worker_fake_storage_and_native_zou_link(
@@ -156,6 +176,13 @@ def test_working_file_publish_runs_api_database_worker_fake_storage_and_native_z
         headers=headers,
     )
     assert activated.status_code == 200, activated.get_data(as_text=True)
+    assert any(rule.rule == "/plugins/vfx_files/tasks/<task_id>/publish-options" for rule in app.url_map.iter_rules())
+    with zou_db_factory() as session:
+        assert session.get(Task, task_id) is not None
+    options = client.get(f"/plugins/vfx_files/tasks/{task_id}/publish-options")
+    assert options.status_code == 200, options.get_data(as_text=True)
+    assert any(row["id"] == family_id for row in options.json["families"])
+    assert options.json["actor_id"] == str(_actor_id)
     publication = client.post(
         f"/plugins/vfx_files/tasks/{task_id}/publishes",
         json={"output_family_id": family_id, "source_revision_file_id": source["id"]},
@@ -163,6 +190,33 @@ def test_working_file_publish_runs_api_database_worker_fake_storage_and_native_z
     )
     assert publication.status_code == 202, publication.get_data(as_text=True)
     publish_id = UUID(publication.json["id"])
+    storage = PersistentFakeStorage(state_path, root_id="synthetic-root-id")
+    artifact_id = storage.reserve_id(f"publish:{publish_id}")
+    crashed = _run_worker(tmp_path, state_path, crash_after_upload_id=artifact_id)
+    if crashed.returncode != 86:
+        with app.app_context(), zou_db_factory() as session:
+            interrupted_publish = session.get(Publish, publish_id)
+            publish_job = session.scalar(select(Job).where(Job.idempotency_key == f"publish-artifact:{publish_id}"))
+            assert crashed.returncode == 86, (
+                f"worker did not crash at selected FakeStorage upload: rc={crashed.returncode} "
+                f"publish_state={interrupted_publish.state} artifact_id={interrupted_publish.provider_artifact_id} "
+                f"job_error={publish_job.last_error_code} out={crashed.stdout} err={crashed.stderr}"
+            )
+    assert crashed.returncode == 86
+    crashed_storage = PersistentFakeStorage(state_path, root_id="synthetic-root-id")
+    assert crashed_storage.verify(artifact_id, len(data), digest)
+    with app.app_context(), zou_db_factory.begin() as session:
+        interrupted = session.get(Publish, publish_id)
+        publish_job = session.scalar(select(Job).where(Job.idempotency_key == f"publish-artifact:{publish_id}"))
+        assert interrupted.state == "source_ready"
+        assert interrupted.provider_artifact_id == artifact_id
+        assert session.scalar(select(PublishCheckpoint).where(
+            PublishCheckpoint.publish_id == publish_id,
+            PublishCheckpoint.checkpoint == "artifact_verified",
+        )) is None
+        session.execute(update(Job).where(Job.id == publish_job.id).values(
+            lease_expires_at=func.now() - text("interval '1 second'"),
+        ))
     _run_worker(tmp_path, state_path)
 
     with app.app_context(), zou_db_factory() as session:
@@ -184,6 +238,8 @@ def test_working_file_publish_runs_api_database_worker_fake_storage_and_native_z
         assert session.scalar(select(Job).where(
             Job.idempotency_key == f"publish-artifact:{publish_id}", Job.state == "completed",
         )) is not None
+        final_storage = PersistentFakeStorage(state_path, root_id="synthetic-root-id")
+        assert len([row for row in final_storage.objects.values() if row.object_id == artifact_id]) == 1
         source_row = session.get(WorkingRevisionFile, UUID(source["id"]))
         task = session.get(Task, task_id)
         task_type = session.get(TaskType, task_type_id)
@@ -195,6 +251,13 @@ def test_working_file_publish_runs_api_database_worker_fake_storage_and_native_z
     stored = PersistentFakeStorage(state_path, root_id="synthetic-root-id")
     assert stored.verify(publish.provider_artifact_id, len(data), digest)
     assert stored.get(publish.provider_artifact_id).parent_id == destination_id
+    overview = client.get(f"/plugins/vfx_files/overview?production_id={production_id}&task_id={task_id}")
+    assert overview.status_code == 200, overview.get_data(as_text=True)
+    visible_publish = next(row for row in overview.json["publishes"] if row["id"] == str(publish_id))
+    assert visible_publish["job_state"] == "completed"
+    assert visible_publish["manifest"]["artifact"]["provider_object_id"] == publish.provider_artifact_id
+    assert visible_publish["native_output_file_id"] == str(publish.native_output_file_id)
+    assert visible_publish["latest_published"] is True and visible_publish["latest_approved"] is False
 
     reviewer = Person(
         first_name="Synthetic",
@@ -234,6 +297,12 @@ def test_working_file_publish_runs_api_database_worker_fake_storage_and_native_z
     )
     assert approved.status_code == 201, approved.get_data(as_text=True)
     assert approved.json["latest_approved_id"] == str(publish_id)
+    _run_worker(tmp_path, state_path, expect_idle=True)
+    with app.app_context(), zou_db_factory() as session:
+        native_outputs = session.scalars(select(OutputFile).where(
+            OutputFile.data["vfx_files_publish_id"].astext == str(publish_id),
+        )).all()
+        assert len(native_outputs) == 1
     handoff = client.post(
         f"/plugins/vfx_files/publishes/{publish_id}/handoffs",
         json={"recipient_id": str(reviewer_id)},
@@ -247,3 +316,44 @@ def test_working_file_publish_runs_api_database_worker_fake_storage_and_native_z
     )
     assert response.status_code == 200, response.get_data(as_text=True)
     assert response.json["state"] == "accepted"
+
+    second_publish = client.post(
+        f"/plugins/vfx_files/tasks/{task_id}/publishes",
+        json={"output_family_id": family_id, "source_revision_file_id": source["id"]},
+        headers={**headers, "Idempotency-Key": f"publish-request:{uuid4()}"},
+    )
+    assert second_publish.status_code == 202, second_publish.get_data(as_text=True)
+    second_publish_id = UUID(second_publish.json["id"])
+    crashed_after_native_create = _run_worker(
+        tmp_path,
+        state_path,
+        crash_after_native_publish_id=str(second_publish_id),
+    )
+    assert crashed_after_native_create.returncode == 87
+    with app.app_context(), zou_db_factory.begin() as session:
+        second_row = session.get(Publish, second_publish_id)
+        second_job = session.scalar(select(Job).where(Job.idempotency_key == f"publish-artifact:{second_publish_id}"))
+        assert second_row.state == "manifest_verified"
+        assert second_row.native_create_permit_used is True
+        assert second_row.native_output_file_id is None
+        native_ids_before_retry = set(session.scalars(select(OutputFile.id).where(OutputFile.output_type_id == output_type.id)).all())
+        assert len(native_ids_before_retry) == 2
+        second_artifacts = [
+            row for row in PersistentFakeStorage(state_path, root_id="synthetic-root-id").objects.values()
+            if row.parent_id == destination_id and row.size == len(data) and row.sha256 == digest
+        ]
+        assert len(second_artifacts) == 2
+        session.execute(update(Job).where(Job.id == second_job.id).values(
+            lease_expires_at=func.now() - text("interval '1 second'"),
+        ))
+
+    _run_worker(tmp_path, state_path, expect_reconciliation=True)
+    with app.app_context(), zou_db_factory() as session:
+        second_row = session.get(Publish, second_publish_id)
+        second_job = session.scalar(select(Job).where(Job.idempotency_key == f"publish-artifact:{second_publish_id}"))
+        assert second_row.state == "native_create_ambiguous"
+        assert second_row.native_create_permit_used is True
+        assert second_row.native_output_file_id is None
+        assert second_job.state == "reconcile_required"
+        native_ids_after_retry = set(session.scalars(select(OutputFile.id).where(OutputFile.output_type_id == output_type.id)).all())
+        assert native_ids_after_retry == native_ids_before_retry

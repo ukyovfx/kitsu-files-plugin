@@ -29,6 +29,34 @@ describe('Files API', () => {
     expect(JSON.parse(options.body)).toMatchObject({ target: 'accepted', feedback: '' })
   })
 
+  it('loads output families and submits Publish, exact-Publish approval and handoff requests', async () => {
+    const client = { request: vi.fn()
+      .mockResolvedValueOnce(response([{ id: 'family-1', name: 'Main' }]))
+      .mockResolvedValueOnce(response({ csrf_token: 'publish-csrf' }))
+      .mockResolvedValueOnce(response({ id: 'publish-1', state: 'reserved' }, 202))
+      .mockResolvedValueOnce(response({ csrf_token: 'approval-csrf' }))
+      .mockResolvedValueOnce(response({ approval_id: 'approval-1' }, 201))
+      .mockResolvedValueOnce(response({ csrf_token: 'handoff-csrf' }))
+      .mockResolvedValueOnce(response({ id: 'handoff-1', state: 'pending' }, 201)) }
+    const api = createFilesApi(client)
+    await expect(api.listOutputFamilies('prod-1')).resolves.toHaveLength(1)
+    await api.createPublish('task-1', 'family-1', 'working-file-1')
+    await api.approvePublish('publish-1')
+    await api.createHandoff('publish-1', 'person-2')
+    expect(client.request.mock.calls.map(([method, path]) => [method, path])).toEqual([
+      ['GET', 'plugins/vfx_files/productions/prod-1/output-families'],
+      ['GET', 'plugins/vfx_files/csrf-token'],
+      ['POST', 'plugins/vfx_files/tasks/task-1/publishes'],
+      ['GET', 'plugins/vfx_files/csrf-token'],
+      ['POST', 'plugins/vfx_files/publishes/publish-1/approvals'],
+      ['GET', 'plugins/vfx_files/csrf-token'],
+      ['POST', 'plugins/vfx_files/publishes/publish-1/handoffs']
+    ])
+    expect(JSON.parse(client.request.mock.calls[2][2].body)).toEqual({ output_family_id: 'family-1', source_revision_file_id: 'working-file-1' })
+    expect(JSON.parse(client.request.mock.calls[4][2].body)).toMatchObject({ policy_id: 'files-page-review-v1' })
+    expect(JSON.parse(client.request.mock.calls[6][2].body)).toEqual({ recipient_id: 'person-2' })
+  })
+
   it('shows the disabled service as a non-success result', async () => {
     const client = { request: vi.fn(async () => response({}, 503)) }
     await expect(createFilesApi(client).listProduction('p-1')).rejects.toMatchObject({ status: 503 })
