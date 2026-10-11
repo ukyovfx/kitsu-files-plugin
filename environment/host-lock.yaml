@@ -1,0 +1,14 @@
+{
+  "kitsu_tag": "v1.0.70",
+  "kitsu_commit": "d8f420069a6bf24d98c5557e418538eff6173cea",
+  "zou_tag": "v1.0.94",
+  "zou_commit": "f5fc34c367a39d58d7741ab2790a5f349c312175",
+  "zou_tag_object": "976edb2bc61ce8a07e3d7c9cf5a5be1ff117e263",
+  "official_test_image": "cgwire/cgwire:1.0.70-1.0.94-01",
+  "official_test_image_digest": "sha256:e6d9021241b12f88616762b4c7600a5e84d646119cba4a153ce7908fbd4f300a",
+  "python_version": "3.10.12",
+  "node_version": "v24.14.0",
+  "npm_version": "11.11.0",
+  "vue_version": "3.5.43",
+  "vite_version": "8.3.3"
+}
