@@ -4,7 +4,6 @@ import hashlib
 import io
 import json
 import os
-import re
 from threading import Lock
 from uuid import uuid4
 from pathlib import Path
@@ -41,7 +40,7 @@ class FakeStorage:
         with self.lock:
             if reserved_id in self.objects:
                 raise AlreadyExists(reserved_id)
-            obj = StorageObject(reserved_id, parent_id, 0, hashlib.sha256(b"").hexdigest(), self.drive_id, "folder")
+            obj = StorageObject(reserved_id, parent_id, 0, hashlib.sha256(b"").hexdigest(), self.drive_id, "folder", name=correlation.get("display_name"))
             self.objects[reserved_id] = obj
         if self.fail_after_create:
             self.fail_after_create = False
@@ -134,6 +133,7 @@ class PersistentFakeStorage(FakeStorage):
                     "drive_id": item.drive_id,
                     "mime_type": item.mime_type,
                     "trashed": item.trashed,
+                    "name": item.name,
                 }
                 for item in self.objects.values()
             ],

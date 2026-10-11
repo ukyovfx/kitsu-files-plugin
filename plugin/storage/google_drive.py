@@ -63,7 +63,7 @@ class GoogleDriveStorageAdapter:
             user = account.json().get("user", {})
             if self.config.owner_subject not in (user.get("permissionId"), user.get("emailAddress")):
                 raise PermissionFailure("Drive token belongs to a different My Drive owner")
-        response = self._request("GET", f"{API}/files/{root_id}", params={"supportsAllDrives": "true", "fields": "id,mimeType,driveId,parents,trashed,capabilities(canAddChildren)"})
+        response = self._request("GET", f"{API}/files/{root_id}", params={"supportsAllDrives": "true", "fields": "id,name,mimeType,driveId,parents,trashed,capabilities(canAddChildren)"})
         if response.status_code != 200:
             raise PermissionFailure("Configured Drive root is not readable")
         data = response.json()
@@ -193,7 +193,7 @@ class GoogleDriveStorageAdapter:
             "pageSize": 1000,
             "supportsAllDrives": "true",
             "includeItemsFromAllDrives": "true",
-            "fields": "nextPageToken,incompleteSearch,files(id,mimeType,parents,driveId,size,trashed)",
+            "fields": "nextPageToken,incompleteSearch,files(id,name,mimeType,parents,driveId,size,trashed)",
         }
         if self.config.account_mode == "shared_drive":
             params.update({"corpora": "drive", "driveId": self.config.drive_id})
@@ -237,4 +237,5 @@ class GoogleDriveStorageAdapter:
             drive_id=data.get("driveId"),
             mime_type=data.get("mimeType"),
             trashed=bool(data.get("trashed", False)),
+            name=data.get("name"),
         )

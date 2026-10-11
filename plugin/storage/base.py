@@ -27,6 +27,7 @@ class StorageObject:
     drive_id: str | None = None
     mime_type: str | None = None
     trashed: bool = False
+    name: str | None = None
 
 
 @dataclass(frozen=True)

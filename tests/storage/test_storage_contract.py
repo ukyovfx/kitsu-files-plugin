@@ -35,6 +35,17 @@ def test_ambiguous_create_is_reconciled_by_reserved_id():
         adapter.create_folder("fake-root", object_id, {})
 
 
+def test_fake_folder_names_are_available_for_template_discovery():
+    adapter = FakeStorage()
+    folder_id = adapter.reserve_id("template-folder")
+    adapter.create_folder("fake-root", folder_id, {"display_name": "Sequence A"})
+
+    discovered = adapter.list_children("fake-root").items[0]
+
+    assert discovered.object_id == folder_id
+    assert discovered.name == "Sequence A"
+
+
 def test_staging_keys_are_immutable_and_exact():
     staging = MemoryStaging()
     key = "upload/00000000-0000-4000-8000-000000000001/0"

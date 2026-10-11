@@ -44,7 +44,7 @@ def drive(transport, account_mode="shared_drive"):
 def test_shared_drive_uses_drive_scoped_listing_and_support_flags():
     transport = FakeTransport([
         Response(200, {"id": "root-1", "mimeType": FOLDER_MIME, "driveId": "drive-1", "capabilities": {"canAddChildren": True}}),
-        Response(200, {"files": [{"id": "folder-1", "parents": ["root-1"], "mimeType": FOLDER_MIME, "driveId": "drive-1"}], "nextPageToken": "next"}),
+        Response(200, {"files": [{"id": "folder-1", "name": "Seq 010", "parents": ["root-1"], "mimeType": FOLDER_MIME, "driveId": "drive-1"}], "nextPageToken": "next"}),
     ])
     adapter = drive(transport)
     adapter.capabilities("root-1")
@@ -57,6 +57,7 @@ def test_shared_drive_uses_drive_scoped_listing_and_support_flags():
     assert params["includeItemsFromAllDrives"] == "true"
     assert params["corpora"] == "drive"
     assert params["driveId"] == "drive-1"
+    assert listing.items[0].name == "Seq 010"
 
 
 def test_my_drive_owner_identity_must_match_configured_subject():
