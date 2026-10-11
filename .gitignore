@@ -11,3 +11,25 @@ frontend/dist/
 frontend/test-results/
 frontend/playwright-report/
 *.egg-info/
+
+# Local credentials and development databases
+.env
+.env.*
+!.env.example
+*.db
+*.sqlite
+*.sqlite3
+*.log
+
+# Local media and binary production/test payloads; use FakeStorage fixtures instead
+/local-media/
+/test-media/
+*.exr
+*.dpx
+*.mov
+*.mp4
+*.mxf
+*.wav
+*.flac
+*.abc
+*.vdb
