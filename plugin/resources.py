@@ -147,6 +147,166 @@ def _template_tree_payload(tree):
     }
 
 
+class OutputFamilies(MethodView):
+    @jwt_required()
+    def get(self, production_id):
+        _require_enabled()
+        _assert_compatible()
+        try:
+            actor, scope = _production_provision_scope(UUID(str(production_id)))
+        except (PermissionDenied, NotFound, ValueError, TypeError):
+            abort(403)
+        from .models import OutputFamilyMapping
+        rows = OutputFamilyMapping.query.filter_by(production_id=scope.production_id).order_by(OutputFamilyMapping.family_key).all()
+        return [{
+            "id": str(row.id), "family_key": row.family_key,
+            "output_type_id": str(row.output_type_id), "task_type_id": str(row.task_type_id),
+            "name": row.name, "representation": row.representation, "extension": row.extension,
+            "file_status_id": str(row.file_status_id), "publish_folder_id": row.publish_folder_id,
+            "enabled": row.enabled,
+        } for row in rows]
+
+    @jwt_required()
+    def post(self, production_id):
+        _require_enabled()
+        _assert_compatible()
+        try:
+            _require_mutation_origin()
+            actor, scope = _production_provision_scope(UUID(str(production_id)))
+            payload = request.get_json(silent=False) or {}
+            from .models import FolderBinding, OutputFamilyMapping, StorageConnection
+            from zou.app.models.file_status import FileStatus
+            from zou.app.models.output_type import OutputType
+            from zou.app.models.task_type import TaskType
+            db_ext = current_app.extensions["sqlalchemy"]
+            key = str(payload.get("family_key", "")).strip()
+            output_type_id = UUID(str(payload.get("output_type_id", "")))
+            task_type_id = UUID(str(payload.get("task_type_id", "")))
+            file_status_id = UUID(str(payload.get("file_status_id", "")))
+            publish_folder_id = str(payload.get("publish_folder_id", "")).strip()
+            name = str(payload.get("name", "main")).strip()
+            representation = str(payload.get("representation", "")).strip()
+            extension = str(payload.get("extension", "")).strip().lstrip(".")
+            if (
+                not key or len(key) > 128 or not name or len(name) > 250
+                or len(representation) > 20 or len(extension) > 10 or not publish_folder_id
+            ):
+                abort(400)
+            if (
+                db_ext.session.get(OutputType, output_type_id) is None
+                or db_ext.session.get(TaskType, task_type_id) is None
+                or db_ext.session.get(FileStatus, file_status_id) is None
+            ):
+                abort(400, description="Output type, Task type and file status must be valid Kitsu records")
+            connections = StorageConnection.query.filter_by(production_id=scope.production_id, enabled=True).limit(2).all()
+            if len(connections) != 1:
+                raise ServiceUnavailable("Production must have exactly one enabled StorageConnection")
+            connection = connections[0]
+            binding = FolderBinding.query.filter_by(
+                storage_connection_id=connection.id,
+                allowed_root_id=connection.allowed_root_id,
+                provider_folder_id=publish_folder_id,
+                state="ready",
+            ).one_or_none()
+            if binding is None:
+                abort(400, description="Publish destination must be a ready Production folder binding")
+            adapter = _storage_adapter(connection)
+            folder = adapter.get(publish_folder_id)
+            if folder is None or folder.trashed or folder.mime_type != "folder":
+                abort(400, description="Publish destination folder is unavailable")
+            adapter.assert_parent_within_root(publish_folder_id)
+            existing = OutputFamilyMapping.query.filter_by(
+                production_id=scope.production_id, family_key=key
+            ).one_or_none()
+            if existing is not None:
+                abort(409, description="Output family key already exists")
+            row = OutputFamilyMapping(
+                production_id=scope.production_id, family_key=key,
+                output_type_id=output_type_id, task_type_id=task_type_id,
+                name=name, representation=representation, extension=extension,
+                file_status_id=file_status_id, publish_folder_id=publish_folder_id,
+                enabled=False,
+            )
+            db_ext.session.add(row)
+            db_ext.session.flush()
+            db_ext.session.commit()
+        except (PermissionDenied, NotFound, ValueError, TypeError):
+            abort(403)
+        return {"id": str(row.id), "family_key": row.family_key, "publish_folder_id": row.publish_folder_id, "enabled": False}, 201
+
+
+class OutputFamilyActivation(MethodView):
+    @jwt_required()
+    def post(self, production_id, family_id):
+        _require_enabled()
+        _assert_compatible()
+        try:
+            _require_mutation_origin()
+            _actor, scope = _production_provision_scope(UUID(str(production_id)))
+            family_uuid = UUID(str(family_id))
+        except (PermissionDenied, NotFound, ValueError, TypeError):
+            abort(403)
+        from .models import FolderBinding, OutputFamilyMapping, StorageConnection
+        family = OutputFamilyMapping.query.filter_by(id=family_uuid, production_id=scope.production_id).one_or_none()
+        if family is None or not family.publish_folder_id:
+            abort(404)
+        try:
+            connection = _production_storage_connection(scope.production_id)
+        except ServiceUnavailable:
+            abort(409)
+        binding = FolderBinding.query.filter_by(
+            storage_connection_id=connection.id, allowed_root_id=connection.allowed_root_id,
+            provider_folder_id=family.publish_folder_id, state="ready",
+        ).one_or_none()
+        if binding is None:
+            abort(409)
+        adapter = _storage_adapter(connection)
+        folder = adapter.get(family.publish_folder_id)
+        if folder is None or folder.trashed or folder.mime_type != "folder":
+            abort(409)
+        adapter.assert_parent_within_root(family.publish_folder_id)
+        family.enabled = True
+        current_app.extensions["sqlalchemy"].session.flush()
+        current_app.extensions["sqlalchemy"].session.commit()
+        return {"id": str(family.id), "enabled": True}, 200
+
+
+class TaskPublishes(MethodView):
+    @jwt_required()
+    def post(self, task_id):
+        _require_enabled()
+        _assert_compatible()
+        try:
+            _require_mutation_origin()
+            parsed_task_id = UUID(str(task_id))
+            actor, _scope = _task_actor_scope(parsed_task_id)
+            from .compat import authorize_task_mutation
+            if not authorize_task_mutation(actor, parsed_task_id, "publish"):
+                abort(403)
+            payload = request.get_json(silent=False) or {}
+            family_id = UUID(str(payload.get("output_family_id", "")))
+            source_file_id = UUID(str(payload.get("source_revision_file_id", "")))
+            key = request.headers.get("Idempotency-Key", "").strip()
+            if not key or len(key) > 128:
+                abort(400)
+            from sqlalchemy.orm import sessionmaker
+            from .publishes.service import PublishConflict, reserve_working_revision_publish
+            db_ext = current_app.extensions["sqlalchemy"]
+            sessions = sessionmaker(bind=db_ext.engine, expire_on_commit=False)
+            result = reserve_working_revision_publish(
+                sessions, task_id=parsed_task_id, output_family_id=family_id,
+                source_revision_file_id=source_file_id, actor_id=actor.actor_id,
+                idempotency_key=key,
+            )
+        except (PermissionDenied, NotFound):
+            abort(403)
+        except (ValueError, TypeError) as error:
+            abort(400, description=str(error))
+        except PublishConflict as error:
+            abort(409, description=str(error))
+        return {"id": str(result.id), "version": result.version, "state": result.state}, 202
+
+
 class Health(MethodView):
     @jwt_required()
     def get(self):
@@ -260,6 +420,8 @@ class HandoffResponse(MethodView):
         except (PermissionDenied, ValueError, TypeError, AttributeError):
             abort(403)
         from .handoffs.service import transition_handoff
+        from sqlalchemy.orm import sessionmaker
+        db_ext = current_app.extensions["sqlalchemy"]
         from .models import Handoff
         handoff = Handoff.query.filter_by(id=handoff_uuid).one_or_none()
         if handoff is None:
@@ -281,7 +443,7 @@ class HandoffResponse(MethodView):
             if not idempotency_key or len(idempotency_key) > 128:
                 abort(400)
             result = transition_handoff(
-                current_app.extensions["sqlalchemy"].session,
+                sessionmaker(bind=db_ext.engine, expire_on_commit=False),
                 actor_id=actor_id,
                 handoff_id=handoff_uuid,
                 target=payload.get("target"),
@@ -295,6 +457,105 @@ class HandoffResponse(MethodView):
         except (ValueError, TypeError):
             abort(400)
         return {"id": str(result.id), "state": result.state, "publish_id": str(result.publish_id)}
+
+
+class PublishApproval(MethodView):
+    @jwt_required()
+    def post(self, publish_id):
+        _require_enabled()
+        _assert_compatible()
+        from .models import Publish
+        row = Publish.query.filter_by(id=publish_id).one_or_none()
+        if row is None:
+            abort(404)
+        from zou.app.models.task import Task
+        task = Task.query.filter_by(id=row.task_id).one_or_none()
+        if task is None:
+            abort(404)
+        try:
+            _require_mutation_origin()
+            actor = _request_actor(str(task.project_id))
+            scope = _resolve_scope(actor, str(task.project_id), str(task.id))
+            authorize(actor, Capability.APPROVE, scope)
+            from .compat import authorize_task_mutation
+            if not authorize_task_mutation(actor, task.id, "approve"):
+                abort(403)
+            payload = request.get_json(silent=False) or {}
+            key = request.headers.get("Idempotency-Key", "").strip()
+            if not key or len(key) > 128:
+                abort(400)
+            from sqlalchemy.orm import sessionmaker
+            from .approvals.service import ApprovalDenied, approve_publish
+            db_ext = current_app.extensions["sqlalchemy"]
+            sessions = sessionmaker(bind=db_ext.engine, expire_on_commit=False)
+            approval_id = approve_publish(
+                sessions,
+                actor_id=actor.actor_id,
+                actor_role=actor.project_role,
+                publish_id=UUID(str(row.id)),
+                policy_id=str(payload.get("policy_id", "")),
+                policy_sha256=str(payload.get("policy_sha256", "")),
+                idempotency_key=key,
+            )
+        except (PermissionDenied, NotFound):
+            abort(403)
+        except (ValueError, TypeError) as error:
+            abort(400, description=str(error))
+        except ApprovalDenied as error:
+            abort(403, description=str(error))
+        from .models import PublishPointer
+        pointer = PublishPointer.query.filter_by(task_id=task.id, output_family_id=row.output_family_id).one_or_none()
+        return {"approval_id": str(approval_id), "latest_approved_id": str(pointer.latest_approved_id) if pointer and pointer.latest_approved_id else None}, 201
+
+
+class HandoffCreate(MethodView):
+    @jwt_required()
+    def post(self, publish_id):
+        _require_enabled()
+        _assert_compatible()
+        from .models import Publish
+        row = Publish.query.filter_by(id=publish_id).one_or_none()
+        if row is None:
+            abort(404)
+        from zou.app.models.person import Person
+        from zou.app.models.project import ProjectPersonLink
+        from zou.app.models.task import Task, TaskPersonLink
+        from .handoffs.service import HandoffDenied, create_handoff
+        from sqlalchemy.orm import sessionmaker
+        db_ext = current_app.extensions["sqlalchemy"]
+        task = Task.query.filter_by(id=row.task_id).one_or_none()
+        if task is None:
+            abort(404)
+        try:
+            _require_mutation_origin()
+            actor = _request_actor(str(task.project_id))
+            scope = _resolve_scope(actor, str(task.project_id), str(task.id))
+            authorize(actor, Capability.HANDOFF, scope)
+            from .compat import authorize_task_mutation
+            if not authorize_task_mutation(actor, task.id, "handoff"):
+                abort(403)
+            payload = request.get_json(silent=False) or {}
+            recipient_id = UUID(str(payload.get("recipient_id", "")))
+            recipient = db_ext.session.get(Person, recipient_id)
+            is_task_assignee = TaskPersonLink.query.filter_by(task_id=task.id, person_id=recipient_id).one_or_none() is not None
+            is_project_member = ProjectPersonLink.query.filter_by(project_id=task.project_id, person_id=recipient_id).one_or_none() is not None
+            if recipient is None or not getattr(recipient, "active", True) or not (is_task_assignee or is_project_member):
+                abort(403)
+            key = request.headers.get("Idempotency-Key", "").strip()
+            if not key or len(key) > 128:
+                abort(400)
+            sessions = sessionmaker(bind=db_ext.engine, expire_on_commit=False)
+            result = create_handoff(
+                sessions, task_id=task.id, publish_id=UUID(str(row.id)),
+                sender_id=actor.actor_id, recipient_id=recipient_id, idempotency_key=key,
+            )
+        except (PermissionDenied, NotFound):
+            abort(403)
+        except (ValueError, TypeError) as error:
+            abort(400, description=str(error))
+        except HandoffDenied as error:
+            abort(403, description=str(error))
+        return {"id": str(result.id), "state": result.state, "publish_id": str(result.publish_id)}, 201
 
 
 class TaskUploads(MethodView):
@@ -990,6 +1251,11 @@ routes = [
     ("/overview", ProductionOverview),
     ("/mutation-probe", MutationProbe),
     ("/handoffs/<handoff_id>/respond", HandoffResponse),
+    ("/publishes/<publish_id>/approvals", PublishApproval),
+    ("/publishes/<publish_id>/handoffs", HandoffCreate),
+    ("/productions/<production_id>/output-families", OutputFamilies),
+    ("/productions/<production_id>/output-families/<family_id>/activate", OutputFamilyActivation),
+    ("/tasks/<task_id>/publishes", TaskPublishes),
     ("/tasks/<task_id>/uploads", TaskUploads),
     ("/tasks/<task_id>/working-revisions", TaskWorkingRevisions),
     ("/working-files/<revision_file_id>/download", WorkingFileDownload),

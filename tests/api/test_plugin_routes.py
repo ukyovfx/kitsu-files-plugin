@@ -23,7 +23,11 @@ def authenticated_plugin_client(zou_app):
         VFX_FILES_KITSU_ORIGIN="https://kitsu.test",
     )
     with app.app_context():
-        person = Person.query.first()
+        people = Person.query.order_by(Person.id).all()
+        person = next(
+            (item for role in ("admin", "manager") for item in people if getattr(item.role, "code", item.role) == role),
+            people[0] if people else None,
+        )
         token = create_access_token_for_raw_person(person)
         cookie_name = app.config.get("JWT_ACCESS_COOKIE_NAME", "access_token_cookie")
         token_locations = app.config.get("JWT_TOKEN_LOCATION")
@@ -40,7 +44,7 @@ def synthetic_upload_task(authenticated_plugin_client, zou_db_factory, tmp_path)
     from zou.app.models.entity import Entity
     from zou.app.models.entity_type import EntityType
     from zou.app.models.person import Person
-    from zou.app.models.project import Project
+    from zou.app.models.project import Project, ProjectPersonLink
     from zou.app.models.task import Task
     from zou.app.models.task_type import TaskType
     from plugin.models import Job, StorageConnection, UploadPart, UploadSession
@@ -48,7 +52,12 @@ def synthetic_upload_task(authenticated_plugin_client, zou_db_factory, tmp_path)
 
     app = authenticated_plugin_client.vfx_app
     with app.app_context():
-        actor_id = Person.query.first().id
+        people = Person.query.order_by(Person.id).all()
+        actor = next(
+            (item for role in ("admin", "manager") for item in people if getattr(item.role, "code", item.role) == role),
+            people[0] if people else None,
+        )
+        actor_id = actor.id
         entity_type = EntityType(name=f"VFX{uuid4().hex[:8]}")
         task_type = TaskType(name=f"VFXTask{uuid4().hex[:8]}", for_entity="Shot")
         with zou_db_factory.begin() as session:
@@ -56,6 +65,9 @@ def synthetic_upload_task(authenticated_plugin_client, zou_db_factory, tmp_path)
             project = Project(name=f"VFX Files Test {uuid4()}", team=[actor])
             session.add_all([project, entity_type, task_type])
             session.flush()
+            manager_membership = session.get(ProjectPersonLink, (project.id, actor.id))
+            if manager_membership is not None:
+                manager_membership.role = "manager"
             entity = Entity(name=f"SHOT{uuid4().hex[:8]}", project_id=project.id, entity_type_id=entity_type.id)
             session.add(entity)
             session.flush()

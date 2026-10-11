@@ -35,7 +35,11 @@ def main():
         VFX_FILES_KITSU_ORIGIN=os.environ.get("VFX_FILES_KITSU_ORIGIN"),
     )
     with app.app_context():
-        manager = Person.query.first()
+        people = Person.query.order_by(Person.id).all()
+        manager = next(
+            (person for role in ("admin", "manager") for person in people if getattr(person.role, "code", person.role) == role),
+            people[0] if people else None,
+        )
         if manager is None:
             raise RuntimeError("The disposable Zou host has no seeded test identity")
         suffix = uuid4().hex[:10]

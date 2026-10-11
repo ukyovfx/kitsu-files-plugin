@@ -5,6 +5,7 @@ import re
 ROOT = Path(__file__).resolve().parents[2]
 MIGRATION = ROOT / "plugin/migrations/versions/0001_plugin_foundation.py"
 FOLDER_BINDING_MIGRATION = ROOT / "plugin/migrations/versions/0005_unique_folder_provider_binding.py"
+PUBLISH_SOURCE_MIGRATION = ROOT / "plugin/migrations/versions/0006_publish_source_and_destination.py"
 
 
 def test_plugin_tables_are_namespaced_and_nullable_folder_identity_is_avoided():
@@ -49,3 +50,18 @@ def test_provider_folder_identity_index_is_partial_and_reversible():
     downgrade = source.split("def downgrade():", 1)[1]
     assert 'op.drop_index("plugin_vfx_files_folder_provider_id_uc"' in downgrade
     assert "schema_epoch = 3" in downgrade
+
+
+def test_publish_source_and_destination_migration_is_plugin_owned_and_reversible():
+    source = PUBLISH_SOURCE_MIGRATION.read_text()
+    assert 'revision = "vxf_0006"' in source
+    assert 'down_revision = "vxf_0005"' in source
+    assert '"plugin_vfx_files_output_family"' in source
+    assert '"publish_folder_id"' in source
+    assert '"source_revision_file_id"' in source
+    assert 'sa.ForeignKey("plugin_vfx_files_working_revision_file.id")' in source
+    assert "schema_epoch = 5" in source
+    downgrade = source.split("def downgrade():", 1)[1]
+    assert 'op.drop_column("plugin_vfx_files_publish", "source_revision_file_id")' in downgrade
+    assert 'op.drop_column("plugin_vfx_files_output_family", "publish_folder_id")' in downgrade
+    assert "schema_epoch = 4" in downgrade

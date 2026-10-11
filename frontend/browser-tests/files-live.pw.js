@@ -9,8 +9,7 @@ const accessToken = process.env.VFX_FILES_LIVE_ACCESS_TOKEN
 test.skip(!host || !productionId || !taskId || !accessToken, 'Set the synthetic pinned-host integration environment to enable live workflow proof.')
 
 test('real browser Working File upload reaches pinned Zou, worker and FakeStorage, then refreshes and downloads', async ({ page, context }) => {
-  const pageUrl = new URL(process.env.VFX_FILES_LIVE_BASE_URL || 'http://127.0.0.1:62089/api/plugins/vfx_files/frontend/')
-  if (!pageUrl.pathname.endsWith('/')) pageUrl.pathname += '/'
+  const pageUrl = new URL(process.env.VFX_FILES_LIVE_BASE_URL || 'http://127.0.0.1:62089/api/plugins/vfx_files/frontend/index.html')
   const origin = pageUrl.origin
   const bundleResponse = page.waitForResponse((response) => response.url().includes('/api/plugins/vfx_files/frontend/assets/index-'))
   await context.addCookies([{

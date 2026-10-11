@@ -10,7 +10,7 @@ const artistBToken = process.env.VFX_FILES_LIVE_ARTIST_B_TOKEN
 
 test.skip(!host || !productionId || !taskId || !managerToken || !artistAToken || !artistBToken, 'Requires synthetic identities on the pinned disposable Zou host.')
 
-const baseUrl = process.env.VFX_FILES_LIVE_BASE_URL || 'http://127.0.0.1:55253/api/plugins/vfx_files/frontend/'
+const baseUrl = process.env.VFX_FILES_LIVE_BASE_URL || 'http://127.0.0.1:55253/api/plugins/vfx_files/frontend/index.html'
 const cookieName = process.env.VFX_FILES_LIVE_COOKIE_NAME || 'access_token_cookie'
 
 async function openFiles(browser, token) {
@@ -20,7 +20,8 @@ async function openFiles(browser, token) {
   const page = await context.newPage()
   const overview = page.waitForResponse((response) => response.url().includes('/api/plugins/vfx_files/overview'))
   await page.goto(`${baseUrl}?production_id=${encodeURIComponent(productionId)}`)
-  expect((await overview).status()).toBe(200)
+  const overviewResponse = await overview
+  expect(overviewResponse.status(), await overviewResponse.text()).toBe(200)
   await expect(page.getByRole('heading', { name: 'Files', level: 1, exact: true })).toBeVisible()
   return { context, page }
 }

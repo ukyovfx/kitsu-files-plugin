@@ -6,6 +6,15 @@ from uuid import uuid4
 import pytest
 
 
+def _person_with_role(Person, *roles):
+    """Return a deterministic host identity while handling Zou Choice values."""
+    people = Person.query.order_by(Person.id).all()
+    return next(
+        (person for role in roles for person in people if getattr(person.role, "code", person.role) == role),
+        people[0] if people else None,
+    )
+
+
 if plugin_folder := os.environ.get("VFX_FILES_TEST_PLUGIN_FOLDER"):
     if plugin_folder not in sys.path:
         sys.path.insert(0, plugin_folder)
@@ -58,7 +67,10 @@ def authenticated_plugin_client(zou_app):
         VFX_FILES_KITSU_ORIGIN="https://kitsu.test",
     )
     with app.app_context():
-        person = Person.query.first()
+        # The pinned host accumulates synthetic test actors across runs. Pick
+        # the same privileged fixture identity as synthetic_upload_task instead
+        # of whichever person happens to sort first (often a prior reviewer).
+        person = _person_with_role(Person, "admin", "manager")
         token = create_access_token_for_raw_person(person)
         cookie_name = app.config.get("JWT_ACCESS_COOKIE_NAME", "access_token_cookie")
         token_locations = app.config.get("JWT_TOKEN_LOCATION")
@@ -76,14 +88,15 @@ def synthetic_upload_task(authenticated_plugin_client, zou_db_factory, tmp_path)
     from zou.app.models.entity import Entity
     from zou.app.models.entity_type import EntityType
     from zou.app.models.person import Person
-    from zou.app.models.project import Project
+    from zou.app.models.project import Project, ProjectPersonLink
     from zou.app.models.task import Task, TaskPersonLink
     from zou.app.models.task_type import TaskType
-    from plugin.models import FolderBinding, Job, LatestWorkingPointer, SharedTemplateConfiguration, StorageConnection, UploadPart, UploadSession, WorkingDependency, WorkingRevision, WorkingRevisionFile
+    from plugin.models import ApprovalEvent, FolderBinding, Handoff, HandoffEvent, Job, LatestWorkingPointer, NativeCreateEvent, OutputFamilyMapping, PinnedDependency, Publish, PublishCheckpoint, PublishPointer, ReconciliationFinding, SharedTemplateConfiguration, StorageConnection, UploadPart, UploadSession, WorkingDependency, WorkingRevision, WorkingRevisionFile
 
     app = authenticated_plugin_client.vfx_app
     with app.app_context():
-        actor_id = Person.query.first().id
+        actor = _person_with_role(Person, "admin", "manager")
+        actor_id = actor.id
         entity_type = EntityType(name=f"VFX{uuid4().hex[:8]}")
         task_type = TaskType(name=f"VFXTask{uuid4().hex[:8]}", for_entity="Shot")
         with zou_db_factory.begin() as session:
@@ -91,6 +104,9 @@ def synthetic_upload_task(authenticated_plugin_client, zou_db_factory, tmp_path)
             project = Project(name=f"VFX Files Test {uuid4()}", team=[actor])
             session.add_all([project, entity_type, task_type])
             session.flush()
+            manager_membership = session.get(ProjectPersonLink, (project.id, actor.id))
+            if manager_membership is not None:
+                manager_membership.role = "manager"
             entity = Entity(name=f"SHOT{uuid4().hex[:8]}", project_id=project.id, entity_type_id=entity_type.id)
             session.add(entity)
             session.flush()
@@ -111,6 +127,39 @@ def synthetic_upload_task(authenticated_plugin_client, zou_db_factory, tmp_path)
 
     project_id, entity_type_id, task_type_id, entity_id, task_id, connection_id, _actor_id = values
     with zou_db_factory.begin() as session:
+        publishes = session.scalars(select(Publish).where(Publish.task_id == task_id)).all()
+        publish_ids = [row.id for row in publishes]
+        if publish_ids:
+            immutable_evidence = session.scalar(
+                select(PublishCheckpoint.id).where(PublishCheckpoint.publish_id.in_(publish_ids)).limit(1)
+            )
+            if immutable_evidence is not None:
+                # Completed Publish evidence is intentionally immutable. Keep
+                # its synthetic Kitsu graph together in the disposable host.
+                return
+            native_output_ids = [row.native_output_file_id for row in publishes if row.native_output_file_id]
+            native_source_ids = [row.source_working_file_id for row in publishes if row.source_working_file_id]
+            handoffs = session.scalars(select(Handoff).where(Handoff.publish_id.in_(publish_ids))).all()
+            handoff_ids = [row.id for row in handoffs]
+            if handoff_ids:
+                session.execute(HandoffEvent.__table__.delete().where(HandoffEvent.handoff_id.in_(handoff_ids)))
+            session.execute(ApprovalEvent.__table__.delete().where(ApprovalEvent.publish_id.in_(publish_ids)))
+            session.execute(NativeCreateEvent.__table__.delete().where(NativeCreateEvent.publish_id.in_(publish_ids)))
+            session.execute(PublishCheckpoint.__table__.delete().where(PublishCheckpoint.publish_id.in_(publish_ids)))
+            session.execute(PinnedDependency.__table__.delete().where(PinnedDependency.publish_id.in_(publish_ids)))
+            session.execute(Handoff.__table__.delete().where(Handoff.id.in_(handoff_ids)))
+            session.execute(ReconciliationFinding.__table__.delete().where(ReconciliationFinding.kitsu_object_id.in_(publish_ids)))
+            session.execute(PublishPointer.__table__.delete().where(PublishPointer.task_id == task_id))
+            if native_output_ids:
+                from zou.app.models.output_file import OutputFile
+                session.execute(OutputFile.__table__.delete().where(OutputFile.id.in_(native_output_ids)))
+            if native_source_ids:
+                from zou.app.models.working_file import WorkingFile
+                session.execute(WorkingFile.__table__.delete().where(WorkingFile.id.in_(native_source_ids)))
+            for job in session.scalars(select(Job).where(Job.payload["task_id"].astext == str(task_id))).all():
+                session.delete(job)
+            session.execute(Publish.__table__.delete().where(Publish.id.in_(publish_ids)))
+        session.execute(OutputFamilyMapping.__table__.delete().where(OutputFamilyMapping.production_id == project_id))
         revisions = session.scalars(select(WorkingRevision).where(WorkingRevision.task_id == task_id)).all()
         revision_ids = [row.id for row in revisions]
         if revision_ids:

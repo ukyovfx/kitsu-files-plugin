@@ -90,8 +90,11 @@ def advance_checkpoint(session_factory, publish_id, expected, next_state, eviden
 
 
 def _validate_checkpoint(state, evidence):
-    if state == "source_ready" and not (evidence.get("staging_key") and evidence.get("staging_readback_verified") and evidence.get("sha256") and evidence.get("byte_count") is not None):
-        raise PublishConflict("Source checkpoint needs durable staged-byte evidence")
+    if state == "source_ready":
+        staged_source = evidence.get("staging_key") and evidence.get("staging_readback_verified")
+        working_source = evidence.get("source_revision_file_id") and evidence.get("provider_readback_verified")
+        if not ((staged_source or working_source) and evidence.get("sha256") and evidence.get("byte_count") is not None):
+            raise PublishConflict("Source checkpoint needs durable staged or verified Working File evidence")
     if state == "artifact_verified" and not (evidence.get("provider_object_id") and evidence.get("readback_verified") and evidence.get("sha256") and evidence.get("byte_count") is not None):
         raise PublishConflict("Artifact checkpoint needs provider readback evidence")
     if state == "qc_recorded" and not (evidence.get("policy_id") and evidence.get("policy_sha256") and isinstance(evidence.get("passed"), bool)):

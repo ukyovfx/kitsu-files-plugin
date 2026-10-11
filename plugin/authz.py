@@ -149,5 +149,5 @@ def assert_bearer_header(authorization: str | None) -> str:
 
 
 def assert_compatible_host(host_version: str, schema_epoch: int, worker_build: str) -> None:
-    if host_version != "1.0.94" or schema_epoch != 4 or worker_build != "4":
+    if host_version != "1.0.94" or schema_epoch != 5 or worker_build != "5":
         raise RuntimeError("Files plugin host/schema/worker compatibility mismatch")

@@ -2,8 +2,8 @@
 
 HOST_KITSU_VERSION = "1.0.70"
 HOST_ZOU_VERSION = "1.0.94"
-SCHEMA_EPOCH = 4
-WORKER_BUILD = "4"
+SCHEMA_EPOCH = 5
+WORKER_BUILD = "5"
 
 
 def assert_runtime_host() -> None:
@@ -37,6 +37,8 @@ def authorize_task_mutation(actor, task_id, capability):
     if role in ("admin", "manager"):
         return permissions_service.has_manager_project_access(str(task.project_id))
     if role == "supervisor" and capability in ("upload", "publish", "handoff"):
+        return permissions_service.check_working_on_task(str(task.id))
+    if role == "supervisor" and capability == "approve":
         return permissions_service.check_working_on_task(str(task.id))
     if role == "user" and capability in ("upload", "publish", "handoff"):
         return permissions_service.check_working_on_task(str(task.id))

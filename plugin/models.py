@@ -188,6 +188,7 @@ class OutputFamilyMapping(db.Model):
     representation = db.Column(String(20), nullable=False, default="")
     extension = db.Column(String(10), nullable=False, default="")
     file_status_id = db.Column(UUIDType(binary=False), nullable=False)
+    publish_folder_id = db.Column(String(255))
     enabled = db.Column(Boolean, nullable=False, default=False)
     __table_args__ = (UniqueConstraint("production_id", "family_key", name="plugin_vfx_files_output_family_key_uc"),)
 
@@ -200,6 +201,7 @@ class Publish(db.Model):
     version = db.Column(Integer, nullable=False)
     idempotency_key = db.Column(String(128), unique=True)
     source_working_file_id = db.Column(UUIDType(binary=False))
+    source_revision_file_id = db.Column(UUIDType(binary=False), ForeignKey("plugin_vfx_files_working_revision_file.id"))
     created_by = db.Column(UUIDType(binary=False), nullable=False)
     state = db.Column(String(32), nullable=False, default="reserved")
     byte_count = db.Column(BigInteger)
