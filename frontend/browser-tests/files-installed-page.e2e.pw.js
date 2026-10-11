@@ -10,17 +10,18 @@ const artistBToken = process.env.VFX_FILES_LIVE_ARTIST_B_TOKEN
 const supervisorToken = process.env.VFX_FILES_LIVE_SUPERVISOR_TOKEN
 const artistAId = process.env.VFX_FILES_LIVE_ARTIST_A_ID
 
-test.skip(!host || !productionId || !taskId || !managerToken || !artistAToken || !artistBToken || !supervisorToken || !artistAId, 'Requires synthetic identities on the pinned disposable Zou host.')
+const missingHostFixture = !host || !productionId || !taskId || !managerToken || !artistAToken || !artistBToken || !supervisorToken || !artistAId
 
 const baseUrl = process.env.VFX_FILES_LIVE_BASE_URL || 'http://127.0.0.1:55253/api/plugins/vfx_files/frontend/index.html'
 const cookieName = process.env.VFX_FILES_LIVE_COOKIE_NAME || 'access_token_cookie'
+const pluginApiBase = `${new URL(baseUrl).origin}/api/plugins/vfx_files`
 
 async function openFiles(browser, token) {
   const context = await browser.newContext()
   const origin = new URL(baseUrl).origin
   await context.addCookies([{ name: cookieName, value: token, url: origin }])
   const page = await context.newPage()
-  const overview = page.waitForResponse((response) => response.url().includes('/api/plugins/vfx_files/overview'))
+  const overview = page.waitForResponse((response) => response.url().includes(`${pluginApiBase}/overview`))
   await page.goto(`${baseUrl}?production_id=${encodeURIComponent(productionId)}`)
   const overviewResponse = await overview
   expect(overviewResponse.status(), await overviewResponse.text()).toBe(200)
@@ -29,7 +30,7 @@ async function openFiles(browser, token) {
 }
 
 async function readOverview(page, productionId) {
-  const response = await page.request.get(`${new URL(baseUrl).origin}/api/plugins/vfx_files/overview?production_id=${encodeURIComponent(productionId)}`)
+  const response = await page.request.get(`${pluginApiBase}/overview?production_id=${encodeURIComponent(productionId)}`)
   if (response.status() !== 200) throw new Error(`Overview API returned ${response.status()}: ${await response.text()}`)
   return response.json()
 }
@@ -54,6 +55,7 @@ function runWorker() {
 }
 
 test('installed Files page provisions folders and carries w001 through Artist B to immutable w002', async ({ browser }) => {
+  test.skip(missingHostFixture, 'Requires synthetic identities on the pinned disposable Zou host.')
   test.setTimeout(90_000)
   const manager = await openFiles(browser, managerToken)
   const managerPage = manager.page
@@ -133,7 +135,7 @@ test('installed Files page provisions folders and carries w001 through Artist B 
   await expect(artistB.page.getByRole('link', { name: 'Open artifact' })).toBeVisible()
 
   const unauthorizedCsrf = await artistA.page.evaluate(async () => (await (await fetch('/api/plugins/vfx_files/csrf-token', { credentials: 'same-origin' })).json()).csrf_token)
-  const unauthorizedApproval = await artistA.page.request.post(`${new URL(baseUrl).origin}/api/plugins/vfx_files/publishes/${publish.id}/approvals`, {
+  const unauthorizedApproval = await artistA.page.request.post(`${pluginApiBase}/publishes/${publish.id}/approvals`, {
     headers: { Origin: new URL(baseUrl).origin, 'X-VFX-Files-CSRF': unauthorizedCsrf, 'Idempotency-Key': `denied-approval-${publish.id}` },
     data: { policy_id: 'files-page-review-v1', policy_sha256: '9a3d8d0e6a4d690ad97f6f6a7fcfae135c7fc2e0bd23a5e5e5bf30a55a3d93c1' }
   })

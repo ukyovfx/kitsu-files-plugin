@@ -20,13 +20,11 @@ from vfx_files.storage.fake import PersistentFakeStorage
 
 
 def main():
-    secret_key = os.environ.get("SECRET_KEY")
     fake_path = os.environ.get("VFX_FILES_FAKE_STORAGE_ROOT")
-    if not secret_key or not fake_path:
-        raise RuntimeError("Synthetic browser host key and FakeStorage path are required")
+    if not fake_path:
+        raise RuntimeError("FakeStorage path is required")
     app = create_app()
     app.config.update(
-        SECRET_KEY=secret_key,
         VFX_FILES_ENABLED=True,
         VFX_FILES_WORKER_ENABLED=True,
         VFX_FILES_STORAGE_MODE="fake",

@@ -35,6 +35,7 @@ class GoogleDriveStorageAdapter:
         self.token_provider = token_provider
         self.transport = transport
         self._root_verified = False
+        self._root_can_add_children = False
 
     def _request(self, method, url, *, params=None, json=None, data=None, headers=None):
         token = self.token_provider()
@@ -73,8 +74,9 @@ class GoogleDriveStorageAdapter:
         if self.config.account_mode == "shared_drive" and drive_id != self.config.drive_id:
             raise PermissionFailure("Root belongs to a different Shared Drive")
         self._root_verified = True
+        self._root_can_add_children = bool(data.get("capabilities", {}).get("canAddChildren"))
         return StorageCapabilities(
-            can_add_children=bool(data.get("capabilities", {}).get("canAddChildren")),
+            can_add_children=self._root_can_add_children,
             root_id=root_id,
             drive_id=drive_id,
             shared_drive=self.config.account_mode == "shared_drive",
@@ -85,6 +87,8 @@ class GoogleDriveStorageAdapter:
     def create_folder(self, parent_id: str, reserved_id: str, correlation: Mapping[str, str]):
         if not self._root_verified:
             raise PermissionFailure("Allowed root must be verified before create")
+        if not self._root_can_add_children:
+            raise PermissionFailure("Drive account cannot create children beneath the configured root")
         self._assert_parent_within_root(parent_id)
         body = {
             "id": reserved_id,
@@ -99,6 +103,8 @@ class GoogleDriveStorageAdapter:
             if existing and existing.parent_id == parent_id and existing.mime_type == FOLDER_MIME:
                 return existing
             raise AmbiguousOutcome("Reserved Drive ID exists with conflicting metadata")
+        if response.status_code in (401, 403):
+            raise PermissionFailure("Drive folder create permission was denied")
         if response.status_code not in (200, 201):
             raise AmbiguousOutcome("Drive folder create result is not confirmed")
         return self._object(response.json())
@@ -106,6 +112,8 @@ class GoogleDriveStorageAdapter:
     def upload(self, source: BinaryIO, reserved_id: str, size: int, sha256_hex: str, parent_id: str):
         if not self._root_verified:
             raise PermissionFailure("Allowed root must be verified before upload")
+        if not self._root_can_add_children:
+            raise PermissionFailure("Drive account cannot create children beneath the configured root")
         self._assert_parent_within_root(parent_id)
         if not source.seekable():
             raise ValueError("Drive upload source must be a seekable durable staging stream")
@@ -153,6 +161,8 @@ class GoogleDriveStorageAdapter:
             if existing and self.verify(reserved_id, size, sha256_hex):
                 return existing
             raise AmbiguousOutcome("Reserved artifact ID exists with unverified bytes")
+        if response.status_code in (401, 403):
+            raise PermissionFailure("Drive upload permission was denied")
         if response.status_code not in (200, 201):
             raise AmbiguousOutcome("Drive upload result is not confirmed")
         return self._object(response.json())
@@ -175,6 +185,8 @@ class GoogleDriveStorageAdapter:
             return False
         # Drive exposes md5Checksum, not SHA-256. A byte readback is required for SHA-256 proof.
         response = self._request("GET", f"{API}/files/{object_id}", params={"alt": "media", "supportsAllDrives": "true"})
+        if response.status_code in (401, 403):
+            raise PermissionFailure("Drive object is not readable for checksum verification")
         if response.status_code != 200:
             return False
         digest = sha256()
@@ -223,6 +235,8 @@ class GoogleDriveStorageAdapter:
         if page_token:
             params["pageToken"] = page_token
         response = self._request("GET", f"{API}/files", params=params)
+        if response.status_code in (401, 403):
+            raise PermissionFailure("Drive root listing permission was denied")
         if response.status_code != 200:
             raise AmbiguousOutcome("Drive list result is not confirmed")
         data = response.json()

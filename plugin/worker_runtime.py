@@ -8,6 +8,8 @@ storage mode and a disposable fake-storage directory are configured.
 import argparse
 import json
 import os
+import re
+from pathlib import Path
 from uuid import UUID, uuid4
 
 
@@ -42,6 +44,22 @@ def _authorize_job(payload):
     if role in ("supervisor", "user"):
         return TaskPersonLink.query.filter_by(task_id=task.id, person_id=actor_id).one_or_none() is not None
     return False
+
+
+def assert_restore_validation_complete():
+    """Fail closed during restore until a trusted operator validates the snapshot."""
+    guard_path = os.environ.get("VFX_FILES_RESTORE_GUARD_PATH")
+    expected_manifest = os.environ.get("VFX_FILES_RESTORE_EXPECTED_MANIFEST_SHA256")
+    if not guard_path and not expected_manifest:
+        return
+    if not guard_path or not expected_manifest or not re.fullmatch(r"[0-9a-f]{64}", expected_manifest):
+        raise RuntimeError("Restore integrity verification is required before worker start")
+    try:
+        marker = json.loads(Path(guard_path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        raise RuntimeError("Restore integrity verification is required before worker start") from None
+    if marker.get("integrity_verified") is not True or marker.get("manifest_sha256") != expected_manifest:
+        raise RuntimeError("Restore integrity verification is required before worker start")
 
 
 def build_runtime(app):
@@ -95,6 +113,8 @@ def main(argv=None):
     args = parser.parse_args(argv)
     if not args.once:
         parser.error("Only --once is supported by this isolated worker entrypoint")
+
+    assert_restore_validation_complete()
 
     from zou.app import create_app
 
