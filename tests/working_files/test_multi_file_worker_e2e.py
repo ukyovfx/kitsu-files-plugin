@@ -31,7 +31,7 @@ def _worker_once(tmp_path, monkeypatch):
 
 
 def test_multi_file_snapshot_stays_unpublished_until_every_file_is_verified(
-    authenticated_plugin_client, synthetic_upload_task, zou_db_factory, tmp_path, monkeypatch
+    authenticated_plugin_client, synthetic_upload_task, zou_app, zou_db_factory, tmp_path, monkeypatch
 ):
     client = authenticated_plugin_client
     _production_id, _entity_type, _task_type, _entity_id, task_id, _connection_id, _actor_id = synthetic_upload_task
@@ -84,7 +84,55 @@ def test_multi_file_snapshot_stays_unpublished_until_every_file_is_verified(
     assert after_first_file.json["revisions"][0]["state"] in {"receiving", "transferring"}
     assert sum(file["state"] == "completed" for file in after_first_file.json["revisions"][0]["files"]) == 1
 
+    # Crash the separate worker after it has written the second file to
+    # FakeStorage, but before it can persist the completed job result.
+    environment = os.environ.copy()
+    environment.update({
+        "SECRET_KEY": "vfx-files-isolated-test-secret-key-32-bytes-minimum",
+        "PLUGIN_FOLDER": "/opt/zou/plugins",
+        "PYTHONPATH": "/opt/zou/plugins",
+    })
+    crashed = subprocess.run(
+        [sys.executable, "/tmp/vfx-kitsu-test-root/tests/e2e/crash_worker_after_provider_write.py"],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=environment,
+        timeout=30,
+    )
+    assert crashed.returncode == 86, crashed.stderr
+
+    from sqlalchemy import func, select, text, update
+    from plugin.models import Job, UploadSession
+    with zou_app.app_context(), zou_db_factory.begin() as session:
+        interrupted = session.scalar(
+            select(UploadSession).where(
+                UploadSession.working_revision_file_id.is_not(None),
+                UploadSession.state == "transferring",
+            )
+        )
+        assert interrupted is not None and interrupted.provider_object_id
+        interrupted_upload_id = interrupted.id
+        reserved_provider_id = interrupted.provider_object_id
+        stranded_job = session.scalar(
+            select(Job).where(Job.payload["upload_session_id"].astext == str(interrupted_upload_id))
+        )
+        assert stranded_job.state == "leased"
+        session.execute(
+            update(Job).where(Job.id == stranded_job.id).values(
+                lease_expires_at=func.now() - text("interval '1 second'"),
+                available_at=func.now() - text("interval '1 second'"),
+            )
+        )
+
+    still_incomplete = client.get(route)
+    assert still_incomplete.json["latest_working_id"] is None
     _worker_once(tmp_path, monkeypatch)
+    with zou_db_factory() as session:
+        recovered = session.get(UploadSession, interrupted_upload_id)
+        assert recovered.state == "completed"
+        assert recovered.provider_object_id == reserved_provider_id
+
     completed = client.get(route)
     assert completed.status_code == 200
     assert completed.json["latest_working_id"] == reserved.json["id"]
