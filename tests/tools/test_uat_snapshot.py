@@ -80,3 +80,12 @@ def test_restore_waits_until_database_service_reports_healthy(monkeypatch, tmp_p
     snapshot.wait_service_healthy(tmp_path, tmp_path / "uat.env", "vfx-files-uat-restore", tmp_path / "compose.yaml", "postgres")
 
     assert list(states) == []
+
+
+def test_restore_requires_the_exact_application_image_captured_by_snapshot():
+    manifest = {"application_image_id": "sha256:" + "a" * 64}
+
+    snapshot.verify_application_image(manifest, "sha256:" + "a" * 64)
+
+    with pytest.raises(RuntimeError, match="exact API/Worker image"):
+        snapshot.verify_application_image(manifest, "sha256:" + "b" * 64)

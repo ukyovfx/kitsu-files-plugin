@@ -7,6 +7,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import subprocess
 import time
 import zipfile
@@ -30,10 +31,27 @@ def digest(path: Path) -> str:
 
 
 def image_id(project: str, env_file: Path, compose: Path, root: Path) -> str:
-    output = run_compose(root, env_file, project, compose, "images", "-q", "api").decode().splitlines()
-    if len(set(output)) != 1 or not output:
-        raise RuntimeError("Could not identify one API/Worker image for this UAT snapshot")
-    return output[0]
+    values = {}
+    for line in env_file.read_text(encoding="utf-8").splitlines():
+        key, separator, value = line.partition("=")
+        if separator:
+            values[key] = value
+    short = values.get("VFX_FILES_UAT_SOURCE_SHORT", "")
+    if not re_full_sha(short) and not (len(short) == 12 and all(char in "0123456789abcdef" for char in short)):
+        raise RuntimeError("Cannot identify the UAT application image from its source commit")
+    tag = f"vfx-files-uat-app:{short}"
+    try:
+        return subprocess.check_output(["docker", "image", "inspect", tag, "--format", "{{.Id}}"], text=True).strip()
+    except subprocess.CalledProcessError as error:
+        raise RuntimeError("The exact API/Worker image is not available locally") from error
+
+
+def verify_application_image(manifest: dict, actual_image_id: str) -> None:
+    expected = manifest.get("application_image_id")
+    if not isinstance(expected, str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", expected):
+        raise RuntimeError("Snapshot does not contain a valid application image identity")
+    if expected != actual_image_id:
+        raise RuntimeError("Restore target must use the exact API/Worker image captured by the snapshot")
 
 
 def wait_service_healthy(root: Path, env_file: Path, project: str, compose: Path, service: str, timeout_seconds: int = 180) -> None:
@@ -135,6 +153,7 @@ def create_snapshot(args: argparse.Namespace) -> None:
 def restore_snapshot(args: argparse.Namespace) -> None:
     source = args.snapshot.resolve()
     manifest, expected = verify_snapshot(source, args.project, args.source_short)
+    verify_application_image(manifest, image_id(args.project, args.env_file, args.compose, args.root))
     running = run_compose(args.root, args.env_file, args.project, args.compose, "ps", "--quiet", "api", "worker").decode().splitlines()
     if any(running):
         raise RuntimeError("Refusing restore while the target API or Worker is running")
