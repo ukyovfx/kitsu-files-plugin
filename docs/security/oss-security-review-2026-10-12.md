@@ -72,7 +72,7 @@ This local build is a compatibility candidate only. It does not replace the offi
 | `npm audit --audit-level=moderate` | **PASS** — zero advisories. |
 | Candidate host `pip-audit` | **PASS** — no known vulnerabilities. |
 | Locked host Python dependency audit | **FAIL** — vulnerable packages remain in the official locked image. |
-| GitHub Actions | **NOT TESTED / BLOCKED** — both runs for PR head `a754ba903d18c91871fe64cefdc670d4d8723dde` failed before any job steps ran; all jobs reported empty step lists and no logs. Local checks above are not represented as CI proof. |
+| GitHub Actions | **BLOCKED / NOT TESTED** — two workflow runs for current PR head `3125a8a7491cd359b8859ebfc301fec954871c8b` failed before any steps ran; all jobs had empty step lists, and the run log endpoint returned “log not found”. The failure cause is unknown. Older runs showed the same pre-step failure. Local checks above are not represented as CI proof. |
 | Semgrep, CodeQL CLI, Trivy, OSV-Scanner, external penetration test | **NOT TESTED** — not installed or run; no finding is inferred from their absence. |
 
 Git history privacy is **REVIEW REQUIRED**: author metadata was inspected without reproducing values; 20 commits use a non-GitHub-noreply address and two distinct addresses appear in history. No history rewrite was attempted. The repository owner must decide whether to keep this metadata or plan an approved history rewrite before public distribution.
