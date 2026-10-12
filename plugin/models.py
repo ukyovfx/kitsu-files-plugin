@@ -366,3 +366,90 @@ class ReconciliationFinding(db.Model):
     evidence = db.Column(JSONB, nullable=False, default=dict)
     created_at = db.Column(DateTime(timezone=True), nullable=False, server_default=func.now())
     __table_args__ = (UniqueConstraint("object_type", "kitsu_object_id", name="plugin_vfx_files_reconciliation_identity_uc"),)
+
+
+class KitsuSyncDesiredConfiguration(db.Model):
+    """Latest KitsuSync-owned desired state; applied state is tracked separately."""
+    __tablename__ = "plugin_vfx_files_kitsusync_desired_config"
+    production_id = db.Column(UUIDType(binary=False), primary_key=True)
+    config_revision = db.Column(Integer, nullable=False)
+    notification_epoch = db.Column(Integer, nullable=False, default=0)
+    desired_config = db.Column(JSONB, nullable=False)
+    updated_at = db.Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
+class KitsuSyncHierarchySnapshot(db.Model):
+    """Bounded, KitsuSync-supplied hierarchy snapshot for one desired revision."""
+    __tablename__ = "plugin_vfx_files_kitsusync_snapshot"
+    id = db.Column(UUIDType(binary=False), primary_key=True, default=uuid4)
+    production_id = db.Column(UUIDType(binary=False), nullable=False, index=True)
+    config_revision = db.Column(Integer, nullable=False)
+    source_etag = db.Column(String(200), nullable=False)
+    page_count = db.Column(Integer, nullable=False)
+    object_count = db.Column(Integer, nullable=False)
+    hierarchy_sha256 = db.Column(String(64), nullable=False)
+    state = db.Column(String(24), nullable=False, default="uploading")
+    created_at = db.Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    expires_at = db.Column(DateTime(timezone=True), nullable=False)
+    __table_args__ = (UniqueConstraint("production_id", "config_revision", "hierarchy_sha256", name="plugin_vfx_files_kitsusync_snapshot_revision_sha_uc"),)
+
+
+class KitsuSyncHierarchySnapshotPage(db.Model):
+    __tablename__ = "plugin_vfx_files_kitsusync_snapshot_page"
+    snapshot_id = db.Column(UUIDType(binary=False), ForeignKey("plugin_vfx_files_kitsusync_snapshot.id", ondelete="CASCADE"), primary_key=True)
+    page_index = db.Column(Integer, primary_key=True)
+    page_sha256 = db.Column(String(64), nullable=False)
+    objects = db.Column(JSONB, nullable=False)
+    created_at = db.Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
+class KitsuSyncEventOutbox(db.Model):
+    """Durable, idempotent Plugin-to-KitsuSync event delivery queue."""
+    __tablename__ = "plugin_vfx_files_kitsusync_event_outbox"
+    id = db.Column(UUIDType(binary=False), primary_key=True, default=uuid4)
+    production_id = db.Column(UUIDType(binary=False), nullable=False, index=True)
+    event_id = db.Column(String(255), nullable=False)
+    event_type = db.Column(String(128), nullable=False)
+    payload = db.Column(JSONB, nullable=False)
+    payload_sha256 = db.Column(String(64), nullable=False)
+    state = db.Column(String(24), nullable=False, default="queued")
+    attempts = db.Column(Integer, nullable=False, default=0)
+    available_at = db.Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    lease_owner = db.Column(UUIDType(binary=False))
+    lease_generation = db.Column(Integer, nullable=False, default=0)
+    lease_expires_at = db.Column(DateTime(timezone=True))
+    last_response_code = db.Column(String(64))
+    created_at = db.Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    __table_args__ = (
+        UniqueConstraint("event_id", name="plugin_vfx_files_kitsusync_event_id_uc"),
+        UniqueConstraint("production_id", "event_id", name="plugin_vfx_files_kitsusync_event_production_uc"),
+    )
+
+
+class OutputPackageDelivery(db.Model):
+    """Independent receipt state for each receiving Task, referencing one package."""
+    __tablename__ = "plugin_vfx_files_output_package_delivery"
+    id = db.Column(UUIDType(binary=False), primary_key=True, default=uuid4)
+    package_id = db.Column(UUIDType(binary=False), ForeignKey("plugin_vfx_files_output_package.id"), nullable=False, index=True)
+    production_id = db.Column(UUIDType(binary=False), nullable=False, index=True)
+    recipient_task_id = db.Column(UUIDType(binary=False), nullable=False)
+    recipient_task_type_id = db.Column(UUIDType(binary=False), nullable=False)
+    delivery_revision = db.Column(Integer, nullable=False, default=1)
+    state = db.Column(String(24), nullable=False, default="available")
+    feedback = db.Column(Text)
+    idempotency_key = db.Column(String(255), nullable=False, unique=True)
+    created_by = db.Column(UUIDType(binary=False), nullable=False)
+    created_at = db.Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at = db.Column(DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now())
+    __table_args__ = (UniqueConstraint("package_id", "recipient_task_id", "delivery_revision", name="plugin_vfx_files_package_delivery_revision_uc"),)
+
+
+class OutputPackageDeliveryEvent(db.Model):
+    __tablename__ = "plugin_vfx_files_output_package_delivery_event"
+    id = db.Column(UUIDType(binary=False), primary_key=True, default=uuid4)
+    delivery_id = db.Column(UUIDType(binary=False), ForeignKey("plugin_vfx_files_output_package_delivery.id"), nullable=False, index=True)
+    actor_id = db.Column(UUIDType(binary=False), nullable=False)
+    event_type = db.Column(String(24), nullable=False)
+    feedback = db.Column(Text)
+    idempotency_key = db.Column(String(255), nullable=False, unique=True)
+    created_at = db.Column(DateTime(timezone=True), nullable=False, server_default=func.now())

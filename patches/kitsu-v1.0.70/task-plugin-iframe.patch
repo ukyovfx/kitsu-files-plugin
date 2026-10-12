@@ -1,0 +1,131 @@
+diff --git a/src/components/sides/TaskInfo.vue b/src/components/sides/TaskInfo.vue
+index ca1d31674..159385ef4 100644
+--- a/src/components/sides/TaskInfo.vue
++++ b/src/components/sides/TaskInfo.vue
+@@ -102,6 +102,12 @@
+           </div>
+         </div>
+ 
++        <task-plugin-extensions
++          v-if="!isConceptTask && task.id && task.project_id && task.entity_id && task.task_type_id"
++          :key="task.id"
++          :task="task"
++        />
++
+         <div class="flexrow" v-if="showAssignees && task.assignees.length > 0">
+           <span class="flexrow-item ml1">
+             {{ $t('tasks.fields.assignees') }}:
+@@ -435,6 +441,7 @@ import Comment from '@/components/widgets/Comment.vue'
+ import PeopleAvatar from '@/components/widgets/PeopleAvatar.vue'
+ import Spinner from '@/components/widgets/Spinner.vue'
+ import TaskTypeName from '@/components/widgets/TaskTypeName.vue'
++import TaskPluginExtensions from '@/components/sides/TaskPluginExtensions.vue'
+ 
+ const DEFAULT_PANEL_WIDTH = 400
+ 
+diff --git a/src/components/sides/TaskPluginExtensions.vue b/src/components/sides/TaskPluginExtensions.vue
+new file mode 100644
+index 000000000..e68d9405f
+--- /dev/null
++++ b/src/components/sides/TaskPluginExtensions.vue
+@@ -0,0 +1,100 @@
++<template>
++  <section v-if="plugins.length > 0" class="task-plugin-extensions pa1 pt0">
++    <div class="flexrow plugin-extension-actions">
++      <button
++        v-for="plugin in plugins"
++        :key="plugin.plugin_id"
++        class="button is-small is-light mr05"
++        type="button"
++        :aria-expanded="activePluginId === plugin.plugin_id"
++        @click="togglePlugin(plugin.plugin_id)"
++      >
++        {{ plugin.name }}
++      </button>
++    </div>
++    <div v-if="activePlugin" class="plugin-extension-panel mt1">
++      <div class="flexrow plugin-extension-heading">
++        <strong class="flexrow-item filler">{{ activePlugin.name }}</strong>
++        <button
++          class="delete flexrow-item"
++          type="button"
++          :aria-label="`Close ${activePlugin.name}`"
++          @click="activePluginId = ''"
++        />
++      </div>
++      <iframe
++        :key="`${task.id}:${activePlugin.plugin_id}`"
++        class="plugin-extension-frame"
++        :src="pluginUrl(activePlugin)"
++        :title="`${activePlugin.name} task extension`"
++        loading="lazy"
++        referrerpolicy="same-origin"
++      />
++    </div>
++  </section>
++</template>
++
++<script setup>
++import { computed, ref, watch } from 'vue'
++import { useStore } from 'vuex'
++
++const props = defineProps({
++  task: { type: Object, required: true }
++})
++
++const store = useStore()
++const activePluginId = ref('')
++const plugins = computed(() => store.getters.projectPlugins || [])
++const activePlugin = computed(() =>
++  plugins.value.find(plugin => plugin.plugin_id === activePluginId.value)
++)
++
++const togglePlugin = pluginId => {
++  activePluginId.value = activePluginId.value === pluginId ? '' : pluginId
++}
++
++const pluginUrl = plugin => {
++  const query = new URLSearchParams()
++  query.set('production_id', props.task.project_id)
++  query.set('task_id', props.task.id)
++  query.set('entity_id', props.task.entity_id)
++  query.set('task_type_id', props.task.task_type_id)
++  if (store.getters.isDarkTheme) query.set('dark_theme', 'true')
++  const locale = store.state.user.user?.locale || 'en'
++  query.set('locale', locale.substring(0, 2))
++  return `/api/plugins/${encodeURIComponent(plugin.plugin_id)}/frontend/?${query}`
++}
++
++watch(
++  () => props.task.id,
++  () => {
++    // Remove the old document immediately when Kitsu switches the selected Task.
++    activePluginId.value = ''
++  }
++)
++</script>
++
++<style lang="scss" scoped>
++.plugin-extension-actions {
++  flex-wrap: wrap;
++}
++
++.plugin-extension-panel {
++  border: 1px solid var(--border-alt);
++  border-radius: 4px;
++  overflow: hidden;
++}
++
++.plugin-extension-heading {
++  align-items: center;
++  padding: 0.5em;
++}
++
++.plugin-extension-frame {
++  display: block;
++  width: 100%;
++  height: min(65vh, 720px);
++  border: 0;
++  background: var(--background-page);
++}
++</style>

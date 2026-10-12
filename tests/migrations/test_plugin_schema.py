@@ -8,6 +8,7 @@ FOLDER_BINDING_MIGRATION = ROOT / "plugin/migrations/versions/0005_unique_folder
 PUBLISH_SOURCE_MIGRATION = ROOT / "plugin/migrations/versions/0006_publish_source_and_destination.py"
 TASK_OUTPUT_MIGRATION = ROOT / "plugin/migrations/versions/0007_task_outputs_and_department_handoffs.py"
 OUTPUT_PACKAGE_QC_MIGRATION = ROOT / "plugin/migrations/versions/0008_output_package_qc.py"
+KITSUSYNC_DELIVERY_MIGRATION = ROOT / "plugin/migrations/versions/0009_kitsusync_contract_and_package_deliveries.py"
 
 
 def test_plugin_tables_are_namespaced_and_nullable_folder_identity_is_avoided():
@@ -112,3 +113,26 @@ def test_output_package_qc_is_plugin_owned_and_downgrade_fails_closed_with_data(
     assert "has_package_rows" in downgrade
     assert "restore a consistent pre-migration snapshot" in downgrade
     assert "schema_epoch = 6" in downgrade
+
+
+def test_kitsusync_contract_and_multi_recipient_migration_is_additive_and_fail_closed():
+    source = KITSUSYNC_DELIVERY_MIGRATION.read_text()
+    assert 'revision = "vxf_0009"' in source
+    assert 'down_revision = "vxf_0008"' in source
+    for table in (
+        "plugin_vfx_files_kitsusync_desired_config",
+        "plugin_vfx_files_kitsusync_snapshot",
+        "plugin_vfx_files_kitsusync_snapshot_page",
+        "plugin_vfx_files_kitsusync_event_outbox",
+        "plugin_vfx_files_output_package_delivery",
+        "plugin_vfx_files_output_package_delivery_event",
+    ):
+        assert f'op.create_table(\n        "{table}"' in source
+    assert "page_count BETWEEN 1 AND 1000" in source
+    assert "object_count BETWEEN 1 AND 500000" in source
+    assert "KitsuSync event identity and payload are immutable" in source
+    assert "Output Package delivery history is immutable" in source
+    assert "schema_epoch = 8" in source
+    downgrade = source.split("def downgrade():", 1)[1]
+    assert "restore a consistent pre-migration snapshot" in downgrade
+    assert "schema_epoch = 7" in downgrade
