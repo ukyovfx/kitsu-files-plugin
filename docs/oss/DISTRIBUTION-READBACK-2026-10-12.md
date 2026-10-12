@@ -37,3 +37,16 @@ After adding the supported Google Drive Worker adapter factory, credential-refer
 - Installed-host execution of the guarded seeder and browser flow is **PASS** on a separate disposable candidate host. A runtime defect in Zou's default token helper was corrected so new test tokens carry an explicit 15-minute expiry. A separate older local seed still contains four unresolved JWT-shaped values; this rehearsal neither read those values nor used, revoked, or deleted them.
 - GitHub Actions remains **NOT TESTED**; the last recorded run failed before any steps and exposed no job logs. This gate was not rerun.
 - License ownership, private vulnerability reporting configuration, signing/provenance, public history privacy review, real Drive, and Production compatibility remain unresolved or untested.
+
+## Issue #3 reproducible offline handoff bundle
+
+At source commit `94c19ce228131490f4b0553796be2a8e3c8a8089`, `tools/build_offline_bundle.py` produced the complete review bundle twice from Git objects. Both archives were reopened, CRC-checked, and every archived file byte-compared and SHA-256-checked against its source Git object. Both builds had 62 entries: the exact 53-file tracked `plugin/` tree (including the same API/Worker code), seven required distribution identity/review inputs, the tracked builder, and an embedded manifest. No untracked overlay, root-level `worker/`, local environment, database, media, or test output was an input.
+
+- **PASS — deterministic archive SHA-256:** `287b846e5f86b66eec19d52eb7300440b217129064816d4b5e24a197b3291de8` (both runs matched).
+- **PASS — embedded manifest SHA-256:** `8e3f39d80ac8a71555cacf9db29d50be19b68c165dae5737c03718294048ef5c`.
+- **PASS — distribution SBOM coverage:** all 53 tracked plugin paths are represented with matching Git-object SHA-256 values; the six Vue / Noble runtime library entries match the package lock.
+- **PASS — reproducibility regression:** `tests/tools/test_offline_bundle.py` verifies the JSON-formatted host lock's Python/Node/npm pins and frontend runtime package versions; `pytest tests/tools/test_offline_bundle.py -q` passed 1 test.
+- **PASS — notice text readback:** both MIT text blocks in the third-party notice draft matched the exact-version npm package `LICENSE` files; the project license and source rights are still unapproved.
+- **PASS — scoped Gitleaks:** `gitleaks dir --no-banner --redact docs` and `... tools` reported no leaks.
+
+The archive is retained as an unsigned local review candidate only. The builder itself reopens and validates each build. This is not a signed, provenance-attested, rights-cleared, official-host, or deployable release artifact. The official pinned-host advisory gate remains **FAIL**.
