@@ -59,6 +59,18 @@ def validated_disposable_root_url(environ=None):
     return urlunsplit((parsed.scheme, parsed.netloc, "", "", ""))
 
 
+def validated_synthetic_login_password(environ=None):
+    """Require a short-lived harness password for disposable browser login."""
+    env = os.environ if environ is None else environ
+    password = env.get("VFX_FILES_E2E_TEST_PASSWORD")
+    if not isinstance(password, str):
+        raise RuntimeError("A synthetic E2E login password is required")
+    encoded = password.encode("utf-8")
+    if len(encoded) < 16 or len(encoded) > 72:
+        raise RuntimeError("Synthetic E2E login password must be 16-72 UTF-8 bytes")
+    return password
+
+
 def token_has_short_expiry(token, now=None):
     current_time = time.time() if now is None else now
     parts = token.split(".")

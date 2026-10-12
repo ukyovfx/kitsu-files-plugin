@@ -10,6 +10,7 @@ from seeder_safety import (
     token_expiry_config,
     token_has_short_expiry,
     validated_disposable_root_url,
+    validated_synthetic_login_password,
 )
 
 
@@ -25,6 +26,18 @@ def test_seed_requires_a_root_url():
 
     with pytest.raises(RuntimeError, match="root URL"):
         validate({"VFX_FILES_DISPOSABLE_TEST_MODE": "1"})
+
+
+def test_seed_requires_a_bounded_synthetic_login_password():
+    validate = validated_synthetic_login_password
+
+    with pytest.raises(RuntimeError, match="password is required"):
+        validate({})
+    with pytest.raises(RuntimeError, match="16-72 UTF-8 bytes"):
+        validate({"VFX_FILES_E2E_TEST_PASSWORD": "too-short"})
+    with pytest.raises(RuntimeError, match="16-72 UTF-8 bytes"):
+        validate({"VFX_FILES_E2E_TEST_PASSWORD": "x" * 73})
+    assert validate({"VFX_FILES_E2E_TEST_PASSWORD": "isolated-browser-password-123"}) == "isolated-browser-password-123"
 
 
 def test_reserved_test_host_is_accepted_only_with_https_or_loopback_http():
