@@ -66,6 +66,10 @@ def test_every_service_declares_enforced_container_resource_limits():
         assert "mem_limit:" in section
         assert "cpus:" in section
         assert "pids_limit:" in section
+        assert "logging: *uat-logging" in section
+
+    assert 'max-size: "10m"' in compose
+    assert 'max-file: "3"' in compose
 
 
 def test_removal_is_project_scoped_and_preserves_backup_directories():
