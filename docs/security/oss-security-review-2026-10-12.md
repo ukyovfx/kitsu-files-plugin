@@ -2,7 +2,7 @@
 
 ## Scope and boundaries
 
-- Repository: `ukyovfx/vfx-kitsu-files-plugin`; reviewed source checkpoint `3c66b3242301a36fbedbd2e6ff2a2e28e7868116`, branch `codex/vfx-files-plugin-implementation`.
+- Repository: `ukyovfx/vfx-kitsu-files-plugin`; reviewed source checkpoint `3125a8a7491cd359b8859ebfc301fec954871c8b`, branch `codex/vfx-files-plugin-implementation`.
 - Review areas: host authentication and authorization, Production/Task/root isolation, uploads and downloads, immutable Working and Publish objects, Worker fencing/recovery, native Zou reconciliation, restore guard, CI and dependency supply chain, license/reporting readiness.
 - No Production, Staging, KitsuSync database, real Drive account, or real production media was accessed in this pass. No merge, release, deployment, upstream PR, or host-lock edit was made.
 - No applicable `AGENTS.md` exists in this repository. The target worktree already contained a local package overlay and three modified Worker files. They remain uncommitted and were excluded from the source fix commit; the overlay copy of `resources.py` was kept in sync with the committed Handoff check.
