@@ -1,0 +1,23 @@
+{
+  "name": "vfx-kitsu-files-frontend",
+  "version": "0.5.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "test": "vitest run",
+    "test:browser": "playwright test",
+    "build": "vite build"
+  },
+  "dependencies": {
+    "@noble/hashes": "1.8.0",
+    "vue": "3.5.43"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.64.0",
+    "@vitejs/plugin-vue": "6.0.9",
+    "typescript": "5.9.3",
+    "vite": "8.3.3",
+    "vitest": "5.0.3"
+  }
+}

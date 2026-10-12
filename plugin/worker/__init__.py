@@ -1,0 +1,1 @@
+"""Installed Files worker implementation."""

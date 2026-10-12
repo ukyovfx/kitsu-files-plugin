@@ -1,0 +1,207 @@
+import { execFileSync } from 'node:child_process'
+import { expect, test } from '@playwright/test'
+
+const host = process.env.VFX_FILES_LIVE_HOST_CONTAINER
+const productionId = process.env.VFX_FILES_LIVE_PRODUCTION_ID
+const productionName = process.env.VFX_FILES_LIVE_PRODUCTION_NAME
+const taskId = process.env.VFX_FILES_LIVE_TASK_ID
+const loginEmails = JSON.parse(process.env.VFX_FILES_LIVE_LOGIN_EMAILS || '{}')
+const loginPassword = process.env.VFX_FILES_LIVE_TEST_PASSWORD
+const artistAId = process.env.VFX_FILES_LIVE_ARTIST_A_ID
+
+const missingHostFixture = !host || !productionId || !productionName || !taskId || !loginPassword || !loginEmails.manager || !loginEmails.artist_a || !loginEmails.artist_b || !loginEmails.supervisor || !artistAId
+
+const baseUrl = process.env.VFX_FILES_LIVE_BASE_URL || 'http://127.0.0.1:55253'
+const origin = new URL(baseUrl).origin
+const pluginApiBase = `${origin}/api/plugins/vfx_files`
+
+async function openFilesFromProductionMenu(page, productionId, { alreadySelected = false } = {}) {
+  const selectedPlugin = page.getByRole('button', { name: 'VFX Files', exact: true })
+  const assetsMenu = page.getByRole('button', { name: 'Assets', exact: true })
+  if (alreadySelected) {
+    await expect(selectedPlugin).toBeVisible()
+  } else {
+    await expect(assetsMenu).toBeVisible()
+    await assetsMenu.click()
+    const projectMenuItem = page.getByText('VFX Files', { exact: true })
+    await expect(projectMenuItem).toBeVisible()
+    await projectMenuItem.click()
+  }
+  await expect.poll(() => page.frames().some((frame) => frame.url().includes('/plugins/vfx_files/') && frame.url().includes(`production_id=${encodeURIComponent(productionId)}`))).toBe(true)
+  const overview = await readOverview(page, productionId)
+  expect(overview.production_id).toBe(productionId)
+  const frame = page.frames().find((item) => item.url().includes('/plugins/vfx_files/'))
+  await expect(frame.getByRole('heading', { name: 'Files', level: 1, exact: true })).toBeVisible()
+}
+
+async function openFiles(browser, role) {
+  const context = await browser.newContext({
+    // Kitsu/Zou distinguishes browser logins from API clients using the UA parser.
+    userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
+  })
+  const page = await context.newPage()
+  await page.goto(`${origin}/login`)
+  const loginResponse = page.waitForResponse((response) => response.url().endsWith('/api/auth/login') && response.request().method() === 'POST')
+  await page.getByRole('textbox', { name: 'Email' }).fill(loginEmails[role])
+  await page.getByRole('textbox', { name: 'Password' }).fill(loginPassword)
+  await page.getByRole('button', { name: 'Log in', exact: true }).click()
+  const authResponse = await loginResponse
+  expect(authResponse.status()).toBe(200)
+  const cookieNames = (await context.cookies()).map((cookie) => cookie.name)
+  expect(cookieNames).toContain('access_token_cookie')
+  await page.goto(`${origin}/open-productions`)
+  const production = page.getByText(productionName, { exact: true })
+  await expect(production).toBeVisible()
+  await production.click()
+  await openFilesFromProductionMenu(page, productionId)
+  return { context, page, get ui() { return page.frames().find((frame) => frame.url().includes('/plugins/vfx_files/')) } }
+}
+
+async function readOverview(page, productionId) {
+  const response = await page.request.get(`${pluginApiBase}/overview?production_id=${encodeURIComponent(productionId)}`)
+  if (response.status() !== 200) throw new Error(`Overview API returned ${response.status()}: ${await response.text()}`)
+  return response.json()
+}
+
+function runWorker() {
+  const output = execFileSync('docker', [
+    'exec',
+    '-e', 'SECRET_KEY=vfx-files-isolated-test-secret-key-32-bytes-minimum',
+    '-e', 'PLUGIN_FOLDER=/opt/zou/plugins',
+    '-e', 'PYTHONPATH=/opt/zou/plugins',
+    '-e', 'VFX_FILES_ENABLED=true',
+    '-e', 'VFX_FILES_WORKER_ENABLED=true',
+    '-e', 'VFX_FILES_STORAGE_MODE=fake',
+    '-e', `VFX_FILES_STAGING_ROOT=${process.env.VFX_FILES_LIVE_STAGING_ROOT}`,
+    '-e', `VFX_FILES_FAKE_STORAGE_ROOT=${process.env.VFX_FILES_LIVE_FAKE_STORAGE_PATH}`,
+    '-e', 'VFX_FILES_FAKE_ROOT_ID=synthetic-root-id',
+    '-e', 'VFX_FILES_FAKE_DRIVE_ID=synthetic-drive-id',
+    host,
+    '/opt/zou/env/bin/python', '-m', 'vfx_files.worker_runtime', '--once'
+  ], { encoding: 'utf8', timeout: 30_000 })
+  expect(output).toContain('"result": "completed"')
+}
+
+test('installed Files page provisions folders and carries w001 through Artist B to immutable w002', async ({ browser }) => {
+  test.skip(missingHostFixture, 'Requires synthetic identities on the pinned disposable Zou host.')
+  test.setTimeout(150_000)
+  const manager = await openFiles(browser, 'manager')
+  const managerPage = manager.ui
+  await managerPage.getByRole('button', { name: /Folder template setup/ }).click()
+  await managerPage.getByLabel('Google Drive root URL').fill(`https://drive.google.com/drive/folders/synthetic-root-id`)
+  await managerPage.getByRole('button', { name: 'Discover' }).click()
+  await managerPage.getByLabel('Folder template', { exact: true }).selectOption('template-root')
+  await managerPage.getByLabel('Sequence (optional) mapping').selectOption('template-sequence')
+  await managerPage.getByLabel('Shot mapping').selectOption('template-shot')
+  await managerPage.getByLabel('Task mapping').selectOption('template-task')
+  await managerPage.getByRole('button', { name: 'Save disabled configuration' }).click()
+  await expect(managerPage.getByText(/Configuration v\d+ · disabled/)).toBeVisible()
+  await managerPage.getByRole('button', { name: 'Activate provisioning' }).click()
+  await expect(managerPage.getByText(/Configuration v\d+ · active/)).toBeVisible()
+  await managerPage.getByLabel('Provision Task folders').selectOption(taskId)
+  await managerPage.getByRole('button', { name: 'Create or reuse' }).click()
+  await expect(managerPage.getByText(/Folder job queued:/)).toBeVisible()
+  runWorker()
+
+  await manager.page.reload()
+  await openFilesFromProductionMenu(manager.page, productionId, { alreadySelected: true })
+  await expect(manager.ui.getByRole('link', { name: 'Open folder' })).toHaveCount(5)
+  const folderLinks = await manager.ui.getByRole('link', { name: 'Open folder' }).evaluateAll((links) => links.map((link) => link.href))
+  expect(folderLinks.every((url) => /^https:\/\/drive\.google\.com\/drive\/folders\/[A-Za-z0-9_-]+$/.test(url))).toBe(true)
+
+  const artistA = await openFiles(browser, 'artist_a')
+  await artistA.ui.getByLabel('Choose Task').selectOption(taskId)
+  const bytes001 = Buffer.from('verified synthetic Working File revision w001')
+  const name001 = 'artist-a-scene-v001.exr'
+  await artistA.ui.locator('input[type="file"]').setInputFiles({ name: name001, mimeType: 'image/x-exr', buffer: bytes001 })
+  await expect(artistA.ui.getByText(/Working w001 reserved\. 1 transfer job\(s\) queued\./)).toBeVisible({ timeout: 15_000 })
+  runWorker()
+  await artistA.page.reload()
+  await openFilesFromProductionMenu(artistA.page, productionId, { alreadySelected: true })
+  await artistA.ui.getByLabel('Choose Task').selectOption(taskId)
+  await expect(artistA.ui.getByRole('link', { name: name001, exact: true })).toBeVisible()
+  await expect(artistA.ui.locator('.revision-heading')).toContainText('w001')
+
+  const artistB = await openFiles(browser, 'artist_b')
+  await artistB.ui.getByLabel('Choose Task').selectOption(taskId)
+  const file001 = artistB.ui.getByRole('link', { name: name001, exact: true })
+  await expect(file001).toBeVisible()
+  const download001 = await artistB.page.request.get(new URL(await file001.getAttribute('href'), artistB.ui.url()).toString())
+  expect(download001.status()).toBe(200)
+  expect(await download001.body()).toEqual(bytes001)
+
+  const bytes002 = Buffer.from('verified synthetic Working File revision w002 from Artist B')
+  const name002 = 'artist-b-scene-v002.exr'
+  await artistB.ui.locator('input[type="file"]').setInputFiles({ name: name002, mimeType: 'image/x-exr', buffer: bytes002 })
+  await expect(artistB.ui.getByText(/Working w002 reserved\. 1 transfer job\(s\) queued\./)).toBeVisible({ timeout: 15_000 })
+  runWorker()
+  await artistB.page.reload()
+  await openFilesFromProductionMenu(artistB.page, productionId, { alreadySelected: true })
+  await artistB.ui.getByLabel('Choose Task').selectOption(taskId)
+  await expect(artistB.ui.locator('.revision-list').getByText('w001', { exact: true })).toBeVisible()
+  await expect(artistB.ui.locator('.revision-list').getByText('w002', { exact: true })).toBeVisible()
+  const pointer = artistB.ui.locator('.revision-heading')
+  await expect(pointer).toContainText('Latest Working')
+  await expect(pointer).toContainText('w002')
+  for (const [name, bytes] of [[name001, bytes001], [name002, bytes002]]) {
+    const file = artistB.ui.getByRole('link', { name, exact: true })
+    const response = await artistB.page.request.get(new URL(await file.getAttribute('href'), artistB.ui.url()).toString())
+    expect(response.status()).toBe(200)
+    expect(await response.body()).toEqual(bytes)
+  }
+
+  await artistB.ui.getByLabel('Publish Task').selectOption(taskId)
+  await artistB.ui.getByLabel('Completed Working File').selectOption({ label: `w002 · ${name002}` })
+  await artistB.ui.getByLabel('Output family').selectOption({ label: 'Synthetic Main' })
+  await artistB.ui.getByRole('button', { name: 'Publish Working File' }).click()
+  await expect(artistB.ui.getByRole('status').filter({ hasText: /Publish v001 queued/ })).toBeVisible()
+  runWorker()
+  await artistB.page.reload()
+  await openFilesFromProductionMenu(artistB.page, productionId, { alreadySelected: true })
+  let overview = await readOverview(artistB.page, productionId)
+  const publish = overview.publishes.find((row) => row.task_id === taskId)
+  expect(publish).toMatchObject({ state: 'completed', qc_state: 'passed', latest_published: true })
+  expect(publish.manifest).toMatchObject({ publish_id: publish.id, task_id: taskId, source_revision_file_id: expect.any(String) })
+  expect(publish.manifest.artifact).toMatchObject({ provider_object_id: publish.provider_artifact_id, byte_count: bytes002.length })
+  expect(publish.native_output_file_id).toBeTruthy()
+  await expect(artistB.ui.getByRole('link', { name: 'Open artifact' })).toBeVisible()
+
+  const unauthorizedCsrf = await artistA.ui.evaluate(async () => (await (await fetch('/api/plugins/vfx_files/csrf-token', { credentials: 'same-origin' })).json()).csrf_token)
+  const unauthorizedApproval = await artistA.page.request.post(`${pluginApiBase}/publishes/${publish.id}/approvals`, {
+    headers: { Origin: new URL(baseUrl).origin, 'X-VFX-Files-CSRF': unauthorizedCsrf, 'Idempotency-Key': `denied-approval-${publish.id}` },
+    data: { policy_id: 'files-page-review-v1', policy_sha256: '9a3d8d0e6a4d690ad97f6f6a7fcfae135c7fc2e0bd23a5e5e5bf30a55a3d93c1' }
+  })
+  expect(unauthorizedApproval.status()).toBe(403)
+
+  const supervisor = await openFiles(browser, 'supervisor')
+  await supervisor.ui.getByLabel('Publish Task').selectOption(taskId)
+  await expect(supervisor.ui.getByRole('button', { name: 'Approve exact Publish' })).toBeVisible()
+  await supervisor.ui.getByRole('button', { name: 'Approve exact Publish' }).click()
+  await expect(supervisor.ui.getByRole('button', { name: 'Approved' })).toBeVisible()
+  await supervisor.page.reload()
+  await openFilesFromProductionMenu(supervisor.page, productionId, { alreadySelected: true })
+  overview = await readOverview(supervisor.page, productionId)
+  expect(overview.publishes.find((row) => row.id === publish.id)).toMatchObject({ latest_published: true, latest_approved: true })
+
+  await artistB.ui.getByLabel('Publish Task').selectOption(taskId)
+  await expect(artistB.ui.getByLabel('Handoff Publish')).toBeVisible()
+  await artistB.ui.getByLabel('Handoff Publish').selectOption(publish.id)
+  await artistB.ui.getByLabel('Handoff recipient').selectOption(artistAId)
+  await artistB.ui.getByRole('button', { name: 'Create Handoff' }).click()
+  await expect(artistB.ui.getByRole('status').filter({ hasText: /Handoff pending/ })).toBeVisible()
+  await artistA.page.reload()
+  await openFilesFromProductionMenu(artistA.page, productionId, { alreadySelected: true })
+  const incomingHandoff = artistA.ui.getByRole('region', { name: 'Awaiting your response' }).getByRole('article').filter({ hasText: publish.id })
+  await expect(incomingHandoff).toBeVisible()
+  await artistA.ui.getByRole('button', { name: 'Accept' }).click()
+  await expect(artistA.ui.getByText('accepted', { exact: true })).toBeVisible()
+  await artistA.page.reload()
+  await openFilesFromProductionMenu(artistA.page, productionId, { alreadySelected: true })
+  overview = await readOverview(artistA.page, productionId)
+  expect(overview.handoffs.find((item) => item.publish_id === publish.id)).toMatchObject({ state: 'accepted', recipient_id: artistAId })
+
+  await manager.context.close()
+  await artistA.context.close()
+  await artistB.context.close()
+  await supervisor.context.close()
+})
