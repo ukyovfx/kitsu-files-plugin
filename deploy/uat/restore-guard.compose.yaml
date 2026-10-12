@@ -1,0 +1,7 @@
+services:
+  worker:
+    environment:
+      VFX_FILES_RESTORE_GUARD_PATH: /var/lib/vfx-files/restore/verified.json
+      VFX_FILES_RESTORE_EXPECTED_MANIFEST_SHA256: ${VFX_FILES_UAT_RESTORE_EXPECTED_MANIFEST_SHA256:?Set the verified snapshot manifest SHA-256 before starting the restore-gated Worker}
+    volumes:
+      - restore_state:/var/lib/vfx-files/restore:ro
