@@ -1,5 +1,7 @@
 # Isolated Kitsu Files UAT unit
 
+For an Ubuntu/server-owner handoff, read [`linux/README.md`](linux/README.md). It defines the separate-daemon, aggregate-cgroup, disk-quota, SSH-forwarding, and restore gates. The Ubuntu host lifecycle has not been validated; do not treat the runbook as Production or Server authorization.
+
 This is a **local synthetic UAT deployment package**, not a Production installer. It builds the pinned, unofficial patched Kitsu 1.0.70 / Zou 1.0.94 candidate and layers the exact Git `plugin/` tree into one image shared by the API and separate Worker. Runtime containers have no external route and use FakeStorage only. Building may download pinned base/database/Redis images and hash-locked candidate dependencies from their public registries.
 
 ## What the package isolates
