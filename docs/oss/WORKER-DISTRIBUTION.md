@@ -22,6 +22,16 @@ The Google adapter verifies the current My Drive owner or Shared Drive ID and th
 
 The installed-page E2E and Worker used the same installed `plugin/` bytes. A separate Worker process claimed and completed durable jobs; the stopped-host readback is recorded in `DISTRIBUTION-READBACK-2026-10-12.md`.
 
+## Offline review bundle
+
+Build a deterministic, unsigned review bundle from a clean Git commit (never from working-tree or untracked bytes):
+
+```powershell
+python tools/build_offline_bundle.py --source-ref HEAD --output "$env:TEMP\vfx-files-review.zip"
+```
+
+The builder reads every input with `git show`, checks that the distribution SBOM has a matching SHA-256 entry for every tracked `plugin/` file, writes an embedded bundle manifest with source commit and pinned host/Python/frontend identities, reopens the ZIP, and byte-compares every payload entry with its Git object. It refuses to overwrite an existing output path. The archive is for offline review only; it is not signed, provenance-attested, rights-cleared, or approved for publication/deployment. Keep its output outside the repository and publish its digest only with the matching commit and review evidence.
+
 ## Deployment boundary
 
 This documents the executable configuration boundary, not proof of a live Google Drive integration or Production compatibility. No real Drive credentials, authorized test root, supervisor unit, official patched-host release, or Production-compatible installation path was supplied or tested. The deployment owner must provision and scope OAuth credentials, select the correct My Drive or Shared Drive root, and configure a service supervisor in an approved isolated environment before considering live use. Do not use this package to modify a live Kitsu/Zou host.

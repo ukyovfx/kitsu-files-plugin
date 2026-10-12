@@ -99,3 +99,7 @@ Git history privacy is **REVIEW REQUIRED**: author metadata was inspected withou
 | GitHub CI | **BLOCKED / NOT TESTED** | Restore usable Actions execution; recent checks had no steps or logs. |
 | SBOM / third-party notices / archive readback | **PASS — draft/offline scope** | CycloneDX package/build SBOMs, third-party notice draft and 51-file readback exist. Rights review, final notices, CI artifact retention, signing and provenance remain open. |
 | Merge / release / deployment | **NOT AUTHORIZED** | No such operation was performed. |
+
+## Issue #3 metadata-only legacy JWT disposition
+
+This closeout reuses the sanitized source/metadata findings above; it does not reopen, copy, print, verify, replay, revoke, or delete the retained seed. The recorded artifact is outside Git/PR content and has an owner-scoped ACL with no broad read ACE. Source metadata identifies four no-expiry JWT-shaped entries associated with the old installed-page seed; three actors were synthetic, while the manager was selected from existing host people. Therefore the entries cannot be proven synthetic-only. **Status remains REVIEW REQUIRED / BLOCKED on the responsible host owner:** identify the signing/target host from approved host metadata, then revoke and reissue only if those credentials may be valid and the owner authorizes it. Do not treat file isolation or the newer short-expiry disposable seeder as revocation evidence.

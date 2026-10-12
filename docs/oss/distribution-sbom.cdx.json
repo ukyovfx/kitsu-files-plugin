@@ -208,7 +208,7 @@
       "hashes": [
         {
           "alg": "SHA-256",
-          "content": "4ce397e90b8f264cb668ecda71024fccbab7d4e13bee6028ff11c8458d971380"
+          "content": "c1b5c7357057ffc4bebf35e3bedecec4df0cd2c3ca90f23f3c8f52842e743b67"
         }
       ]
     },
@@ -308,7 +308,7 @@
       "hashes": [
         {
           "alg": "SHA-256",
-          "content": "2b98d4314bdfc9834d5bd10af99b04919270c0eb0e4eed46f050ca90b34b55bc"
+          "content": "f66971adc36755a9b3a1406e8320ae5a6e9a9c238cb9c31b1c672e34b5fff498"
         }
       ]
     },
@@ -488,7 +488,7 @@
       "hashes": [
         {
           "alg": "SHA-256",
-          "content": "22c0d33e9927d272419ce30e9fe66915cfb075aec20cfd0f2309bc4cc7dcf4e3"
+          "content": "27e65935737dcd7322516259fea8af0629a9b37cb7c9b2ba30df780e3238a92d"
         }
       ]
     },
@@ -498,7 +498,7 @@
       "hashes": [
         {
           "alg": "SHA-256",
-          "content": "87b608d311232a8a73c324b7f7469edea8e644276a03d0067b39e452f9e6e579"
+          "content": "c7df62d472ff6e46d6c726a87e170a18db5d0351d21d139d89e61998b1458086"
         }
       ]
     },
@@ -518,7 +518,7 @@
       "hashes": [
         {
           "alg": "SHA-256",
-          "content": "b289d4a712b7d25543c7ce00849f45dc49888de2672e0b582385bd8322731ba1"
+          "content": "74dc5e98275600817593e4c82d74d53aa1d1a122deaa08110c5cbb7ab2956eab"
         }
       ]
     },
@@ -548,7 +548,7 @@
       "hashes": [
         {
           "alg": "SHA-256",
-          "content": "8a0a9d2c927f9d300470d3c46c08d9b88fcc5fc34b1a7aed0257f0e7c49e0b48"
+          "content": "b854c1ae56cfb77741defbf5f5dc1432bf46a5fda8c53983042abbeacab9d860"
         }
       ]
     },
@@ -588,7 +588,7 @@
       "hashes": [
         {
           "alg": "SHA-256",
-          "content": "8fe15594b0c635c5d9735bd7cc10d580ebf96f4db5d537acc1b3c0387aa80488"
+          "content": "5ebbbc6caea25d1250c3ec513d397939959877ece150543d9770faa402321c38"
         }
       ]
     },
@@ -608,7 +608,7 @@
       "hashes": [
         {
           "alg": "SHA-256",
-          "content": "63416b9ed05187ad7367d89654653b3f82f648d214aa1b57f84a5f3322c1ffe7"
+          "content": "19fc7a88487e3fcaf4f41a98b5d295d3f6ce6805b08b9efc88aaaf4dba9aae4a"
         }
       ]
     },
@@ -618,7 +618,7 @@
       "hashes": [
         {
           "alg": "SHA-256",
-          "content": "63105139e40ac38d71728a8ed57c48240be29b61d5e8511ab94e38aa34795e08"
+          "content": "4b651a516ec7b7dd89a2b6c4992eeb4aef247c6338ef2b3318d194a814e38256"
         }
       ]
     },
@@ -628,7 +628,7 @@
       "hashes": [
         {
           "alg": "SHA-256",
-          "content": "4d4f343115e6a43343fb5cea96bbd2b1f57f47d88d5529d94482541eaf561b0f"
+          "content": "ce3865a64b23aaad168b69edc9a69875eb2c9772a82b3bf00ba94174c33f4466"
         }
       ]
     },
@@ -639,6 +639,26 @@
         {
           "alg": "SHA-256",
           "content": "c76f102b5d5e46762711854215026dec9d9f7043a3eabc4754bcd3fe98039a71"
+        }
+      ]
+    },
+    {
+      "type": "file",
+      "name": "plugin/storage/worker_factory.py",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "1200b75b1960c4bcf6c42b121504b94242588e83905e0db71637b1dbd0d23af0"
+        }
+      ]
+    },
+    {
+      "type": "file",
+      "name": "plugin/worker/scope.py",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "ffac22631ee862ac4449f606596e5efb022f4833e3757aaaa420da4e8aa7d489"
         }
       ]
     }
@@ -703,7 +723,9 @@
         "plugin/worker/leases.py",
         "plugin/worker/main.py",
         "plugin/worker_runtime.py",
-        "plugin/working_files/service.py"
+        "plugin/working_files/service.py",
+        "plugin/storage/worker_factory.py",
+        "plugin/worker/scope.py"
       ]
     }
   ]
