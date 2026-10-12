@@ -58,16 +58,17 @@ This local build is a compatibility candidate only. It does not replace the offi
 | Check | Result |
 |---|---|
 | Gitleaks Git history | **PASS** — fresh `--all` history scan found no leak. |
-| Gitleaks first-party source/docs and PR body | **PASS** — scoped source and documentation directories, root project docs, and the current PR body had zero findings. |
+| Gitleaks first-party source/docs | **PASS** — scoped source and documentation directories plus root project docs had zero findings. |
+| Current PR body token-pattern check | **PASS** — no credential-shaped token patterns were found. |
 | Gitleaks broad worktree scan | **REVIEW REQUIRED** — 204 generic-api-key pattern matches were confined to the ignored local Python license-index data (200) and retained upstream Zou workflow/test fixtures (4); these are unverified pattern matches, not declared clean. The first-party scoped scan remained at zero. |
 | Retained local candidate seed | **REVIEW REQUIRED** — four JWT-formatted findings under synthetic actor labels; no values or target were printed. They cannot be proven synthetic-only and must be treated as potentially live pending host-owner review. No value was printed or copied to Git/PR. |
-| Bandit 1.8.6 over `plugin/` | **PASS** — zero findings. |
+| Bandit over `plugin/` | **PASS** — current local environment reported zero findings. |
 | Frontend Vitest | **PASS** — 12 tests. |
 | Frontend production build | **PASS**. |
 | `npm audit --audit-level=moderate` | **PASS** — zero advisories. |
 | Candidate host `pip-audit` | **PASS** — no known vulnerabilities. |
 | Locked host Python dependency audit | **FAIL** — vulnerable packages remain in the official locked image. |
-| GitHub Actions | **NOT TESTED / BLOCKED** — latest pre-push checks failed before any job steps ran; GitHub reported empty step lists and no job logs. Recheck the new PR head after push. Local checks above are not represented as CI proof. |
+| GitHub Actions | **NOT TESTED / BLOCKED** — both runs for PR head `55fad592f319c1a2228c2a565116373dc85add64` failed before any job steps ran; all jobs reported empty step lists and no logs. Local checks above are not represented as CI proof. |
 | Semgrep, CodeQL CLI, Trivy, OSV-Scanner, external penetration test | **NOT TESTED** — not installed or run; no finding is inferred from their absence. |
 
 Git history privacy is **REVIEW REQUIRED**: author metadata was inspected without reproducing values; 20 commits use a non-GitHub-noreply address and two distinct addresses appear in history. No history rewrite was attempted. The repository owner must decide whether to keep this metadata or plan an approved history rewrite before public distribution.
