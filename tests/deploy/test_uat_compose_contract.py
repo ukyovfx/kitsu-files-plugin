@@ -161,6 +161,34 @@ def test_zou_plugin_install_uses_a_distinct_source_and_runtime_tree():
     assert "'/opt/vfx-files-uat/plugin-source'" in installer
 
 
+def test_api_and_worker_use_the_installed_plugin_folder_independent_of_working_directory():
+    compose = (UAT / "compose.yaml").read_text(encoding="utf-8")
+    api = compose.split("  api:\n", 1)[1].split("  worker:\n", 1)[0]
+    worker = compose.split("  worker:\n", 1)[1].split("networks:\n", 1)[0]
+
+    assert "PLUGIN_FOLDER: /opt/zou/plugins" in api
+    assert "PLUGIN_FOLDER: /opt/zou/plugins" in worker
+
+
+def test_api_readiness_requires_the_installed_files_route_and_auth_guard():
+    compose = (UAT / "compose.yaml").read_text(encoding="utf-8")
+    dockerfile = (UAT / "Dockerfile").read_text(encoding="utf-8")
+    probe = (UAT / "tools" / "check_api_health.py").read_text(encoding="utf-8")
+
+    assert '"/opt/vfx-files-uat/check_api_health.py"' in compose
+    assert "COPY deploy/uat/tools/check_api_health.py" in dockerfile
+    assert "vfx_files/health" in probe
+    assert "return status == 401" in probe
+
+
+def test_files_api_readiness_rejects_missing_route_and_auth_regressions():
+    from deploy.uat.tools.check_api_health import validate_plugin_auth_status
+
+    assert validate_plugin_auth_status(401)
+    assert not validate_plugin_auth_status(200)
+    assert not validate_plugin_auth_status(404)
+
+
 def test_fake_storage_root_matches_the_synthetic_seeder_contract():
     compose = (UAT / "compose.yaml").read_text(encoding="utf-8")
 

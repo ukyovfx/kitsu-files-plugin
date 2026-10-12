@@ -15,6 +15,7 @@ RUN sed -i \
 COPY plugin/ /opt/vfx-files-uat/plugin-source/
 COPY plugin/ /opt/zou/plugins/vfx_files/
 COPY deploy/uat/supervisord-api.conf /opt/vfx-files-uat/supervisord-api.conf
+COPY deploy/uat/tools/check_api_health.py /opt/vfx-files-uat/check_api_health.py
 COPY tests/e2e/seed_installed_page_flow.py tests/e2e/seeder_safety.py tests/e2e/restore_state_report.py /opt/vfx-files-uat/
 
 ENV PYTHONPATH=/opt/zou/plugins
