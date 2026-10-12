@@ -4,11 +4,21 @@ This is a local, unpublished packaging rehearsal for the current plugin director
 
 ## Distribution boundary
 
-The package candidate is the tracked `plugin/` tree, including the built `plugin/frontend/dist/` page. Repository-level `worker/` changes and the untracked root overlay are outside this artifact. The plugin consumes Kitsu/Zou-provided Python dependencies; those host packages are not copied into the plugin archive. This rehearsal does not create a host image or a release artifact.
+The plugin package candidate is the tracked `plugin/` tree, including the built `plugin/frontend/dist/` page. It contains both the Zou plugin and `worker_runtime.py` plus the worker handlers. There is no separate Worker source artifact: install the same versioned package into the Zou plugin path for the API and expose that same path to a separate Zou Python process for Worker execution. The isolated entrypoint supports only `--once`; it is suitable for the tested one-shot FakeStorage acceptance harness, not a production daemon. This worker build currently has no Google Drive adapter wiring, so the package is not ready for real Drive or Production deployment.
+
+The repository-level `worker/` changes and the untracked root overlay are outside the package and must not be used as distribution inputs. The plugin consumes Kitsu/Zou-provided Python dependencies; those host packages are not copied into the plugin archive. The host lock describes the disposable verification environment, not an installable host image or production compatibility promise.
 
 ## Readback
 
 The package was assembled from tracked `plugin/` files only, reopened from the archive, and checked file-by-file against the source SHA-256 values. Final readback **PASS**: 51 files; archive SHA-256 `c0719d11abad8d03318b1e24c66365f5eab81fbe6d4266bf18d906eb5b318556`. The temporary archive was removed after verification and was not published. The archive metadata is generated locally; this hash identifies this exact readback artifact, not a signed release artifact.
+
+Final source-alignment check on branch `codex/vfx-files-plugin-implementation`, HEAD `f4a4abef35be32494208a058f7bd898f063161e5`: the 51 Git-tracked `plugin/` files had manifest SHA-256 `4b7771e261cc6d674e4e15f82df1572867a23e3a3e645990b9b6465f2439c8d4`. A file-by-file comparison with `/opt/zou/plugins/vfx_files` copied read-only from the stopped disposable browser-acceptance host matched all 51 files (0 missing, 0 differing, 0 extra). Rebuilding the frontend with the locked npm toolchain succeeded and regenerated the same tracked bundle filenames; no tracked plugin/frontend source or build output changed. This confirms that the installed source used by the recorded installed-page E2E matches the current PR HEAD.
+
+At this checkpoint, all 45 untracked root overlay files are byte-identical copies of corresponding tracked `plugin/` files. The three modified root-level `worker/` files are also outside `plugin/`. The acceptance harness imported the installed package from `/opt/zou/plugins` (and the pinned pytest harness copied tracked `plugin/` to its isolated plugin folder); it did not import either root overlay. These pre-existing files were preserved and excluded from the artifact and verification inputs.
+
+For an isolated installation rehearsal, the complete code boundary is one `plugin/` tree shared by the API install and the separate Worker process. The Worker is launched in the pinned Zou Python environment with the plugin path on `PYTHONPATH`, using `python -m vfx_files.worker_runtime --once`. The current entrypoint rejects continuous mode, and the current runtime enables only FakeStorage; a real deployment therefore still requires an approved host/deployment model, a production-capable adapter, and a supervised Worker lifecycle. No such production deployment package is claimed here.
+
+The complete offline handoff bundle contains the 51-file tracked plugin tree, the pinned verification host lock, and `docs/oss/WORKER-DISTRIBUTION.md`. A deterministic archive was reopened and each of its 53 entries was checked against its source SHA-256: **PASS**. Bundle SHA-256 `19a4d700cc8b3cb3ef388149eb501944fdfe9f16519ad8b03ef6a57f17e62f3b`; content-manifest SHA-256 `d0202daf23f696def981dcec70caa19888edc84eae18e0cad44012152951894b`. The local temporary archive was not published.
 
 ## SBOM and notices
 
