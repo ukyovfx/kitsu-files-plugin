@@ -1,7 +1,13 @@
 """Create a disposable Production and three browser identities on the pinned host."""
 
+import base64
+import binascii
 import json
 import os
+import time
+from datetime import timedelta
+from ipaddress import ip_address
+from urllib.parse import urlsplit, urlunsplit
 from uuid import uuid4
 
 from zou.app import create_app, db
@@ -19,7 +25,86 @@ from vfx_files.models import FolderBinding, OutputFamilyMapping, StorageConnecti
 from vfx_files.storage.fake import PersistentFakeStorage
 
 
+def _validated_disposable_root_url(environ=None):
+    env = os.environ if environ is None else environ
+    if env.get("VFX_FILES_DISPOSABLE_TEST_MODE") != "1":
+        raise RuntimeError("Refusing to seed without disposable test mode")
+
+    raw_url = env.get("VFX_FILES_E2E_ROOT_URL")
+    if not raw_url:
+        raise RuntimeError("A disposable test root URL is required")
+
+    try:
+        parsed = urlsplit(raw_url)
+        hostname = parsed.hostname
+        port = parsed.port
+    except ValueError as exc:
+        raise RuntimeError("Invalid disposable test root URL") from exc
+
+    if (
+        parsed.scheme not in {"https", "http"}
+        or not hostname
+        or parsed.username
+        or parsed.password
+        or parsed.query
+        or parsed.fragment
+        or parsed.path not in {"", "/"}
+    ):
+        raise RuntimeError("Disposable test root URL must be a credential-free origin")
+    if port is not None and not 1 <= port <= 65535:
+        raise RuntimeError("Invalid disposable test root URL port")
+
+    hostname = hostname.casefold().rstrip(".")
+    is_loopback = False
+    try:
+        is_loopback = ip_address(hostname).is_loopback
+    except ValueError:
+        pass
+    is_reserved_test_name = hostname == "localhost" or hostname.endswith(
+        (".localhost", ".test", ".example", ".invalid")
+    )
+    if parsed.scheme != "https" and not (parsed.scheme == "http" and is_loopback):
+        raise RuntimeError("HTTPS is required except for loopback test hosts")
+    has_disposable_host_ack = (
+        env.get("VFX_FILES_DISPOSABLE_HOST_ACK")
+        == "DISPOSABLE_PINNED_KITSU_ZOU_ONLY"
+    )
+    if not (is_loopback or is_reserved_test_name) and not has_disposable_host_ack:
+        raise RuntimeError("A non-reserved target requires disposable host acknowledgement")
+
+    return urlunsplit((parsed.scheme, parsed.netloc, "", "", ""))
+
+
+def _token_has_short_expiry(token, now=None):
+    current_time = time.time() if now is None else now
+    parts = token.split(".")
+    if len(parts) != 3:
+        return False
+    payload = parts[1].replace("-", "+").replace("_", "/")
+    payload += "=" * (-len(payload) % 4)
+    try:
+        claims = json.loads(base64.urlsafe_b64decode(payload.encode("ascii")))
+    except (ValueError, UnicodeError, binascii.Error):
+        return False
+    expiry = claims.get("exp") if isinstance(claims, dict) else None
+    return (
+        isinstance(expiry, (int, float))
+        and not isinstance(expiry, bool)
+        and current_time < expiry <= current_time + 901
+    )
+
+
+def _new_synthetic_manager(person_type, suffix):
+    return person_type(
+        first_name="Synthetic",
+        last_name=f"Manager{suffix}",
+        email=f"manager-{suffix}@example.invalid",
+        role="manager",
+    )
+
+
 def main():
+    root_url = _validated_disposable_root_url()
     fake_path = os.environ.get("VFX_FILES_FAKE_STORAGE_ROOT")
     if not fake_path:
         raise RuntimeError("FakeStorage path is required")
@@ -33,16 +118,11 @@ def main():
         VFX_FILES_FAKE_ROOT_ID="synthetic-root-id",
         VFX_FILES_FAKE_DRIVE_ID="synthetic-drive-id",
         VFX_FILES_KITSU_ORIGIN=os.environ.get("VFX_FILES_KITSU_ORIGIN"),
+        JWT_ACCESS_TOKEN_EXPIRES=timedelta(minutes=15),
     )
     with app.app_context():
-        people = Person.query.order_by(Person.id).all()
-        manager = next(
-            (person for role in ("admin", "manager") for person in people if getattr(person.role, "code", person.role) == role),
-            people[0] if people else None,
-        )
-        if manager is None:
-            raise RuntimeError("The disposable Zou host has no seeded test identity")
         suffix = uuid4().hex[:10]
+        manager = _new_synthetic_manager(Person, suffix)
         artist_a = Person(
             first_name="Synthetic",
             last_name=f"ArtistA{suffix}",
@@ -70,7 +150,20 @@ def main():
         output_type = OutputType(name=f"VFXOutput{suffix}", short_name=f"VFXOut{suffix}")
         file_status = FileStatus(name=f"VFXStatus{suffix}", color="#33AA77")
         project = Project(name=f"VFX Files Installed E2E {suffix}", team=[manager, artist_a, artist_b, supervisor])
-        db.session.add_all([artist_a, artist_b, supervisor, sequence_type, shot_type, task_type, output_type, file_status, project])
+        db.session.add_all(
+            [
+                manager,
+                artist_a,
+                artist_b,
+                supervisor,
+                sequence_type,
+                shot_type,
+                task_type,
+                output_type,
+                file_status,
+                project,
+            ]
+        )
         db.session.flush()
         memberships = {
             manager.id: "manager",
@@ -152,6 +245,14 @@ def main():
             storage.create_folder(parent_id, folder_id, {"display_name": name})
 
         cookie_name = app.config.get("JWT_ACCESS_COOKIE_NAME", "access_token_cookie")
+        tokens = {
+            "manager_token": create_access_token_for_raw_person(manager),
+            "artist_a_token": create_access_token_for_raw_person(artist_a),
+            "artist_b_token": create_access_token_for_raw_person(artist_b),
+            "supervisor_token": create_access_token_for_raw_person(supervisor),
+        }
+        if not all(_token_has_short_expiry(token) for token in tokens.values()):
+            raise RuntimeError("Refusing to emit a test identity without a short token expiry")
         print(json.dumps({
             "production_id": str(project.id),
             "task_id": str(task.id),
@@ -166,11 +267,8 @@ def main():
             "supervisor_id": str(supervisor.id),
             "manager_id": str(manager.id),
             "cookie_name": cookie_name,
-            "manager_token": create_access_token_for_raw_person(manager),
-            "artist_a_token": create_access_token_for_raw_person(artist_a),
-            "artist_b_token": create_access_token_for_raw_person(artist_b),
-            "supervisor_token": create_access_token_for_raw_person(supervisor),
-            "root_url": "https://drive.google.com/drive/folders/synthetic-root-id",
+            **tokens,
+            "root_url": root_url,
         }, sort_keys=True))
 
 
