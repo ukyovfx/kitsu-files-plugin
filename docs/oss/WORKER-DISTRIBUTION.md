@@ -35,3 +35,10 @@ The builder reads every input with `git show`, checks that the distribution SBOM
 ## Deployment boundary
 
 This documents the executable configuration boundary, not proof of a live Google Drive integration or Production compatibility. No real Drive credentials, authorized test root, supervisor unit, official patched-host release, or Production-compatible installation path was supplied or tested. The deployment owner must provision and scope OAuth credentials, select the correct My Drive or Shared Drive root, and configure a service supervisor in an approved isolated environment before considering live use. Do not use this package to modify a live Kitsu/Zou host.
+
+For a direct install into an existing, owner-updated Zou service (without
+replacing its image), see [`EXISTING-ZOU-DIRECT-INSTALL.md`](../deployment/EXISTING-ZOU-DIRECT-INSTALL.md).
+That procedure is pending exact server configuration, security review,
+restore evidence and owner approval. Build the Zou-root ZIP with
+`tools/build_zou_plugin_package.py` from an exact commit; the review bundle
+above is not an installable plugin archive.
