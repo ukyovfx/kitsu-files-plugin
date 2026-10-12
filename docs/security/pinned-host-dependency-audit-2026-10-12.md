@@ -21,7 +21,7 @@ The previous table overstated several severities. In particular, CVE-2026-69249 
 
 ## Compatibility candidate
 
-No newer official Kitsu or Zou tag was available in the source check: Kitsu `v1.0.70` remains the latest release, and Zou `v1.0.94` remains the latest tagged baseline. Zou `v1.0.94` metadata pins `fido2==2.2.0` and `pysaml2==7.5.4`; the former constrains cryptography below 49, and the latter constrains pyOpenSSL below 24.3.0. Directly upgrading cryptography and pyOpenSSL in the original image therefore fails `pip check` and is not a safe patch.
+The official Kitsu and Zou tag lists were rechecked on 2026-10-12: Kitsu `v1.0.70` remains the latest tag (873 version tags observed), and Zou `v1.0.94` remains the latest tag (759 version tags observed). Zou `v1.0.94` metadata pins `fido2==2.2.0` and `pysaml2==7.5.4`; the former constrains cryptography below 49, and the latter constrains pyOpenSSL below 24.3.0. Directly upgrading cryptography and pyOpenSSL in the original image therefore fails `pip check` and is not a safe patch.
 
 A separate local candidate was built from the immutable official image digest above and the exact Zou `v1.0.94` source commit in `environment/host-lock.yaml`. It changes only the temporary Zou package metadata pins to `fido2==2.2.1` and `pysaml2==7.5.5`, then installs `cryptography==50.0.2` and `pyOpenSSL==26.4.0`. No Kitsu or Zou application logic was changed. This is a test candidate, not an official or supported image. The repository host lock was deliberately left unchanged.
 
