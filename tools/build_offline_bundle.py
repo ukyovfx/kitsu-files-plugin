@@ -28,6 +28,7 @@ SUPPORT_FILES = (
     "docs/oss/distribution-sbom.cdx.json",
     "tools/build_offline_bundle.py",
 )
+SUPPORT_DIRS = ("deploy/uat/",)
 MANIFEST_PATH = "META/bundle-manifest.json"
 FIXED_TIME = (1980, 1, 1, 0, 0, 0)
 
@@ -49,6 +50,11 @@ def source_files(root: Path, commit: str) -> dict[str, bytes]:
 
     result = {path: git(root, "show", f"{commit}:{path}") for path in paths}
     result.update({path: git(root, "show", f"{commit}:{path}") for path in SUPPORT_FILES})
+    result.update({
+        path: git(root, "show", f"{commit}:{path}")
+        for path in sorted(tracked)
+        if any(path.startswith(directory) for directory in SUPPORT_DIRS)
+    })
     return result
 
 
@@ -120,6 +126,14 @@ def make_manifest(files: dict[str, bytes], commit: str) -> bytes:
             "package_lock": "frontend/package-lock.json",
             "package_lock_sha256": sha256(files["frontend/package-lock.json"]),
             "runtime_dependencies": runtime_dependencies,
+        },
+        "uat_package": {
+            "compose": "deploy/uat/compose.yaml",
+            "isolated_network": "internal; no external route; UI bind limited to loopback",
+            "data_services": ["pinned PostgreSQL", "pinned Redis", "persistent FakeStorage", "staging"],
+            "api_worker_source": "one image built from this exact source commit",
+            "resource_limits": "CPU/RAM/PIDs are configured per container; named-volume disk quota is not provided",
+            "candidate_host": "unofficial patched candidate only; not Production-approved",
         },
         "sbom": "docs/oss/distribution-sbom.cdx.json",
         "third_party_notices": "docs/oss/THIRD_PARTY_NOTICES.draft.md (draft; rights-holder review required)",

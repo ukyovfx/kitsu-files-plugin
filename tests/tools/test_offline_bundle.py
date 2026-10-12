@@ -29,6 +29,9 @@ def committed_distribution_inputs():
         "docs/oss/THIRD_PARTY_NOTICES.draft.md",
         "docs/oss/distribution-sbom.cdx.json",
         "tools/build_offline_bundle.py",
+        *subprocess.check_output(
+            ["git", "-C", str(root), "ls-tree", "-r", "--name-only", commit, "--", "deploy/uat/"], text=True
+        ).splitlines(),
     )]
     missing = set(required) - set(tracked)
     if missing:
