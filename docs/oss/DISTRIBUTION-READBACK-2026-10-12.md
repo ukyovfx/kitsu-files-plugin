@@ -22,7 +22,7 @@ The complete offline handoff bundle contains the 51-file tracked plugin tree, th
 
 ## Worker-readiness delta readback
 
-After adding the supported Google Drive Worker adapter factory, credential-reference handling, retry mapping, lease renewal, and `--poll`, the tracked `plugin/` tree was packaged again from Git-tracked files only. The reopened archive matched all 51 source files by SHA-256: **PASS**. Archive SHA-256 `d4ea7dfdcfbc5a69422fcc21849fe46e20f6c7646f7374a53402afa5101fdfef`. The archive existed only in a temporary local file and was removed after readback. This proves package byte integrity for this worktree snapshot; it is not a signed artifact or an installed-host/Google Drive acceptance result.
+After adding the supported Google Drive Worker adapter factory, credential-reference handling, retry mapping, lease renewal, `--poll`, and the bounded malformed-Retry-After regression fix, the tracked `plugin/` tree was packaged again from Git-tracked files only. The reopened archive matched all 53 source files by SHA-256: **PASS**. Archive SHA-256 `563fb5fb54118b4de20489fcea0041a92000b814770643f68d5be66120b29e8f`. The archive existed only in a temporary local file and was removed after readback. This proves package byte integrity for this worktree snapshot; it is not a signed artifact or an installed-host/Google Drive acceptance result.
 
 ## SBOM and notices
 
