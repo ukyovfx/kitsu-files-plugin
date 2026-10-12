@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 import subprocess
+import time
 import zipfile
 from pathlib import Path
 
@@ -33,6 +34,23 @@ def image_id(project: str, env_file: Path, compose: Path, root: Path) -> str:
     if len(set(output)) != 1 or not output:
         raise RuntimeError("Could not identify one API/Worker image for this UAT snapshot")
     return output[0]
+
+
+def wait_service_healthy(root: Path, env_file: Path, project: str, compose: Path, service: str, timeout_seconds: int = 180) -> None:
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        ids = run_compose(root, env_file, project, compose, "ps", "--quiet", service).decode().splitlines()
+        if len(ids) == 1:
+            status = subprocess.check_output(
+                ["docker", "inspect", "--format", "{{.State.Status}}|{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}", ids[0]],
+                text=True,
+            ).strip()
+            if status == "running|healthy":
+                return
+            if status.startswith("exited|") or status.startswith("dead|"):
+                raise RuntimeError(f"UAT service stopped before readiness: {service}")
+        time.sleep(2)
+    raise RuntimeError(f"Timed out waiting for isolated UAT service health: {service}")
 
 
 def verify_snapshot(source: Path, target_project: str, source_short: str) -> tuple[dict, str]:
@@ -122,6 +140,8 @@ def restore_snapshot(args: argparse.Namespace) -> None:
         raise RuntimeError("Refusing restore while the target API or Worker is running")
     run_compose(args.root, args.env_file, args.project, args.compose,
                 "up", "-d", "postgres", "redis", "egress-guard")
+    for service in ("postgres", "redis", "egress-guard"):
+        wait_service_healthy(args.root, args.env_file, args.project, args.compose, service)
     table_count = run_compose(args.root, args.env_file, args.project, args.compose,
                               "exec", "-T", "postgres", "psql", "-U", "vfxfiles_uat", "-d", "vfxfiles_uat", "-Atc",
                               "SELECT count(*) FROM information_schema.tables WHERE table_schema NOT IN ('pg_catalog','information_schema')").decode().strip()

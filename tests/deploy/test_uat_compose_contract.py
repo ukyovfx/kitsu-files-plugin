@@ -108,7 +108,14 @@ def test_host_initialization_starts_network_guard_before_api_one_shot_commands()
 
     assert "@('up', '-d', 'postgres', 'redis', 'egress-guard')" in init_host
     assert "@('run', '--rm', '--no-deps', 'api', '/opt/zou/env/bin/zou', 'init-db')" in init_host
+    assert "Wait-UatServicesHealthy -Context $ctx -Services @('postgres', 'redis', 'egress-guard')" in init_host
     assert 'zou is-db-ready' not in init_host
+
+
+def test_scripts_wait_for_api_health_after_recreate():
+    for script in ("install-plugin.ps1", "activate.ps1", "restore.ps1"):
+        body = (UAT / "scripts" / script).read_text(encoding="utf-8")
+        assert "Wait-UatServicesHealthy -Context $ctx -Services @('api')" in body
 
 
 def test_api_image_redirects_nginx_logs_to_container_streams():

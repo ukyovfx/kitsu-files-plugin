@@ -16,4 +16,5 @@ $envMap['VFX_FILES_ENABLED'] = 'true'
 [IO.File]::WriteAllLines($ctx.EnvFile, @($envMap.Keys | Sort-Object | ForEach-Object { "$_=$($envMap[$_])" }), [Text.UTF8Encoding]::new($false))
 Set-PrivateAcl -Path $ctx.EnvFile
 Invoke-UatCompose $ctx @('up', '-d', '--force-recreate', 'api')
+Wait-UatServicesHealthy -Context $ctx -Services @('api')
 Write-Output 'Restore completed into a separate UAT unit. Worker remains stopped until state and artifact verification succeeds.'

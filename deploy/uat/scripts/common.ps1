@@ -26,6 +26,23 @@ function Read-UatEnv($Context) {
     return $map
 }
 
+function Wait-UatServicesHealthy($Context, [string[]]$Services, [int]$TimeoutSeconds = 180) {
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    do {
+        $ids = @(& docker compose --project-name $Context.Project --env-file $Context.EnvFile --file $Context.Compose ps --quiet @Services)
+        if ($LASTEXITCODE -ne 0) { throw 'Could not inspect UAT service readiness.' }
+        $healthy = $ids.Count -eq $Services.Count
+        foreach ($id in $ids) {
+            if (-not $id) { $healthy = $false; continue }
+            $state = (& docker inspect --format '{{.State.Status}}|{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' $id).Trim()
+            if ($LASTEXITCODE -ne 0 -or $state -cne 'running|healthy') { $healthy = $false }
+        }
+        if ($healthy) { return }
+        Start-Sleep -Seconds 2
+    } while ((Get-Date) -lt $deadline)
+    throw "UAT service readiness timed out: $($Services -join ', ')."
+}
+
 function Set-PrivateAcl([string]$Path, [switch]$Directory) {
     $principal = "$($env:USERDOMAIN)\$($env:USERNAME)"
     if ($Directory) {

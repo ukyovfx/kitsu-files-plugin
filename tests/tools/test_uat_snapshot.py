@@ -3,6 +3,7 @@ import json
 
 import pytest
 
+from deploy.uat.tools import snapshot
 from deploy.uat.tools.snapshot import verify_snapshot
 
 
@@ -68,3 +69,14 @@ def test_snapshot_rejects_unexpected_payload_name(tmp_path):
 
     with pytest.raises(RuntimeError, match="unsupported structure"):
         verify_snapshot(tmp_path, "vfx-files-uat-restore", "a" * 12)
+
+
+def test_restore_waits_until_database_service_reports_healthy(monkeypatch, tmp_path):
+    states = iter(("running|starting", "running|healthy"))
+    monkeypatch.setattr(snapshot, "run_compose", lambda *args, **kwargs: b"synthetic-container\n")
+    monkeypatch.setattr(snapshot.subprocess, "check_output", lambda *args, **kwargs: next(states))
+    monkeypatch.setattr(snapshot.time, "sleep", lambda _: None)
+
+    snapshot.wait_service_healthy(tmp_path, tmp_path / "uat.env", "vfx-files-uat-restore", tmp_path / "compose.yaml", "postgres")
+
+    assert list(states) == []
