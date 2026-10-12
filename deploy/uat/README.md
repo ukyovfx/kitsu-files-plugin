@@ -48,7 +48,7 @@ docker compose --project-name vfx-files-uat-demo --env-file "$env:LOCALAPPDATA\V
 Invoke-WebRequest -UseBasicParsing http://127.0.0.1:55280/api/data -Method Get
 ```
 
-Stop while preserving synthetic data with `scripts/stop.ps1 -Unit demo`. A reboot can use the same project with `docker compose ... up -d api` and the `worker` profile only after checking its configuration.
+Stop while preserving synthetic data with `scripts/stop.ps1 -Unit demo`. Restart with `scripts/start.ps1 -Unit demo`; it waits for PostgreSQL, Redis, the egress guard and API before returning, and starts the separate Worker only if it was previously enabled and the restore gate allows it.
 
 ## Backup and restore
 

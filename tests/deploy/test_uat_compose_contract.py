@@ -118,6 +118,16 @@ def test_scripts_wait_for_api_health_after_recreate():
         assert "Wait-UatServicesHealthy -Context $ctx -Services @('api')" in body
 
 
+def test_restart_waits_for_services_and_only_restarts_previously_enabled_worker():
+    start = (UAT / "scripts" / "start.ps1").read_text(encoding="utf-8")
+
+    assert "@('up', '-d', 'postgres', 'redis', 'egress-guard')" in start
+    assert "Wait-UatServicesHealthy -Context $ctx -Services @('postgres', 'redis', 'egress-guard')" in start
+    assert "Wait-UatServicesHealthy -Context $ctx -Services @('api')" in start
+    assert "if ($envMap['VFX_FILES_WORKER_ENABLED'] -ceq 'true')" in start
+    assert "start-worker.ps1" in start
+
+
 def test_api_image_redirects_nginx_logs_to_container_streams():
     dockerfile = (UAT / "Dockerfile").read_text(encoding="utf-8")
 
