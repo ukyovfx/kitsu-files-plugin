@@ -25,6 +25,22 @@ def _authorize_job(payload):
     from zou.app.models.project import ProjectPersonLink
     from zou.app.models.task import Task, TaskPersonLink
 
+    if payload.get("job_type") == "reconcile_drive_objects":
+        from zou.app.models.project import Project
+
+        try:
+            actor_id = UUID(str(payload["actor_id"]))
+            production_id = UUID(str(payload["production_id"]))
+        except (KeyError, ValueError, TypeError):
+            return False
+        person = Person.query.filter_by(id=actor_id).one_or_none()
+        project = Project.query.filter_by(id=production_id).one_or_none()
+        if person is None or project is None or not getattr(person, "active", True):
+            return False
+        membership = ProjectPersonLink.query.filter_by(project_id=production_id, person_id=actor_id).one_or_none()
+        role = (membership.role if membership is not None else None) or person.role
+        role = getattr(role, "code", role)
+        return role == "admin" or (role == "manager" and membership is not None)
     try:
         actor_id = UUID(str(payload["actor_id"]))
         task_id = UUID(str(payload["task_id"]))
@@ -84,6 +100,7 @@ def build_runtime(app):
     from .uploads.worker import make_upload_handler
     from .publishes.worker import make_publish_handler
     from .packages.worker import make_output_package_handler
+    from .storage.reconciliation import make_drive_reconciliation_handler
     from .worker.leases import WorkerContext
     from .worker.main import WorkerRuntime
 
@@ -107,6 +124,7 @@ def build_runtime(app):
             "publish_artifact": make_publish_handler(sessions, adapter_factory),
             "verify_output_package": make_output_package_handler(sessions, adapter_factory),
             "provision_task_folders": make_task_folder_handler(sessions, adapter_factory),
+            "reconcile_drive_objects": make_drive_reconciliation_handler(sessions, adapter_factory),
         },
     )
 

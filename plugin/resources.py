@@ -953,6 +953,7 @@ class PublishApproval(MethodView):
         task = Task.query.filter_by(id=row.task_id).one_or_none()
         if task is None:
             abort(404)
+        from .approvals.service import ApprovalDenied, approve_publish
         try:
             _require_mutation_origin()
             actor = _request_actor(str(task.project_id))
@@ -966,7 +967,6 @@ class PublishApproval(MethodView):
             if not key or len(key) > 128:
                 abort(400)
             from sqlalchemy.orm import sessionmaker
-            from .approvals.service import ApprovalDenied, approve_publish
             db_ext = current_app.extensions["sqlalchemy"]
             sessions = sessionmaker(bind=db_ext.engine, expire_on_commit=False)
             approval_id = approve_publish(

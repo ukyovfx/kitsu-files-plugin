@@ -42,7 +42,7 @@ def drive(transport, account_mode="shared_drive"):
         account_mode=account_mode,
         allowed_root_id="root-1",
         drive_id="drive-1" if account_mode == "shared_drive" else None,
-        owner_subject="owner@example.invalid" if account_mode == "my_drive" else None,
+        owner_subject="google-oidc-subject-owner" if account_mode == "my_drive" else None,
     )
     return GoogleDriveStorageAdapter(config, lambda: "synthetic-token", transport)
 
@@ -71,8 +71,16 @@ def test_shared_drive_uses_drive_scoped_listing_and_support_flags():
 
 
 def test_my_drive_owner_identity_must_match_configured_subject():
-    transport = FakeTransport([Response(200, {"user": {"emailAddress": "someone-else@example.invalid"}})])
+    transport = FakeTransport([Response(200, {"sub": "different-google-oidc-subject"})])
     adapter = drive(transport, "my_drive")
+    with pytest.raises(PermissionFailure):
+        adapter.capabilities("root-1")
+
+
+def test_my_drive_email_or_drive_permission_id_cannot_substitute_for_oidc_subject():
+    transport = FakeTransport([Response(200, {"user": {"permissionId": "google-oidc-subject-owner", "emailAddress": "owner@example.invalid"}})])
+    adapter = drive(transport, "my_drive")
+
     with pytest.raises(PermissionFailure):
         adapter.capabilities("root-1")
 
@@ -164,7 +172,7 @@ def test_reserved_id_folder_create_has_no_name_based_identity():
 
 def test_my_drive_folder_create_is_owner_scoped_and_root_anchored():
     transport = FakeTransport([
-        Response(200, {"user": {"emailAddress": "owner@example.invalid"}}),
+        Response(200, {"sub": "google-oidc-subject-owner"}),
         Response(200, {"id": "root-1", "mimeType": FOLDER_MIME, "capabilities": {"canAddChildren": True}}),
         Response(200, {"id": "reserved-folder", "name": "Sequence 010", "parents": ["root-1"], "mimeType": FOLDER_MIME}),
     ])

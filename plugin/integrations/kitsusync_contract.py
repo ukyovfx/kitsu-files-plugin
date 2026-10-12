@@ -1,10 +1,7 @@
-"""Synthetic boundary for the coordinated, still-draft KitsuSync v1 contract.
+"""Synthetic boundary for the coordinated KitsuSync v1 contract.
 
-KitsuSync PR #237/#238 define the intended authenticated management route and
-RS256/JWKS service bearer profile. This fake remains deliberately non-networked
-until those drafts are accepted and the Plugin has a reviewed verifier and
-route implementation. Plugin-to-KitsuSync signed event delivery is a separate
-trust direction and must not be folded into this provider interface.
+The fake remains deliberately non-networked. Plugin-to-KitsuSync signed event
+delivery is a separate trust direction from management service-bearer auth.
 """
 
 from dataclasses import dataclass

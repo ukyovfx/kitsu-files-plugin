@@ -12,6 +12,7 @@ from .base import AmbiguousOutcome, Listing, PermissionFailure, RetryableStorage
 
 API = "https://www.googleapis.com/drive/v3"
 UPLOAD_API = "https://www.googleapis.com/upload/drive/v3"
+OIDC_USERINFO_API = "https://openidconnect.googleapis.com/v1/userinfo"
 FOLDER_MIME = "application/vnd.google-apps.folder"
 
 
@@ -76,11 +77,16 @@ class GoogleDriveStorageAdapter:
         if root_id != self.config.allowed_root_id:
             raise PermissionFailure("Requested root differs from configured root")
         if self.config.account_mode == "my_drive":
-            account = self._request("GET", f"{API}/about", params={"fields": "user(permissionId,emailAddress)"})
+            account = self._request("GET", OIDC_USERINFO_API, headers={"Accept": "application/json"})
             if account.status_code != 200:
                 raise PermissionFailure("Drive account identity could not be verified")
-            user = account.json().get("user", {})
-            if self.config.owner_subject not in (user.get("permissionId"), user.get("emailAddress")):
+            try:
+                owner_subject = account.json().get("sub")
+            except Exception:
+                raise PermissionFailure("Drive account identity could not be verified") from None
+            if not isinstance(owner_subject, str) or not owner_subject or len(owner_subject) > 255:
+                raise PermissionFailure("Drive account identity could not be verified")
+            if owner_subject != self.config.owner_subject:
                 raise PermissionFailure("Drive token belongs to a different My Drive owner")
         response = self._request("GET", f"{API}/files/{root_id}", params={"supportsAllDrives": "true", "fields": "id,name,mimeType,driveId,parents,trashed,modifiedTime,md5Checksum,capabilities(canAddChildren)"})
         if response.status_code != 200:

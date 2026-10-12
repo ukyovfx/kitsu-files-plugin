@@ -135,6 +135,44 @@ def test_worker_adapter_factory_uses_database_root_and_drive_scope(tmp_path):
     assert adapter.token_provider.credential_ref == "prod-a"
 
 
+def test_my_drive_owner_uses_google_oidc_subject_from_authenticated_userinfo(tmp_path):
+    root, _ = credential_dir(tmp_path, "prod-my-drive")
+    transport = FakeTransport([
+        Response(200, {"access_token": "synthetic-access", "expires_in": 3600}),
+        Response(200, {"sub": "google-oidc-subject-123"}),
+        Response(200, {"id": "root-my-drive", "mimeType": FOLDER_MIME, "capabilities": {"canAddChildren": True}}),
+    ])
+    connection = SimpleNamespace(
+        enabled=True, provider="google_drive", credential_ref="prod-my-drive", account_mode="my_drive",
+        allowed_root_id="root-my-drive", drive_id=None, owner_subject="google-oidc-subject-123",
+    )
+    adapter = build_google_drive_adapter(connection, root, transport=transport)
+
+    capabilities = adapter.capabilities("root-my-drive")
+
+    assert capabilities.root_id == "root-my-drive"
+    assert transport.calls[1][0:2] == ("GET", "https://openidconnect.googleapis.com/v1/userinfo")
+    assert transport.calls[1][2]["headers"]["Authorization"] == "Bearer synthetic-access"
+    assert transport.calls[2][0:2] == ("GET", "https://www.googleapis.com/drive/v3/files/root-my-drive")
+
+
+def test_my_drive_oidc_subject_mismatch_fails_before_root_metadata_read(tmp_path):
+    root, _ = credential_dir(tmp_path, "prod-my-drive")
+    transport = FakeTransport([
+        Response(200, {"access_token": "synthetic-access", "expires_in": 3600}),
+        Response(200, {"sub": "different-google-oidc-subject"}),
+    ])
+    connection = SimpleNamespace(
+        enabled=True, provider="google_drive", credential_ref="prod-my-drive", account_mode="my_drive",
+        allowed_root_id="root-my-drive", drive_id=None, owner_subject="google-oidc-subject-123",
+    )
+    adapter = build_google_drive_adapter(connection, root, transport=transport)
+
+    with pytest.raises(PermissionFailure):
+        adapter.capabilities("root-my-drive")
+    assert len(transport.calls) == 2
+
+
 def test_worker_adapter_factory_keeps_production_roots_and_credentials_separate(tmp_path):
     from plugin.storage.worker_factory import make_worker_storage_adapter_factory
 

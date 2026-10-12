@@ -9,6 +9,7 @@ PUBLISH_SOURCE_MIGRATION = ROOT / "plugin/migrations/versions/0006_publish_sourc
 TASK_OUTPUT_MIGRATION = ROOT / "plugin/migrations/versions/0007_task_outputs_and_department_handoffs.py"
 OUTPUT_PACKAGE_QC_MIGRATION = ROOT / "plugin/migrations/versions/0008_output_package_qc.py"
 KITSUSYNC_DELIVERY_MIGRATION = ROOT / "plugin/migrations/versions/0009_kitsusync_contract_and_package_deliveries.py"
+DRIVE_OBSERVATION_MIGRATION = ROOT / "plugin/migrations/versions/0010_drive_reconciliation_observations.py"
 
 
 def test_plugin_tables_are_namespaced_and_nullable_folder_identity_is_avoided():
@@ -136,3 +137,14 @@ def test_kitsusync_contract_and_multi_recipient_migration_is_additive_and_fail_c
     downgrade = source.split("def downgrade():", 1)[1]
     assert "restore a consistent pre-migration snapshot" in downgrade
     assert "schema_epoch = 7" in downgrade
+
+
+def test_drive_observation_migration_is_additive_and_refuses_data_loss():
+    source = DRIVE_OBSERVATION_MIGRATION.read_text()
+    assert 'revision = "vxf_0010"' in source
+    assert 'down_revision = "vxf_0009"' in source
+    assert 'op.create_table(\n        "plugin_vfx_files_drive_observation"' in source
+    for state in ("present", "missing", "modified", "inaccessible", "stale"):
+        assert state in source
+    assert "restore a consistent pre-migration snapshot instead of downgrading" in source
+    assert "schema_epoch = 9" in source and "schema_epoch = 8" in source

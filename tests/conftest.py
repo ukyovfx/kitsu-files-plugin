@@ -91,7 +91,7 @@ def synthetic_upload_task(authenticated_plugin_client, zou_db_factory, tmp_path)
     from zou.app.models.project import Project, ProjectPersonLink
     from zou.app.models.task import Task, TaskPersonLink
     from zou.app.models.task_type import TaskType
-    from plugin.models import ApprovalEvent, FolderBinding, Handoff, HandoffEvent, Job, LatestWorkingPointer, NativeCreateEvent, OutputFamilyMapping, OutputPackage, OutputPackageFile, OutputPackagePointer, PinnedDependency, Publish, PublishCheckpoint, PublishPointer, ReconciliationFinding, SharedTemplateConfiguration, StorageConnection, UploadPart, UploadSession, WorkingDependency, WorkingRevision, WorkingRevisionFile
+    from plugin.models import ApprovalEvent, DriveReconciliationObservation, FolderBinding, Handoff, HandoffEvent, Job, LatestWorkingPointer, NativeCreateEvent, OutputFamilyMapping, OutputPackage, OutputPackageFile, OutputPackagePointer, PinnedDependency, Publish, PublishCheckpoint, PublishPointer, ReconciliationFinding, SharedTemplateConfiguration, StorageConnection, UploadPart, UploadSession, WorkingDependency, WorkingRevision, WorkingRevisionFile
 
     app = authenticated_plugin_client.vfx_app
     with app.app_context():
@@ -190,6 +190,9 @@ def synthetic_upload_task(authenticated_plugin_client, zou_db_factory, tmp_path)
                 SharedTemplateConfiguration.storage_connection_id == connection_id
             )
         )
+        session.execute(DriveReconciliationObservation.__table__.delete().where(
+            DriveReconciliationObservation.storage_connection_id == connection_id
+        ))
         session.execute(FolderBinding.__table__.delete().where(FolderBinding.storage_connection_id == connection_id))
         session.execute(StorageConnection.__table__.delete().where(StorageConnection.id == connection_id))
         session.execute(TaskPersonLink.__table__.delete().where(TaskPersonLink.task_id == task_id))

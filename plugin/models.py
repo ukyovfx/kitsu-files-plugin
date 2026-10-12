@@ -426,6 +426,28 @@ class KitsuSyncEventOutbox(db.Model):
     )
 
 
+class DriveReconciliationObservation(db.Model):
+    """Append-only provider readback evidence for one bounded reconciliation."""
+    __tablename__ = "plugin_vfx_files_drive_observation"
+    id = db.Column(UUIDType(binary=False), primary_key=True, default=uuid4)
+    reconciliation_id = db.Column(UUIDType(binary=False), nullable=False)
+    production_id = db.Column(UUIDType(binary=False), nullable=False, index=True)
+    storage_connection_id = db.Column(UUIDType(binary=False), ForeignKey("plugin_vfx_files_storage_connection.id"), nullable=False)
+    allowed_root_id = db.Column(String(255), nullable=False)
+    provider_object_id = db.Column(String(255), nullable=False)
+    state = db.Column(String(24), nullable=False)
+    metadata_fingerprint = db.Column(String(64))
+    provider_modified_at = db.Column(String(64))
+    byte_count = db.Column(BigInteger)
+    error_code = db.Column(String(64))
+    observed_at = db.Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    __table_args__ = (
+        UniqueConstraint("reconciliation_id", "provider_object_id", name="plugin_vfx_files_drive_observation_identity_uc"),
+        Index("plugin_vfx_files_drive_observation_scope_ix", "storage_connection_id", "allowed_root_id", "observed_at"),
+        db.CheckConstraint("state IN ('present','missing','modified','inaccessible','stale')", name="plugin_vfx_files_drive_observation_state_ck"),
+    )
+
+
 class OutputPackageDelivery(db.Model):
     """Independent receipt state for each receiving Task, referencing one package."""
     __tablename__ = "plugin_vfx_files_output_package_delivery"

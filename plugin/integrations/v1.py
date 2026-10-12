@@ -1,8 +1,7 @@
-"""Pure protocol primitives shared by the KitsuSync v1 API and Worker.
+"""Pure protocol primitives shared by the coordinated KitsuSync v1 contract.
 
-This module intentionally does not choose service-token issuer or key semantics:
-the published draft leaves those values unresolved, so an HTTP adapter must be
-configured with an explicitly approved verifier before it can be enabled.
+Management API authentication and Zou route registration live in their own
+adapter. Event HMAC remains a separate trust direction from service JWT auth.
 """
 
 from __future__ import annotations
