@@ -592,7 +592,7 @@ class HandoffCreate(MethodView):
             recipient = db_ext.session.get(Person, recipient_id)
             is_task_assignee = TaskPersonLink.query.filter_by(task_id=task.id, person_id=recipient_id).one_or_none() is not None
             is_project_member = ProjectPersonLink.query.filter_by(project_id=task.project_id, person_id=recipient_id).one_or_none() is not None
-            if recipient is None or not getattr(recipient, "active", True) or not (is_task_assignee or is_project_member):
+            if recipient is None or not getattr(recipient, "active", True) or not (is_task_assignee and is_project_member):
                 abort(403)
             key = request.headers.get("Idempotency-Key", "").strip()
             if not key or len(key) > 128:

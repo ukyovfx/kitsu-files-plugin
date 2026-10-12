@@ -63,6 +63,7 @@ def test_working_file_publish_runs_api_database_worker_fake_storage_and_native_z
 ):
     from plugin.models import (
         FolderBinding,
+        Handoff,
         Job,
         NativeCreateEvent,
         OutputFamilyMapping,
@@ -283,6 +284,19 @@ def test_working_file_publish_runs_api_database_worker_fake_storage_and_native_z
     reviewer_headers = _headers(reviewer_client)
     assert reviewer_id != _actor_id
 
+    project_only_recipient = Person(
+        first_name="Synthetic",
+        last_name=f"ProjectOnly{uuid4().hex[:8]}",
+        email=f"project-only-{uuid4().hex}@example.invalid",
+        role="user",
+    )
+    with app.app_context(), zou_db_factory.begin() as session:
+        session.add(project_only_recipient)
+        session.flush()
+        project_only_recipient_id = project_only_recipient.id
+        session.add(ProjectPersonLink(project_id=production_id, person_id=project_only_recipient_id, role="user"))
+        handoffs_before = session.scalar(select(func.count()).select_from(Handoff).where(Handoff.task_id == task_id))
+
     self_approval = client.post(
         f"/plugins/vfx_files/publishes/{publish_id}/approvals",
         json={"policy_id": "synthetic-supervisor-approval-v1", "policy_sha256": hashlib.sha256(b"synthetic-policy-v1").hexdigest()},
@@ -303,6 +317,14 @@ def test_working_file_publish_runs_api_database_worker_fake_storage_and_native_z
             OutputFile.data["vfx_files_publish_id"].astext == str(publish_id),
         )).all()
         assert len(native_outputs) == 1
+    project_member_handoff = client.post(
+        f"/plugins/vfx_files/publishes/{publish_id}/handoffs",
+        json={"recipient_id": str(project_only_recipient_id)},
+        headers={**headers, "Idempotency-Key": f"handoff-project-member:{uuid4()}"},
+    )
+    assert project_member_handoff.status_code == 403
+    with app.app_context(), zou_db_factory() as session:
+        assert session.scalar(select(func.count()).select_from(Handoff).where(Handoff.task_id == task_id)) == handoffs_before
     handoff = client.post(
         f"/plugins/vfx_files/publishes/{publish_id}/handoffs",
         json={"recipient_id": str(reviewer_id)},
