@@ -2,11 +2,9 @@ from uuid import uuid4
 
 import pytest
 
-pytest.importorskip("vfx_files")
-
 from plugin.jobs.queue import JobResult, LeasedJob
 from plugin.compat import SCHEMA_EPOCH, WORKER_BUILD
-from plugin.storage.base import AmbiguousOutcome
+from plugin.storage.base import AmbiguousOutcome, RetryableStorageFailure
 from plugin.worker.leases import WorkerContext
 from plugin.worker.main import WorkerRuntime, process_one
 
@@ -58,3 +56,101 @@ def test_revoked_authorization_blocks_handler_before_side_effect():
 def test_stale_lease_result_is_not_reported_as_complete():
     queue = Queue(complete=False)
     assert process_one(runtime(queue, lambda _job: JobResult("completed"))) == "stale_lease"
+
+
+def test_retryable_provider_failure_is_scheduled_without_provider_details():
+    queue = Queue()
+
+    def temporarily_unavailable(_job):
+        raise RetryableStorageFailure(17, "synthetic private response")
+
+    assert process_one(runtime(queue, temporarily_unavailable)) == "retry"
+    result = queue.completed[3]
+    assert result.error_code == "provider_temporarily_unavailable"
+    assert result.retry_after_seconds == 17
+    assert "synthetic private response" not in str(result)
+
+
+def test_run_forever_stops_cleanly_after_requested_shutdown(monkeypatch):
+    import threading
+
+    from plugin.worker import main as worker_main
+
+    class StopAfterWaits:
+        def __init__(self):
+            self.stopped = False
+            self.waits = 0
+
+        def is_set(self):
+            return self.stopped
+
+        def wait(self, _seconds):
+            self.waits += 1
+            if self.waits == 2:
+                self.stopped = True
+
+    stop = StopAfterWaits()
+    calls = []
+    monkeypatch.setattr(worker_main, "process_one", lambda _runtime: calls.append("tick") or None)
+
+    worker_main.run_forever(runtime(Queue()), stop_event=stop, idle_seconds=0.25)
+
+    assert len(calls) == 2
+    assert stop.stopped
+
+
+def test_run_forever_rejects_unsafe_poll_intervals():
+    import threading
+
+    from plugin.worker.main import run_forever
+
+    with pytest.raises(ValueError, match="poll interval"):
+        run_forever(runtime(Queue()), stop_event=threading.Event(), idle_seconds=0.1)
+
+
+def test_long_worker_operation_renews_its_database_lease():
+    import threading
+
+    class HeartbeatQueue(Queue):
+        lease_seconds = 0.03
+
+        def __init__(self):
+            super().__init__()
+            self.heartbeat_seen = threading.Event()
+
+        def heartbeat(self, job_id, worker_id, generation):
+            self.heartbeat_seen.set()
+            return True
+
+    queue = HeartbeatQueue()
+
+    def long_operation(_job):
+        assert queue.heartbeat_seen.wait(timeout=1)
+        return JobResult("completed")
+
+    assert process_one(runtime(queue, long_operation)) == "completed"
+    assert queue.heartbeat_seen.is_set()
+
+
+def test_worker_suppresses_completion_after_lease_generation_is_lost():
+    import threading
+
+    class LostLeaseQueue(Queue):
+        lease_seconds = 0.03
+
+        def __init__(self):
+            super().__init__()
+            self.heartbeat_seen = threading.Event()
+
+        def heartbeat(self, _job_id, _worker_id, _generation):
+            self.heartbeat_seen.set()
+            return False
+
+    queue = LostLeaseQueue()
+
+    def operation_finishes_after_takeover(_job):
+        assert queue.heartbeat_seen.wait(timeout=1)
+        return JobResult("completed")
+
+    assert process_one(runtime(queue, operation_finishes_after_takeover)) == "stale_lease"
+    assert queue.completed is None

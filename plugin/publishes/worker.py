@@ -16,7 +16,8 @@ from ..models import (
     WorkingRevision,
     WorkingRevisionFile,
 )
-from ..storage.base import AlreadyExists, AmbiguousOutcome, PermissionFailure
+from ..storage.base import AlreadyExists, AmbiguousOutcome, PermissionFailure, resolve_storage_adapter
+from ..worker.scope import publish_job_scope_matches
 from .checkpoints import PublishConflict, advance_checkpoint, advance_latest_published
 from .manifest import build_manifest, canonical_manifest_bytes, manifest_sha256
 from .qc import run_basic_qc
@@ -107,6 +108,13 @@ def make_publish_handler(session_factory, adapter):
                 or revision.task_id != task.id or not source.provider_object_id
             ):
                 return JobResult("failed", error_code="publish_scope_unavailable")
+            if not publish_job_scope_matches(
+                task_id=task.id,
+                created_by=publish.created_by,
+                payload=job.payload,
+            ):
+                return JobResult("failed", error_code="publish_scope_mismatch")
+            job_adapter = resolve_storage_adapter(adapter, connection)
             source_id = source.provider_object_id
             source_size = source.provider_size
             source_sha256 = source.provider_sha256
@@ -118,7 +126,7 @@ def make_publish_handler(session_factory, adapter):
             task_id = task.id
 
         if artifact_id is None:
-            reserved_artifact_id = adapter.reserve_id(f"publish:{publish_id}")
+            reserved_artifact_id = job_adapter.reserve_id(f"publish:{publish_id}")
             with session_factory.begin() as session:
                 lease = session.scalar(select(Job).where(Job.id == job.job_id).with_for_update())
                 publish = session.scalar(select(Publish).where(Publish.id == publish_id).with_for_update())
@@ -133,6 +141,7 @@ def make_publish_handler(session_factory, adapter):
                     publish.provider_artifact_id = reserved_artifact_id
                 artifact_id = publish.provider_artifact_id
 
+        adapter = job_adapter
         capabilities = adapter.capabilities(root_id)
         if not capabilities.root_visible or not capabilities.can_add_children:
             raise PermissionFailure("Publish root is unavailable for writes")

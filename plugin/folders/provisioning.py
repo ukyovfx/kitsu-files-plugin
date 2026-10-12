@@ -110,6 +110,7 @@ def provision_task_folders(
     from sqlalchemy import select
 
     from ..models import SharedTemplateConfiguration, StorageConnection
+    from ..storage.base import resolve_storage_adapter
     from zou.app.models.entity import Entity
     from zou.app.models.entity_type import EntityType
     from zou.app.models.task import Task
@@ -142,6 +143,7 @@ def provision_task_folders(
         tree = dict(config.template_tree)
         mappings = dict(config.role_mappings)
         connection_id = connection.id
+        job_adapter = resolve_storage_adapter(adapter, connection)
         shot_id = str(entity.id)
         shot_name = entity.name
         task_name = task.name
@@ -185,7 +187,7 @@ def provision_task_folders(
             ):
                 raise FolderProvisioningError("Template or storage configuration changed while provisioning")
         result = provision_folder(
-            adapter,
+            job_adapter,
             store,
             storage_connection_id=str(connection_id),
             allowed_root_id=production_root_id,

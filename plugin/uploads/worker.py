@@ -9,7 +9,8 @@ from sqlalchemy import func, select
 
 from ..jobs.queue import JobResult, LeasedJob
 from ..models import Job, StorageConnection, UploadPart, UploadSession
-from ..storage.base import AlreadyExists, AmbiguousOutcome, PermissionFailure
+from ..storage.base import AlreadyExists, AmbiguousOutcome, PermissionFailure, resolve_storage_adapter
+from ..worker.scope import upload_job_scope_matches
 
 
 def make_upload_handler(session_factory, staging, adapter):
@@ -42,6 +43,18 @@ def make_upload_handler(session_factory, staging, adapter):
             connection = session.get(StorageConnection, upload.storage_connection_id)
             if connection is None or not connection.enabled:
                 return JobResult("failed", error_code="storage_connection_unavailable")
+            from zou.app.models.task import Task
+
+            task = session.get(Task, upload.task_id)
+            if task is None or not upload_job_scope_matches(
+                upload_task_id=upload.task_id,
+                upload_actor_id=upload.actor_id,
+                task_project_id=task.project_id,
+                connection_production_id=connection.production_id,
+                payload=job.payload,
+            ):
+                return JobResult("failed", error_code="upload_scope_mismatch")
+            job_adapter = resolve_storage_adapter(adapter, connection)
             if upload.provider_object_id:
                 provider_id = upload.provider_object_id
             else:
@@ -56,6 +69,7 @@ def make_upload_handler(session_factory, staging, adapter):
             ).all()
             parts = [(part.staging_key, part.byte_start, part.byte_count, part.sha256, part.state) for part in part_rows]
 
+        adapter = job_adapter
         capabilities = adapter.capabilities(parent_id)
         if not capabilities.root_visible or not capabilities.can_add_children:
             raise PermissionFailure("Configured storage root is unavailable for writes")

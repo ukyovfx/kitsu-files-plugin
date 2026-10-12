@@ -114,13 +114,21 @@ def _storage_adapter(connection):
     factory = current_app.extensions.get("vfx_files_storage_adapter_factory")
     if factory is not None:
         return factory(connection)
-    if _setting("VFX_FILES_STORAGE_MODE") == "fake":
+    storage_mode = _setting("VFX_FILES_STORAGE_MODE")
+    if storage_mode == "fake":
         from .storage.fake import PersistentFakeStorage
 
         fake_root = _setting("VFX_FILES_FAKE_STORAGE_ROOT")
         if not fake_root:
             raise ServiceUnavailable("FakeStorage is not configured")
         return PersistentFakeStorage(fake_root, root_id=_setting("VFX_FILES_FAKE_ROOT_ID", connection.allowed_root_id))
+    if storage_mode == "google_drive":
+        from .storage.worker_factory import build_google_drive_adapter
+
+        credentials_dir = _setting("VFX_FILES_DRIVE_CREDENTIALS_DIR")
+        if not credentials_dir:
+            raise ServiceUnavailable("Google Drive credentials are not configured")
+        return build_google_drive_adapter(connection, credentials_dir)
     raise ServiceUnavailable("No StorageAdapter is configured for downloads")
 
 
