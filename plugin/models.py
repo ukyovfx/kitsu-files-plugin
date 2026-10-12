@@ -227,6 +227,60 @@ class PublishPointer(db.Model):
     latest_approved_id = db.Column(UUIDType(binary=False), ForeignKey("plugin_vfx_files_publish.id"))
 
 
+class OutputPackage(db.Model):
+    """Immutable, manifest-backed deliverable package (independent of Zou OutputFile numbering)."""
+    __tablename__ = "plugin_vfx_files_output_package"
+    id = db.Column(UUIDType(binary=False), primary_key=True, default=uuid4)
+    production_id = db.Column(UUIDType(binary=False), nullable=False, index=True)
+    entity_id = db.Column(UUIDType(binary=False), nullable=False, index=True)
+    task_id = db.Column(UUIDType(binary=False), nullable=False, index=True)
+    output_type_id = db.Column(UUIDType(binary=False), nullable=False)
+    package_type = db.Column(String(64), nullable=False)
+    version = db.Column(Integer, nullable=False)
+    state = db.Column(String(24), nullable=False, default="receiving")
+    manifest_bytes = db.Column(db.LargeBinary, nullable=False)
+    manifest_sha256 = db.Column(String(64), nullable=False)
+    source_working_revision_id = db.Column(UUIDType(binary=False), ForeignKey("plugin_vfx_files_working_revision.id"))
+    created_by = db.Column(UUIDType(binary=False), nullable=False)
+    created_at = db.Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    completed_at = db.Column(DateTime(timezone=True))
+    __table_args__ = (
+        UniqueConstraint("task_id", "output_type_id", "package_type", "version", name="plugin_vfx_files_output_package_version_uc"),
+    )
+
+
+class OutputPackageFile(db.Model):
+    """One immutable provider object entry in a package, including optional sequence frame metadata."""
+    __tablename__ = "plugin_vfx_files_output_package_file"
+    id = db.Column(UUIDType(binary=False), primary_key=True, default=uuid4)
+    package_id = db.Column(UUIDType(binary=False), ForeignKey("plugin_vfx_files_output_package.id"), nullable=False, index=True)
+    ordinal = db.Column(Integer, nullable=False)
+    file_name = db.Column(String(1024), nullable=False)
+    provider_object_id = db.Column(String(255), nullable=False)
+    frame_number = db.Column(Integer)
+    byte_count = db.Column(BigInteger, nullable=False)
+    sha256 = db.Column(String(64), nullable=False)
+    file_format = db.Column(String(32))
+    color_space = db.Column(String(128))
+    is_proxy = db.Column(Boolean, nullable=False, default=False)
+    __table_args__ = (
+        UniqueConstraint("package_id", "ordinal", name="plugin_vfx_files_output_package_file_ordinal_uc"),
+        UniqueConstraint("package_id", "provider_object_id", name="plugin_vfx_files_output_package_provider_object_uc"),
+    )
+
+
+class OutputPackagePointer(db.Model):
+    """Independent latest pointers; no inference from Working/Publish/native revisions."""
+    __tablename__ = "plugin_vfx_files_output_package_pointer"
+    task_id = db.Column(UUIDType(binary=False), primary_key=True)
+    output_type_id = db.Column(UUIDType(binary=False), primary_key=True)
+    package_type = db.Column(String(64), primary_key=True)
+    latest_output_id = db.Column(UUIDType(binary=False), ForeignKey("plugin_vfx_files_output_package.id"))
+    latest_published_id = db.Column(UUIDType(binary=False), ForeignKey("plugin_vfx_files_output_package.id"))
+    latest_approved_id = db.Column(UUIDType(binary=False), ForeignKey("plugin_vfx_files_output_package.id"))
+    latest_final_delivery_id = db.Column(UUIDType(binary=False), ForeignKey("plugin_vfx_files_output_package.id"))
+
+
 class PublishCheckpoint(db.Model):
     __tablename__ = "plugin_vfx_files_publish_checkpoint"
     id = db.Column(UUIDType(binary=False), primary_key=True, default=uuid4)
@@ -279,7 +333,10 @@ class Handoff(db.Model):
     task_id = db.Column(UUIDType(binary=False), nullable=False, index=True)
     publish_id = db.Column(UUIDType(binary=False), ForeignKey("plugin_vfx_files_publish.id"), nullable=False)
     sender_id = db.Column(UUIDType(binary=False), nullable=False)
-    recipient_id = db.Column(UUIDType(binary=False), nullable=False)
+    recipient_id = db.Column(UUIDType(binary=False))
+    recipient_department_id = db.Column(UUIDType(binary=False))
+    recipient_task_id = db.Column(UUIDType(binary=False))
+    recipient_person_id = db.Column(UUIDType(binary=False))
     idempotency_key = db.Column(String(128), nullable=False, unique=True)
     state = db.Column(String(24), nullable=False, default="pending")
     created_at = db.Column(DateTime(timezone=True), nullable=False, server_default=func.now())

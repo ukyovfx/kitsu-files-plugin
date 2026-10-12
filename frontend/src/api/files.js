@@ -23,10 +23,11 @@ export function createFilesApi(client) {
   }
 
   return {
-    async listProduction(productionId, episodeId) {
+    async listProduction(productionId, episodeId, taskId) {
       if (!productionId) throw new TypeError('A Production ID is required')
       const query = new URLSearchParams({ production_id: productionId })
       if (episodeId) query.set('episode_id', episodeId)
+      if (taskId) query.set('task_id', taskId)
       const response = await client.request('GET', `${ROOT}/overview?${query}`)
       return readJson(response)
     },
@@ -113,6 +114,16 @@ export function createFilesApi(client) {
       return readJson(await mutation('POST', `${ROOT}/publishes/${encodeURIComponent(publishId)}/handoffs`, {
         headers: { 'Content-Type': 'application/json', 'Idempotency-Key': `handoff:${crypto.randomUUID()}` },
         body: JSON.stringify({ recipient_id: recipientId })
+      }))
+    },
+
+    async createDepartmentHandoff(publishId, recipientDepartmentId, recipientTaskId, recipientPersonId = null) {
+      if (!publishId || !recipientDepartmentId || !recipientTaskId) throw new TypeError('A Publish, receiving Department and receiving Task are required')
+      const body = { recipient_department_id: recipientDepartmentId, recipient_task_id: recipientTaskId }
+      if (recipientPersonId) body.recipient_person_id = recipientPersonId
+      return readJson(await mutation('POST', `${ROOT}/publishes/${encodeURIComponent(publishId)}/handoffs`, {
+        headers: { 'Content-Type': 'application/json', 'Idempotency-Key': `handoff:${crypto.randomUUID()}` },
+        body: JSON.stringify(body)
       }))
     },
 

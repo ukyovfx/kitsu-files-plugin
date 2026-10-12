@@ -49,6 +49,11 @@ export function parseProductionContext(search) {
   return {
     productionId: params.get('production_id'),
     episodeId: params.get('episode_id'),
+    // These are iframe context hints only; the plugin API resolves and authorizes them.
+    taskId: params.get('task_id'),
+    entityId: params.get('entity_id'),
+    entityType: params.get('entity_type'),
+    taskTypeId: params.get('task_type_id'),
     darkTheme: params.get('dark_theme') === 'true',
     locale: params.get('locale')
   }

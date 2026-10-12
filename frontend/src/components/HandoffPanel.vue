@@ -20,6 +20,7 @@ const feedback = reactive({})
           <span class="state" :data-state="handoff.state">{{ handoff.state }}</span>
           <span class="mono">Task {{ handoff.task_id }}</span>
           <span class="muted">Publish {{ handoff.publish_id }}</span>
+          <span v-if="handoff.recipient_department_id" class="muted">Receiving Department {{ handoff.recipient_department_id }} · Task {{ handoff.recipient_task_id }}</span>
         </div>
         <div v-if="handoff.state === 'pending'" class="handoff-actions">
           <textarea v-model="feedback[handoff.id]" class="feedback-input" aria-label="Needs Fix feedback" placeholder="Feedback required for Needs Fix" rows="1"></textarea>

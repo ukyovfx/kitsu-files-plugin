@@ -324,6 +324,8 @@ class TaskPublishOptions(MethodView):
         try:
             parsed_task_id = UUID(str(task_id))
             from zou.app.models.task import Task, TaskPersonLink
+            from zou.app.models.project import ProjectTaskTypeLink
+            from zou.app.models.task_type import TaskType
             from zou.app.models.person import Person
             from .models import OutputFamilyMapping
             task = Task.query.filter_by(id=parsed_task_id).one_or_none()
@@ -343,6 +345,14 @@ class TaskPublishOptions(MethodView):
                 .filter(TaskPersonLink.task_id == task.id, Person.active.is_(True))
                 .order_by(Person.last_name, Person.first_name).all()
             )
+            targets = (
+                Task.query.join(TaskType, TaskType.id == Task.task_type_id)
+                .join(ProjectTaskTypeLink, ProjectTaskTypeLink.task_type_id == TaskType.id)
+                .filter(Task.project_id == task.project_id, Task.entity_id == task.entity_id, Task.id != task.id)
+                .filter(ProjectTaskTypeLink.project_id == task.project_id, TaskType.archived.is_(False))
+                .order_by(TaskType.name, Task.id).all()
+            )
+            target_types = {item.id: item for item in TaskType.query.filter(TaskType.id.in_({target.task_type_id for target in targets})).all()} if targets else {}
         except (PermissionDenied, NotFound):
             abort(403)
         except (ValueError, TypeError):
@@ -353,6 +363,10 @@ class TaskPublishOptions(MethodView):
             "role": actor.project_role,
             "families": [{"id": str(row.id), "name": row.name, "family_key": row.family_key} for row in families],
             "recipients": [{"id": str(row.id), "name": f"{row.first_name} {row.last_name}".strip()} for row in assignees if row.id != actor.actor_id],
+            "department_targets": [
+                {"task_id": str(target.id), "task_type_id": str(target.task_type_id), "department_id": str(target_types[target.task_type_id].department_id), "task_type_name": target_types[target.task_type_id].name}
+                for target in targets if target.task_type_id in target_types and target_types[target.task_type_id].department_id is not None
+            ],
         }
 
 
@@ -382,7 +396,7 @@ class ProductionOverview(MethodView):
             abort(404)
         except PermissionDenied:
             abort(403)
-        from sqlalchemy import select
+        from sqlalchemy import or_, select
         from .models import Handoff, Job, OutputFamilyMapping, Publish, PublishPointer, StorageConnection, UploadSession
         from zou.app.models.task import Task
 
@@ -428,7 +442,7 @@ class ProductionOverview(MethodView):
                 "latest_published": bool(pointer and pointer.latest_published_id == publish.id),
                 "latest_approved": bool(pointer and pointer.latest_approved_id == publish.id),
             })
-        handoffs = Handoff.query.filter(Handoff.task_id.in_(task_ids)).order_by(Handoff.created_at.desc()).limit(200).all()
+        handoffs = Handoff.query.filter(or_(Handoff.task_id.in_(task_ids), Handoff.recipient_task_id.in_(task_ids))).order_by(Handoff.created_at.desc()).limit(200).all()
         uploads = UploadSession.query.filter(UploadSession.task_id.in_(task_ids)).order_by(UploadSession.created_at.desc()).limit(500).all()
         storage_connections = StorageConnection.query.filter_by(production_id=scope.production_id, enabled=True).limit(2).all()
         worker_enabled = _setting("VFX_FILES_WORKER_ENABLED", "false") in (True, "true", "1", 1)
@@ -453,7 +467,7 @@ class ProductionOverview(MethodView):
                 "failure_code": row.failure_code,
             } for row in uploads],
             "publishes": publish_rows,
-            "handoffs": [{"id": str(row.id), "task_id": str(row.task_id), "publish_id": str(row.publish_id), "sender_id": str(row.sender_id), "recipient_id": str(row.recipient_id), "state": row.state} for row in handoffs],
+            "handoffs": [{"id": str(row.id), "task_id": str(row.task_id), "publish_id": str(row.publish_id), "sender_id": str(row.sender_id), "recipient_id": str(row.recipient_id) if row.recipient_id else None, "recipient_department_id": str(row.recipient_department_id) if row.recipient_department_id else None, "recipient_task_id": str(row.recipient_task_id) if row.recipient_task_id else None, "recipient_person_id": str(row.recipient_person_id) if row.recipient_person_id else None, "state": row.state} for row in handoffs],
         }
 
 
@@ -480,7 +494,7 @@ class HandoffResponse(MethodView):
             handoff_uuid = UUID(str(handoff_id))
         except (PermissionDenied, ValueError, TypeError, AttributeError):
             abort(403)
-        from .handoffs.service import transition_handoff
+        from .handoffs.service import HandoffDenied, transition_handoff
         from sqlalchemy.orm import sessionmaker
         db_ext = current_app.extensions["sqlalchemy"]
         from .models import Handoff
@@ -489,12 +503,46 @@ class HandoffResponse(MethodView):
             abort(404)
         try:
             # Resolve project ownership from the authoritative Task row; do not use the body for scope.
-            from zou.app.models.task import Task
-            task = Task.query.filter_by(id=handoff.task_id).one_or_none()
-            if task is None:
+            from zou.app.models.task import Task, TaskPersonLink
+            from zou.app.models.task_type import TaskType
+            from zou.app.models.person import DepartmentLink, Person
+            from zou.app.models.project import ProjectPersonLink, ProjectTaskTypeLink
+            source_task = Task.query.filter_by(id=handoff.task_id).one_or_none()
+            task = Task.query.filter_by(id=handoff.recipient_task_id or handoff.task_id).one_or_none()
+            if source_task is None or task is None:
                 abort(404)
             actor = _request_actor(str(task.project_id))
-            scope = _resolve_scope(actor, str(task.project_id), str(handoff.task_id))
+            department_recipient_authorized = handoff.recipient_department_id is not None
+            if department_recipient_authorized:
+                task_type = TaskType.query.filter_by(id=task.task_type_id).one_or_none()
+                from .handoffs.targets import department_recipient_is_current_member, department_target_matches
+                target_matches = task_type is not None and department_target_matches(
+                    source_project_id=source_task.project_id, source_entity_id=source_task.entity_id,
+                    target_project_id=task.project_id, target_entity_id=task.entity_id,
+                    target_department_id=task_type.department_id, requested_department_id=handoff.recipient_department_id,
+                    department_exists=True,
+                    task_type_in_project=ProjectTaskTypeLink.query.filter_by(project_id=task.project_id, task_type_id=task.task_type_id).one_or_none() is not None,
+                )
+                person_row = db_ext.session.get(Person, actor_id)
+                member = department_recipient_is_current_member(
+                    actor_id=actor_id, designated_person_id=handoff.recipient_person_id,
+                    active=bool(person_row is not None and getattr(person_row, "active", True)),
+                    project_member=ProjectPersonLink.query.filter_by(project_id=task.project_id, person_id=actor_id).one_or_none() is not None,
+                    department_member=DepartmentLink.query.filter_by(department_id=handoff.recipient_department_id, person_id=actor_id).one_or_none() is not None,
+                    task_assignee=TaskPersonLink.query.filter_by(task_id=task.id, person_id=actor_id).one_or_none() is not None,
+                )
+                if not target_matches or not member:
+                    abort(403)
+            else:
+                person_row = db_ext.session.get(Person, actor_id)
+                if (
+                    handoff.recipient_id != actor_id
+                    or person_row is None or not getattr(person_row, "active", True)
+                    or ProjectPersonLink.query.filter_by(project_id=task.project_id, person_id=actor_id).one_or_none() is None
+                    or TaskPersonLink.query.filter_by(task_id=task.id, person_id=actor_id).one_or_none() is None
+                ):
+                    abort(403)
+            scope = _resolve_scope(actor, str(task.project_id), str(task.id))
             authorize(actor, Capability.HANDOFF, scope)
             from .compat import authorize_task_mutation
             if not authorize_task_mutation(actor, task.id, "handoff"):
@@ -503,6 +551,31 @@ class HandoffResponse(MethodView):
             idempotency_key = request.headers.get("Idempotency-Key", "").strip()
             if not idempotency_key or len(idempotency_key) > 128:
                 abort(400)
+            def current_department_membership(session, record, responder_id):
+                if record.recipient_task_id is None or record.recipient_department_id is None:
+                    return False
+                source = session.get(Task, record.task_id)
+                destination = session.get(Task, record.recipient_task_id)
+                destination_type = session.get(TaskType, destination.task_type_id) if destination is not None else None
+                person = session.get(Person, responder_id)
+                return bool(
+                    source is not None and destination is not None and destination_type is not None
+                    and department_target_matches(
+                        source_project_id=source.project_id, source_entity_id=source.entity_id,
+                        target_project_id=destination.project_id, target_entity_id=destination.entity_id,
+                        target_department_id=destination_type.department_id,
+                        requested_department_id=record.recipient_department_id, department_exists=True,
+                        task_type_in_project=session.get(ProjectTaskTypeLink, (destination.project_id, destination.task_type_id)) is not None,
+                    )
+                    and department_recipient_is_current_member(
+                        actor_id=responder_id, designated_person_id=record.recipient_person_id,
+                        active=bool(person is not None and getattr(person, "active", True)),
+                        project_member=session.get(ProjectPersonLink, (destination.project_id, responder_id)) is not None,
+                        department_member=session.get(DepartmentLink, (responder_id, record.recipient_department_id)) is not None,
+                        task_assignee=session.get(TaskPersonLink, (destination.id, responder_id)) is not None,
+                    )
+                )
+
             result = transition_handoff(
                 sessionmaker(bind=db_ext.engine, expire_on_commit=False),
                 actor_id=actor_id,
@@ -510,10 +583,13 @@ class HandoffResponse(MethodView):
                 target=payload.get("target"),
                 feedback=payload.get("feedback"),
                 idempotency_key=idempotency_key,
+                authorize_department_recipient=current_department_membership,
             )
         except NotFound:
             abort(404)
         except PermissionDenied:
+            abort(403)
+        except HandoffDenied:
             abort(403)
         except (ValueError, TypeError):
             abort(400)
@@ -578,9 +654,11 @@ class HandoffCreate(MethodView):
         row = Publish.query.filter_by(id=publish_id).one_or_none()
         if row is None:
             abort(404)
-        from zou.app.models.person import Person
-        from zou.app.models.project import ProjectPersonLink
+        from zou.app.models.person import DepartmentLink, Person
+        from zou.app.models.project import ProjectPersonLink, ProjectTaskTypeLink
         from zou.app.models.task import Task, TaskPersonLink
+        from zou.app.models.task_type import TaskType
+        from zou.app.models.department import Department
         from .handoffs.service import HandoffDenied, create_handoff
         from sqlalchemy.orm import sessionmaker
         db_ext = current_app.extensions["sqlalchemy"]
@@ -596,19 +674,48 @@ class HandoffCreate(MethodView):
             if not authorize_task_mutation(actor, task.id, "handoff"):
                 abort(403)
             payload = request.get_json(silent=False) or {}
-            recipient_id = UUID(str(payload.get("recipient_id", "")))
-            recipient = db_ext.session.get(Person, recipient_id)
-            is_task_assignee = TaskPersonLink.query.filter_by(task_id=task.id, person_id=recipient_id).one_or_none() is not None
-            is_project_member = ProjectPersonLink.query.filter_by(project_id=task.project_id, person_id=recipient_id).one_or_none() is not None
-            if recipient is None or not getattr(recipient, "active", True) or not (is_task_assignee and is_project_member):
-                abort(403)
+            recipient_id = recipient_department_id = recipient_task_id = recipient_person_id = None
+            if payload.get("recipient_id"):
+                recipient_id = UUID(str(payload.get("recipient_id")))
+                recipient = db_ext.session.get(Person, recipient_id)
+                is_task_assignee = TaskPersonLink.query.filter_by(task_id=task.id, person_id=recipient_id).one_or_none() is not None
+                is_project_member = ProjectPersonLink.query.filter_by(project_id=task.project_id, person_id=recipient_id).one_or_none() is not None
+                if recipient is None or not getattr(recipient, "active", True) or not (is_task_assignee and is_project_member):
+                    abort(403)
+            else:
+                recipient_department_id = UUID(str(payload.get("recipient_department_id", "")))
+                recipient_task_id = UUID(str(payload.get("recipient_task_id", "")))
+                target_task = Task.query.filter_by(id=recipient_task_id).one_or_none()
+                target_type = TaskType.query.filter_by(id=target_task.task_type_id).one_or_none() if target_task is not None else None
+                department = db_ext.session.get(Department, recipient_department_id)
+                from .handoffs.targets import department_target_matches
+                if target_task is None or target_task.id == task.id or target_type is None or not department_target_matches(
+                    source_project_id=task.project_id, source_entity_id=task.entity_id,
+                    target_project_id=target_task.project_id, target_entity_id=target_task.entity_id,
+                    target_department_id=target_type.department_id, requested_department_id=recipient_department_id,
+                    department_exists=department is not None,
+                    task_type_in_project=ProjectTaskTypeLink.query.filter_by(project_id=target_task.project_id, task_type_id=target_task.task_type_id).one_or_none() is not None,
+                ):
+                    abort(403)
+                if payload.get("recipient_person_id"):
+                    recipient_person_id = UUID(str(payload["recipient_person_id"]))
+                    person = db_ext.session.get(Person, recipient_person_id)
+                    if (
+                        person is None or not getattr(person, "active", True)
+                        or ProjectPersonLink.query.filter_by(project_id=task.project_id, person_id=recipient_person_id).one_or_none() is None
+                        or DepartmentLink.query.filter_by(department_id=recipient_department_id, person_id=recipient_person_id).one_or_none() is None
+                        or TaskPersonLink.query.filter_by(task_id=recipient_task_id, person_id=recipient_person_id).one_or_none() is None
+                    ):
+                        abort(403)
             key = request.headers.get("Idempotency-Key", "").strip()
             if not key or len(key) > 128:
                 abort(400)
             sessions = sessionmaker(bind=db_ext.engine, expire_on_commit=False)
             result = create_handoff(
                 sessions, task_id=task.id, publish_id=UUID(str(row.id)),
-                sender_id=actor.actor_id, recipient_id=recipient_id, idempotency_key=key,
+                sender_id=actor.actor_id, recipient_id=recipient_id,
+                recipient_department_id=recipient_department_id, recipient_task_id=recipient_task_id,
+                recipient_person_id=recipient_person_id, idempotency_key=key,
             )
         except (PermissionDenied, NotFound):
             abort(403)
@@ -616,7 +723,13 @@ class HandoffCreate(MethodView):
             abort(400, description=str(error))
         except HandoffDenied as error:
             abort(403, description=str(error))
-        return {"id": str(result.id), "state": result.state, "publish_id": str(result.publish_id)}, 201
+        return {
+            "id": str(result.id), "state": result.state, "publish_id": str(result.publish_id),
+            "recipient_id": str(recipient_id) if recipient_id else None,
+            "recipient_department_id": str(recipient_department_id) if recipient_department_id else None,
+            "recipient_task_id": str(recipient_task_id) if recipient_task_id else None,
+            "recipient_person_id": str(recipient_person_id) if recipient_person_id else None,
+        }, 201
 
 
 class TaskUploads(MethodView):
@@ -1032,13 +1145,15 @@ class TaskSharedFolders(MethodView):
         task = Task.query.filter_by(id=scope.task_id, project_id=scope.production_id).one_or_none()
         entity = Entity.query.filter_by(id=task.entity_id).one_or_none() if task is not None else None
         task_type = TaskType.query.filter_by(id=task.task_type_id).one_or_none() if task is not None else None
-        if task is None or entity is None or task_type is None or task_type.for_entity != "Shot":
+        if task is None or entity is None or task_type is None or task_type.for_entity not in ("Shot", "Asset"):
             abort(404)
         sequence_id = sequence_name = None
         if "sequence" in config.role_mappings:
             sequence = Entity.query.filter_by(id=entity.parent_id).one_or_none() if entity.parent_id else None
             if sequence is None or sequence.project_id != scope.production_id:
                 abort(409, description="Configured Sequence role has no Kitsu Sequence ancestor")
+            if task_type.for_entity != "Shot":
+                abort(409, description="Sequence template roles apply only to Shot Tasks")
             sequence_id, sequence_name = str(sequence.id), sequence.name
         try:
             from .folders.provisioning import build_folder_plan
@@ -1046,8 +1161,10 @@ class TaskSharedFolders(MethodView):
                 tree=config.template_tree,
                 role_mappings=config.role_mappings,
                 production_id=str(scope.production_id),
-                shot_id=str(entity.id),
-                shot_name=entity.name,
+                shot_id=str(entity.id) if task_type.for_entity == "Shot" else "",
+                shot_name=entity.name if task_type.for_entity == "Shot" else "",
+                asset_id=str(entity.id) if task_type.for_entity == "Asset" else None,
+                asset_name=entity.name if task_type.for_entity == "Asset" else None,
                 sequence_id=sequence_id,
                 sequence_name=sequence_name,
                 task_id=str(task.id),

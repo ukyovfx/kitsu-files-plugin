@@ -11,6 +11,7 @@ const rootUrl = ref('')
 const candidates = ref([])
 const selectedTemplateId = ref('')
 const mappings = ref({})
+const entityRole = ref('shot')
 const configuration = ref(null)
 const taskId = ref('')
 const folderResult = ref(null)
@@ -25,10 +26,17 @@ function flatten(node, depth = 0, rows = []) {
 
 const selectedTemplate = computed(() => candidates.value.find((item) => item.folder_id === selectedTemplateId.value) || null)
 const templateFolders = computed(() => selectedTemplate.value ? flatten(selectedTemplate.value) : [])
-const roleOptions = [
-  { id: 'sequence', label: 'Sequence (optional)' }, { id: 'shot', label: 'Shot' }, { id: 'task', label: 'Task' }
-]
+const roleOptions = computed(() => [
+  ...(entityRole.value === 'shot' ? [{ id: 'sequence', label: 'Sequence (optional)' }] : []),
+  { id: entityRole.value, label: entityRole.value === 'shot' ? 'Shot' : 'Asset' },
+  { id: 'task', label: 'Task' }
+])
+const mappingReady = computed(() => Boolean(mappings.value[entityRole.value] && mappings.value.task))
 const configured = computed(() => Boolean(configuration.value?.configured))
+
+function resetEntityMappings() {
+  mappings.value = {}
+}
 
 async function loadConfiguration() {
   loading.value = true
@@ -40,6 +48,7 @@ async function loadConfiguration() {
       rootUrl.value = `https://drive.google.com/drive/folders/${current.allowed_root_id}`
       selectedTemplateId.value = current.template_folder_id
       mappings.value = { ...current.role_mappings }
+      entityRole.value = current.role_mappings?.asset ? 'asset' : 'shot'
       candidates.value = [current.template_tree]
       const savedTaskId = window.sessionStorage.getItem(selectedTaskStorageKey.value)
       if (savedTaskId && props.tasks.some((task) => task.id === savedTaskId)) {
@@ -161,6 +170,8 @@ onMounted(loadConfiguration)
           <option v-for="item in candidates" :key="item.folder_id" :value="item.folder_id">{{ item.name }}</option>
         </select>
         <template v-if="selectedTemplate">
+          <label class="template-label" for="template-entity-role">Entity template type</label>
+          <select id="template-entity-role" v-model="entityRole" class="task-select" @change="resetEntityMappings"><option value="shot">Shot Tasks</option><option value="asset">Asset Tasks</option></select>
           <div class="template-tree" aria-label="Selected folder hierarchy"><div v-for="folder in templateFolders" :key="folder.id" class="template-tree-row" :style="{ paddingLeft: `${12 + folder.depth * 16}px` }">{{ folder.name }}</div></div>
           <template v-for="role in roleOptions" :key="role.id">
             <label class="template-label" :for="`template-role-${role.id}`">{{ role.label }} mapping</label>
@@ -169,7 +180,7 @@ onMounted(loadConfiguration)
               <option v-for="folder in templateFolders" :key="folder.id" :value="folder.id">{{ '　'.repeat(folder.depth) }}{{ folder.name }} · {{ folder.id }}</option>
             </select>
           </template>
-          <button class="button primary" :disabled="busy || !mappings.shot || !mappings.task" @click="save">Save disabled configuration</button>
+          <button class="button primary" :disabled="busy || !mappingReady" @click="save">Save disabled configuration</button>
         </template>
       </div>
       <div v-if="configured" class="template-actions">

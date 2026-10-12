@@ -30,7 +30,7 @@ def _find_path(tree: dict[str, Any], target_id: str, path: list[dict[str, Any]] 
 
 
 def _expand_name(template_name: str, values: dict[str, str]) -> str:
-    return re.sub(r"\{(sequence|shot|task)\}", lambda match: values.get(match.group(1), match.group(0)), template_name)
+    return re.sub(r"\{(sequence|shot|asset|task)\}", lambda match: values.get(match.group(1), match.group(0)), template_name)
 
 
 def build_folder_plan(
@@ -44,6 +44,8 @@ def build_folder_plan(
     task_name: str,
     sequence_id: str | None = None,
     sequence_name: str | None = None,
+    asset_id: str | None = None,
+    asset_name: str | None = None,
 ) -> list[PlannedFolder]:
     """Build only the template path through the configured Task role.
 
@@ -52,19 +54,24 @@ def build_folder_plan(
     preceding scope, so nested directory structure is retained without using
     display names as identity.
     """
-    shot_node = role_mappings.get("shot")
+    if "shot" in role_mappings and "asset" in role_mappings:
+        raise ValueError("Map either a Shot or Asset entity, not both")
+    entity_role = "shot" if "shot" in role_mappings else "asset" if "asset" in role_mappings else None
+    if entity_role is None:
+        raise ValueError("Template must map a Shot or Asset role")
+    entity_node = role_mappings.get(entity_role)
     task_node = role_mappings.get("task")
-    shot_path = _find_path(tree, shot_node) if shot_node else None
+    entity_path = _find_path(tree, entity_node) if entity_node else None
     task_path = _find_path(tree, task_node) if task_node else None
-    if shot_path is None or task_path is None or task_path[:len(shot_path)] != shot_path:
-        raise ValueError("Task template role must be a descendant of the Shot role")
-    if not shot_path:
-        raise ValueError("Shot template role cannot be the template root")
+    if entity_path is None or task_path is None or task_path[:len(entity_path)] != entity_path:
+        raise ValueError("Task template role must be a descendant of its Shot or Asset role")
+    if not entity_path:
+        raise ValueError("Shot or Asset template role cannot be the template root")
 
     sequence_node = role_mappings.get("sequence")
     if sequence_node:
         sequence_path = _find_path(tree, sequence_node)
-        if sequence_path is None or len(sequence_path) >= len(shot_path) or shot_path[:len(sequence_path)] != sequence_path:
+        if entity_role != "shot" or sequence_path is None or len(sequence_path) >= len(entity_path) or entity_path[:len(sequence_path)] != sequence_path:
             raise ValueError("Sequence template role must be an ancestor of the Shot role")
         if not sequence_id or not sequence_name:
             raise ValueError("A Sequence-mapped template requires a resolved Kitsu Sequence")
@@ -73,6 +80,7 @@ def build_folder_plan(
     entity_values = {
         "sequence": (sequence_id, sequence_name),
         "shot": (shot_id, shot_name),
+        "asset": (asset_id, asset_name),
         "task": (task_id, task_name),
     }
     output: list[PlannedFolder] = []
@@ -94,7 +102,30 @@ def build_folder_plan(
             raise ValueError("Template produced an empty folder name")
         output.append(PlannedFolder(template_id, scope, parent_scope, display_name))
         parent_scope = scope
+    # The configured Task root may contain arbitrary nested working/output directories.
+    # Preserve that hierarchy and use template IDs, never names, for identity.
+    def append_children(node: dict[str, Any], parent: str) -> None:
+        for child in node.get("children", []):
+            scope = f"{parent}:template:{child['folder_id']}"
+            display = _expand_name(child["name"], {key: value[1] for key, value in entity_values.items() if value[1]})
+            if not display.strip():
+                raise ValueError("Template produced an empty folder name")
+            output.append(PlannedFolder(child["folder_id"], scope, parent, display))
+            append_children(child, scope)
+
+    task_template_node = _find_node(tree, task_node)
+    append_children(task_template_node, parent_scope)
     return output
+
+
+def _find_node(tree: dict[str, Any], target_id: str) -> dict[str, Any] | None:
+    if tree["folder_id"] == target_id:
+        return tree
+    for child in tree.get("children", []):
+        found = _find_node(child, target_id)
+        if found is not None:
+            return found
+    return None
 
 
 def provision_task_folders(
@@ -133,7 +164,7 @@ def provision_task_folders(
             or not config.enabled or config.version != configuration_version
             or connection.production_id != production_id or not connection.enabled
             or config.allowed_root_id != connection.allowed_root_id
-            or task.project_id != production_id or task_type is None or task_type.for_entity != "Shot"
+            or task.project_id != production_id or task_type is None or task_type.for_entity not in ("Shot", "Asset")
         ):
             raise FolderProvisioningError("Current Shot Task, template or Production storage configuration is unavailable")
         entity = session.get(Entity, task.entity_id)
@@ -144,8 +175,8 @@ def provision_task_folders(
         mappings = dict(config.role_mappings)
         connection_id = connection.id
         job_adapter = resolve_storage_adapter(adapter, connection)
-        shot_id = str(entity.id)
-        shot_name = entity.name
+        entity_id = str(entity.id)
+        entity_name = entity.name
         task_name = task.name
         parent = session.get(Entity, entity.parent_id) if entity.parent_id is not None else None
         sequence_id = sequence_name = None
@@ -163,8 +194,10 @@ def provision_task_folders(
         tree=tree,
         role_mappings=mappings,
         production_id=str(production_id),
-        shot_id=shot_id,
-        shot_name=shot_name,
+        shot_id=entity_id if task_type.for_entity == "Shot" else "",
+        shot_name=entity_name if task_type.for_entity == "Shot" else "",
+        asset_id=entity_id if task_type.for_entity == "Asset" else None,
+        asset_name=entity_name if task_type.for_entity == "Asset" else None,
         sequence_id=sequence_id,
         sequence_name=sequence_name,
         task_id=str(task_id),

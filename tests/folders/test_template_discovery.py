@@ -91,3 +91,16 @@ def test_role_mapping_requires_task_beneath_shot_and_sequence_above_shot():
         normalize_role_mappings(tree, {"shot": "shot", "task": "outside"})
     with pytest.raises(ValueError, match="ancestor"):
         normalize_role_mappings(tree, {"sequence": "outside", "shot": "shot", "task": "task"})
+
+
+def test_asset_task_mapping_is_supported_without_requiring_a_shot_or_sequence():
+    storage = FakeStorage(root_id="allowed-root")
+    storage.objects.update({
+        "root": StorageObject("root", "allowed-root", 0, None, None, "folder", name="Asset template"),
+        "asset": StorageObject("asset", "root", 0, None, None, "folder", name="{asset}"),
+        "task": StorageObject("task", "asset", 0, None, None, "folder", name="{task}"),
+    })
+    tree = discover_template_tree(storage, allowed_root_id="allowed-root", template_folder_id="root")
+    assert normalize_role_mappings(tree, {"asset": "asset", "task": "task"}) == {"asset": "asset", "task": "task"}
+    with pytest.raises(ValueError, match="either"):
+        normalize_role_mappings(tree, {"shot": "asset", "asset": "asset", "task": "task"})

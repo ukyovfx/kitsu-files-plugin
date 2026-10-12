@@ -14,6 +14,13 @@ describe('Files API', () => {
     await expect(api.listProduction('')).rejects.toThrow('Production ID')
   })
 
+  it('passes the selected Task as a scope hint for server-side authorization', async () => {
+    const client = { request: vi.fn(async () => response({ production_id: 'p-1', task_id: 't-1' })) }
+    const api = createFilesApi(client)
+    await api.listProduction('p-1', null, 't-1')
+    expect(client.request).toHaveBeenCalledWith('GET', 'plugins/vfx_files/overview?production_id=p-1&task_id=t-1')
+  })
+
   it('fetches a CSRF token and submits an idempotent handoff response', async () => {
     const client = { request: vi.fn()
       .mockResolvedValueOnce(response({ csrf_token: 'signed-token' }))
@@ -55,6 +62,15 @@ describe('Files API', () => {
     expect(JSON.parse(client.request.mock.calls[2][2].body)).toEqual({ output_family_id: 'family-1', source_revision_file_id: 'working-file-1' })
     expect(JSON.parse(client.request.mock.calls[4][2].body)).toMatchObject({ policy_id: 'files-page-review-v1' })
     expect(JSON.parse(client.request.mock.calls[6][2].body)).toEqual({ recipient_id: 'person-2' })
+  })
+
+  it('distributes one Publish to an exact Task Type Department recipient with an optional accountable person', async () => {
+    const client = { request: vi.fn()
+      .mockResolvedValueOnce(response({ csrf_token: 'team-csrf' }))
+      .mockResolvedValueOnce(response({ id: 'handoff-2', recipient_task_id: 'task-fx', state: 'pending' }, 201)) }
+    await createFilesApi(client).createDepartmentHandoff('publish-2', 'dept-fx', 'task-fx', 'artist-fx')
+    expect(client.request.mock.calls[1][1]).toBe('plugins/vfx_files/publishes/publish-2/handoffs')
+    expect(JSON.parse(client.request.mock.calls[1][2].body)).toEqual({ recipient_department_id: 'dept-fx', recipient_task_id: 'task-fx', recipient_person_id: 'artist-fx' })
   })
 
   it('shows the disabled service as a non-success result', async () => {

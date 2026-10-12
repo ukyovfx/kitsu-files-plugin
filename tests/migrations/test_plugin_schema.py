@@ -6,6 +6,7 @@ ROOT = Path(__file__).resolve().parents[2]
 MIGRATION = ROOT / "plugin/migrations/versions/0001_plugin_foundation.py"
 FOLDER_BINDING_MIGRATION = ROOT / "plugin/migrations/versions/0005_unique_folder_provider_binding.py"
 PUBLISH_SOURCE_MIGRATION = ROOT / "plugin/migrations/versions/0006_publish_source_and_destination.py"
+TASK_OUTPUT_MIGRATION = ROOT / "plugin/migrations/versions/0007_task_outputs_and_department_handoffs.py"
 
 
 def test_plugin_tables_are_namespaced_and_nullable_folder_identity_is_avoided():
@@ -65,3 +66,24 @@ def test_publish_source_and_destination_migration_is_plugin_owned_and_reversible
     assert 'op.drop_column("plugin_vfx_files_publish", "source_revision_file_id")' in downgrade
     assert 'op.drop_column("plugin_vfx_files_output_family", "publish_folder_id")' in downgrade
     assert "schema_epoch = 4" in downgrade
+
+
+def test_task_outputs_migration_keeps_department_targets_and_latest_pointers_separate():
+    source = TASK_OUTPUT_MIGRATION.read_text()
+    assert 'revision = "vxf_0007"' in source
+    assert 'down_revision = "vxf_0006"' in source
+    assert "recipient_department_id" in source and "recipient_task_id" in source
+    assert "recipient_person_id" in source
+    assert "plugin_vfx_files_output_package_version_uc" in source
+    for pointer in ("latest_output_id", "latest_published_id", "latest_approved_id", "latest_final_delivery_id"):
+        assert pointer in source
+    assert "provider_object_id" in source and "frame_number" in source and "sha256" in source
+    assert "plugin_vfx_files_output_package_file_immutable" in source
+    assert "plugin_vfx_files_output_package_immutable" in source
+    assert "schema_epoch = 6" in source
+    # Downgrade drops the new package data; supported recovery is snapshot restore.
+    downgrade = source.split("def downgrade():", 1)[1]
+    assert 'op.drop_table("plugin_vfx_files_output_package")' in downgrade
+    assert "has_package_rows or has_team_handoff_rows" in downgrade
+    assert "restore a consistent pre-migration snapshot" in downgrade
+    assert "schema_epoch = 5" in downgrade
