@@ -154,8 +154,34 @@ describe('Files API', () => {
     expect(reserve[1]).toBe('plugins/vfx_files/tasks/task-1/working-revisions')
     expect(reserve[2].headers['Idempotency-Key']).toMatch(/^working:/)
     expect(JSON.parse(reserve[2].body)).toMatchObject({ base_revision_id: null, files: [{ name: 'comp.nk', size: 3, category: 'working' }] })
+    expect(JSON.parse(reserve[2].body).include_intermediate).toBe(false)
     expect(client.request.mock.calls.filter(([method]) => method === 'PUT')).toHaveLength(1)
     expect(client.request.mock.calls.at(-1)[1]).toBe('plugins/vfx_files/uploads/session-1/finalize')
+  })
+
+  it('sends a bounded custom Working file type without changing the revision API label', async () => {
+    const client = { request: vi.fn()
+      .mockResolvedValueOnce(response({ csrf_token: 'working-csrf' }))
+      .mockResolvedValueOnce(response({ id: 'revision-2', version_label: 'w002', files: [{ upload_session_id: 'session-2' }] }))
+      .mockResolvedValueOnce(response({ id: 'session-2', max_chunk_bytes: 8, parts: [] }))
+      .mockResolvedValueOnce(response({ csrf_token: 'part-csrf' }))
+      .mockResolvedValueOnce(response({ index: 0, state: 'staged' }))
+      .mockResolvedValueOnce(response({ csrf_token: 'finalize-csrf' }))
+      .mockResolvedValueOnce(response({ job_id: 'job-2', state: 'queued' })) }
+    const file = new File(['abc'], 'track.csv')
+    const result = await createFilesApi(client).stageWorkingSnapshot('task-1', [file], 'revision-1', () => {}, 'Tracking Data', true)
+    const reserve = client.request.mock.calls.find(([, path]) => path.endsWith('/working-revisions'))
+    expect(JSON.parse(reserve[2].body).files[0]).toMatchObject({ category: 'Tracking Data' })
+    expect(JSON.parse(reserve[2].body).include_intermediate).toBe(true)
+    expect(result.revision.version_label).toBe('w002')
+  })
+
+  it('rejects unsafe custom Working file types before making an API request', async () => {
+    const client = { request: vi.fn() }
+    const api = createFilesApi(client)
+    const file = new File(['abc'], 'track.csv')
+    await expect(api.stageWorkingSnapshot('task-1', [file], null, () => {}, '../outside')).rejects.toThrow('File type')
+    expect(client.request).not.toHaveBeenCalled()
   })
 
   it('resumes only when every selected file matches the reserved snapshot', async () => {

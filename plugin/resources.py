@@ -3,6 +3,7 @@
 import json
 import os
 import tempfile
+from datetime import datetime, timezone
 from uuid import UUID
 
 from flask import abort, current_app, request, send_file
@@ -518,10 +519,13 @@ class TaskStorageObjects(MethodView):
             abort(404)
         return {
             "task_id": str(task.id), "parent_id": parent_id,
+            "checked_at": datetime.now(timezone.utc).isoformat(),
+            "sync_status": "confirmed" if listing.complete and listing.next_page_token is None else "partial",
             "items": [{
                 "id": item.object_id, "parent_id": item.parent_id, "name": item.name,
                 "mime_type": item.mime_type, "is_folder": item.mime_type == "folder",
                 "size": item.size, "sha256": item.sha256, "trashed": item.trashed,
+                "modified_time": item.modified_time, "md5_checksum": item.md5_checksum,
             } for item in listing.items if not item.trashed],
             "next_page_token": listing.next_page_token,
             "complete": listing.complete,

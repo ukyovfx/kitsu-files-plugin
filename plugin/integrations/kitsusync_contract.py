@@ -1,8 +1,10 @@
-"""Fake-only boundary for a future published KitsuSync v1 contract.
+"""Synthetic boundary for the coordinated, still-draft KitsuSync v1 contract.
 
-No HTTP endpoint, credential, or authentication scheme is defined here. The
-contract is deliberately limited to stable Production/root identity and
-idempotent notification events until KitsuSync publishes its API specification.
+KitsuSync PR #237/#238 define the intended authenticated management route and
+RS256/JWKS service bearer profile. This fake remains deliberately non-networked
+until those drafts are accepted and the Plugin has a reviewed verifier and
+route implementation. Plugin-to-KitsuSync signed event delivery is a separate
+trust direction and must not be folded into this provider interface.
 """
 
 from dataclasses import dataclass

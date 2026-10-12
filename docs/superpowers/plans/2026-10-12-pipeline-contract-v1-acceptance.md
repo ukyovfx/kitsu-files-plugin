@@ -12,7 +12,7 @@ Base: PR #9 (`33ccf28a4b1ca5a9fa8402864a2c4433d1cd55ab`), stacked as a separate 
 | Signed Plugin→KitsuSync event headers | PASS | HMAC-SHA256 test checks exact newline-delimited input and `sha256=` header form from PR #237. |
 | Event outbox append idempotency | PASS / NOT TESTED | In-memory repository tests confirm accepted → identical duplicate and conflicting event identity rejection. PostgreSQL `ON CONFLICT` persistence and worker transmission/retry are NOT TESTED / not yet wired to the Worker. |
 | Contract event validation | PASS | Synthetic folder and two-recipient file-delivery shapes pass. Unknown top-level fields (including link fields), duplicate event IDs, unsupported event types, malformed identity, and oversized records fail closed. |
-| Authenticated KitsuSync management API endpoints | BLOCKED | The contract says bearer service authentication and an actor header but does not define issuer, audience, key distribution/rotation or verified claim semantics. No verifier is invented or exposed unauthenticated. Additionally, Zou’s official plugin route registration mounts beneath its plugin prefix; exact `/api/integrations/v1` routing requires a reviewed reverse-proxy mapping or host-supported route registration. |
+| Authenticated KitsuSync management API endpoints | BLOCKED | Coordinated Draft PR #238 defines the short-lived RS256/JWKS service bearer profile and exact Plugin route `/api/plugins/vfx_files/integrations/v1`. The Plugin verifier and authenticated handlers are not implemented, and the coordinating KitsuSync drafts are still open. Do not expose a fallback alias. |
 | Desired config revision/ETag API and activation lifecycle | NOT TESTED | Persistent schema exists; authenticated HTTP handlers and config validation/activation are not implemented. |
 | OAuth authorization callback and credential lifecycle | NOT TESTED | No OAuth endpoints or credential vault are added. Existing Google Drive operations remain disabled unless separately configured; no real OAuth or Drive request was made. |
 | Folder sync preview/apply/retry/reconcile | NOT TESTED | Existing Task folder provisioning remains unchanged. The new snapshot verifier is not yet wired to preview/apply jobs or hierarchy reconciliation. |
@@ -26,12 +26,27 @@ Base: PR #9 (`33ccf28a4b1ca5a9fa8402864a2c4433d1cd55ab`), stacked as a separate 
 
 ## Protocol findings requiring coordination
 
-1. KitsuSync’s `OperatorCommand` OpenAPI component contains `null` in its `required` array. JSON Schema/OpenAPI requires each `required` item to be a string property name. Proposed smallest KitsuSync amendment: use `required: ["command"]`; keep the optional `reason` property optional. This branch does not edit KitsuSync.
-2. The service bearer scheme lacks issuer, audience, token lifetime, key source/rotation, and claim requirements. Publish those before enabling the Plugin API verifier.
-3. KitsuSync’s server base path is `/api/integrations/v1`; Zou plugin routes are registered inside the plugin route namespace. Agree on a reverse-proxy mapping or an official plugin route registration mechanism before exposing the contract endpoints.
+1. Earlier OpenAPI/auth/route findings are tracked by KitsuSync Draft PR #238 (HEAD `fd75ebdce80e108814c5e477400dc73537115a04`): the service bearer profile uses RS256/JWKS, exact issuer/audience, bounded token lifetime, Production/operation scopes, and the Plugin management base `/api/plugins/vfx_files/integrations/v1`. This PR is still draft and not deployed; the Plugin has not implemented the verifier or handlers.
+2. Plugin-to-KitsuSync signed event intake remains a separate route and trust direction from management authentication. The Plugin has HMAC framing/validation foundations but no event transmission worker or Discord integration.
 
 ## Migration and release notes
 
 - `vxf_0009` extends `vxf_0008`, advances plugin schema/worker compatibility to epoch/build 8, and adds only plugin-prefixed tables.
 - Downgrade refuses when any desired configuration, snapshot, outbox, or package-delivery rows exist. The safe recovery is a consistent database/plugin/artifact snapshot restore, not a destructive downgrade.
 - This branch is a protocol/schema foundation, not an integrated production pipeline. All gates marked NOT TESTED or BLOCKED above remain open.
+
+## Confirmed UX / Drive follow-up (2026-10-13)
+
+This section records the narrow implementation added on `codex/confirmed-ux-drive-sync` (stacked on PR #10); it does not replace the original acceptance evidence above.
+
+| Gate | Status | Evidence / limitation |
+|---|---|---|
+| Working custom file-type labels | PARTIAL | Task Working upload accepts a bounded custom label and stores it in the existing category field on each immutable file record. No schema migration or mutation of prior rows. Labels are scoped by their Task/revision records, not a separately managed Task-Type registry. Extension allowlists and per-type destination-folder mapping remain NOT TESTED / unimplemented. |
+| Working and Publish display labels | PARTIAL | UI presents Working and Publish with independent `v###` labels; API/database Working representation remains `w###` and existing Publish `v###` is unchanged. Migration and historical data rename are intentionally absent. |
+| Initial Shot / Asset templates | PASS (discovery model) | The shared template setup already offers Shot and Asset mappings separately and discovers user-selected trees under the authorized root. It does not seed fixed studio layouts or add Reference / Turntable / Preview folders. No production or Drive data was used. |
+| Drive metadata on tab open | PARTIAL | The Files page calls the authorized folder listing on open and revalidates it every five minutes while mounted. Google adapter now requests provider `modifiedTime` and `md5Checksum`; UI shows the last successful listing time and visible provider modified times. This is a scoped listing observation, not persisted synchronization history and does not prove SHA-256 or detect inaccessible IDs outside the listed folder. |
+| Scheduled server-side Drive reconciliation | NOT TESTED | No durable recurring reconciliation scheduler, persisted changed/missing/access-failure observation table, or job worker was added. A browser interval is not a substitute for a server schedule. |
+| Latest Working / formal Publish distinction | PASS (existing data model) | The API maintains the Latest Working pointer separately from Latest Published and Latest Approved Publish pointers. A newer Drive modification timestamp does not mutate or infer any pointer. |
+| Cross-Task-Type destination links and version selection | PARTIAL | Existing Publish Handoff API supports explicit receiving Tasks/Departments and keeps independent receipts. The UI defaults to the most recent completed Publish in the returned descending list and permits choosing older completed Publishes. A same-Shot configured Task-Type destination list with permission-checked Google Drive links and receiving-task pin/use controls is not implemented. |
+| Native Kitsu Task detail Files entry | BLOCKED | Pinned Kitsu 1.0.70 TaskInfo has no official active-Task extension slot. Plugin-side Task context remains available, and Production → Assets → VFX Files remains the supported installed page. The generic same-origin iframe hook is still an upstream Kitsu patch proposal, not installed or browser-accepted. DOM injection remains rejected. |
+| KitsuSync v1 management integration | BLOCKED | Coordinated Draft PR #237/#238 remain unmerged. Target management route is `/api/plugins/vfx_files/integrations/v1` with the coordinated RS256/JWKS short-lived bearer profile; the Plugin still lacks that verifier and authenticated route implementation. Separate Plugin→KitsuSync signed event delivery is also not wired. No incompatible alias or Discord sender was added. |

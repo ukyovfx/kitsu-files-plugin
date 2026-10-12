@@ -150,6 +150,8 @@ class PersistentFakeStorage(FakeStorage):
                     "mime_type": item.mime_type,
                     "trashed": item.trashed,
                     "name": item.name,
+                    "modified_time": item.modified_time,
+                    "md5_checksum": item.md5_checksum,
                 }
                 for item in self.objects.values()
             ],

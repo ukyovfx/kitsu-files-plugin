@@ -20,6 +20,7 @@ const completedFiles = computed(() => revisions.value.revisions.flatMap((revisio
   ? revision.files.filter((file) => file.state === 'completed').map((file) => ({ ...file, revision }))
   : []))
 const completedPublishes = computed(() => props.publishes.filter((row) => row.task_id === taskId.value && row.state === 'completed'))
+const workingVersionLabel = (revision) => `v${String(revision.version).padStart(3, '0')}`
 
 async function loadTask() {
   const requestId = ++taskRequest
@@ -138,7 +139,7 @@ async function departmentHandoff() {
         <p v-if="!completedFiles.length" class="muted">A completed Working revision is required before publishing.</p>
         <div v-else class="workflow-row">
           <label class="workflow-field">Completed Working File
-            <select v-model="selectedFileId" class="task-select" aria-label="Completed Working File"><option value="">Select a completed file</option><option v-for="file in completedFiles" :key="file.id" :value="file.id">{{ file.revision.version_label }} · {{ file.name }}</option></select>
+            <select v-model="selectedFileId" class="task-select" aria-label="Completed Working File"><option value="">Select a completed file</option><option v-for="file in completedFiles" :key="file.id" :value="file.id">{{ workingVersionLabel(file.revision) }} · {{ file.category }} · {{ file.name }}</option></select>
           </label>
           <label class="workflow-field">Output family
             <select v-model="selectedFamilyId" class="task-select" aria-label="Output family"><option value="">Select output family</option><option v-for="family in options.families" :key="family.id" :value="family.id">{{ family.name }}</option></select>

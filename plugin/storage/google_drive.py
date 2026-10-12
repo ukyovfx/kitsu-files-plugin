@@ -82,7 +82,7 @@ class GoogleDriveStorageAdapter:
             user = account.json().get("user", {})
             if self.config.owner_subject not in (user.get("permissionId"), user.get("emailAddress")):
                 raise PermissionFailure("Drive token belongs to a different My Drive owner")
-        response = self._request("GET", f"{API}/files/{root_id}", params={"supportsAllDrives": "true", "fields": "id,name,mimeType,driveId,parents,trashed,capabilities(canAddChildren)"})
+        response = self._request("GET", f"{API}/files/{root_id}", params={"supportsAllDrives": "true", "fields": "id,name,mimeType,driveId,parents,trashed,modifiedTime,md5Checksum,capabilities(canAddChildren)"})
         if response.status_code != 200:
             raise PermissionFailure("Configured Drive root is not readable")
         data = response.json()
@@ -194,7 +194,7 @@ class GoogleDriveStorageAdapter:
     def get(self, object_id: str):
         if not self._root_verified:
             raise PermissionFailure("Allowed root must be verified before lookup")
-        response = self._request("GET", f"{API}/files/{object_id}", params={"supportsAllDrives": "true", "fields": "id,name,mimeType,parents,driveId,size,md5Checksum,trashed"})
+        response = self._request("GET", f"{API}/files/{object_id}", params={"supportsAllDrives": "true", "fields": "id,name,mimeType,parents,driveId,size,md5Checksum,modifiedTime,trashed"})
         if response.status_code == 404:
             raise AmbiguousOutcome("Drive 404 does not prove absence or distinguish inaccessible objects")
         if response.status_code in (401, 403):
@@ -252,7 +252,7 @@ class GoogleDriveStorageAdapter:
             "pageSize": 1000,
             "supportsAllDrives": "true",
             "includeItemsFromAllDrives": "true",
-            "fields": "nextPageToken,incompleteSearch,files(id,name,mimeType,parents,driveId,size,trashed)",
+            "fields": "nextPageToken,incompleteSearch,files(id,name,mimeType,parents,driveId,size,md5Checksum,modifiedTime,trashed)",
         }
         if self.config.account_mode == "shared_drive":
             params.update({"corpora": "drive", "driveId": self.config.drive_id})
@@ -301,6 +301,8 @@ class GoogleDriveStorageAdapter:
             mime_type=data.get("mimeType"),
             trashed=bool(data.get("trashed", False)),
             name=data.get("name"),
+            modified_time=data.get("modifiedTime"),
+            md5_checksum=data.get("md5Checksum"),
         )
 
 

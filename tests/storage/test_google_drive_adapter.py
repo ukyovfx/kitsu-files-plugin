@@ -50,7 +50,7 @@ def drive(transport, account_mode="shared_drive"):
 def test_shared_drive_uses_drive_scoped_listing_and_support_flags():
     transport = FakeTransport([
         Response(200, {"id": "root-1", "mimeType": FOLDER_MIME, "driveId": "drive-1", "capabilities": {"canAddChildren": True}}),
-        Response(200, {"files": [{"id": "folder-1", "name": "Seq 010", "parents": ["root-1"], "mimeType": FOLDER_MIME, "driveId": "drive-1"}], "nextPageToken": "next"}),
+        Response(200, {"files": [{"id": "folder-1", "name": "Seq 010", "parents": ["root-1"], "mimeType": FOLDER_MIME, "driveId": "drive-1", "modifiedTime": "2026-10-13T01:02:03.000Z", "md5Checksum": "abcd"}], "nextPageToken": "next"}),
     ])
     adapter = drive(transport)
     adapter.capabilities("root-1")
@@ -63,6 +63,9 @@ def test_shared_drive_uses_drive_scoped_listing_and_support_flags():
     assert params["corpora"] == "drive"
     assert params["driveId"] == "drive-1"
     assert listing.items[0].name == "Seq 010"
+    assert listing.items[0].modified_time == "2026-10-13T01:02:03.000Z"
+    assert listing.items[0].md5_checksum == "abcd"
+    assert "modifiedTime" in params["fields"] and "md5Checksum" in params["fields"]
     assert listing.complete is True
     assert listing.next_page_token == "next"
 

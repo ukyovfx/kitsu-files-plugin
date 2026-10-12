@@ -1,5 +1,6 @@
 import hashlib
 import io
+from dataclasses import replace
 
 import pytest
 
@@ -114,3 +115,21 @@ def test_persistent_fake_storage_folder_metadata_survives_worker_restart(tmp_pat
     folder = second_process.get("stable-folder-id")
     assert folder is not None and folder.mime_type == "folder"
     assert folder.name == "shot"
+
+
+def test_drive_sync_metadata_survives_fake_storage_restart(tmp_path):
+    state_path = tmp_path / "fake-provider" / "metadata.json"
+    first_process = PersistentFakeStorage(state_path, root_id="test-root")
+    first_process.create_folder("test-root", "stable-folder-id", {"display_name": "shot"})
+    first_process.objects["stable-folder-id"] = replace(
+        first_process.objects["stable-folder-id"],
+        modified_time="2026-10-13T01:02:03Z",
+        md5_checksum="0123456789abcdef0123456789abcdef",
+    )
+    first_process._persist()
+
+    second_process = PersistentFakeStorage(state_path, root_id="test-root")
+    listing = second_process.list_children("test-root")
+
+    assert listing.items[0].modified_time == "2026-10-13T01:02:03Z"
+    assert listing.items[0].md5_checksum == "0123456789abcdef0123456789abcdef"

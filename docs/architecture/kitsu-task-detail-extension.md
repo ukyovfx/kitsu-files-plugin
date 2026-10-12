@@ -26,6 +26,8 @@ The Files frontend parses Task/Entity context and passes the Task ID to the exis
 
 This is a plugin-side prerequisite, not native Kitsu UI acceptance. Until an upstream hook is available in the deployed Kitsu, the actual Task detail panel cannot display this view through an official extension point.
 
-## Independent future UI
+## Current integration boundary (2026-10-13)
 
-KitsuSync remains the owner of Drive connection, authorized roots, shared template configuration and notification routing. VFX Files owns immutable Working/Publish/Output Package metadata and Task handoff receipts. A KitsuSync integration API has not been published in the inspected local contract surface. The plugin must use an internal fake/outbox contract until both projects publish and agree a versioned, authenticated, idempotent contract; it must not call KitsuSync internals or send Discord messages directly.
+The KitsuSync v1 contract is now represented by Draft PR #237 and its coordinated service-bearer/route work by Draft PR #238 (HEAD `fd75ebdce80e108814c5e477400dc73537115a04`). These are open drafts, not accepted or deployed APIs. The management API base is `/api/plugins/vfx_files/integrations/v1`; the signed Plugin-to-KitsuSync event intake remains a separate route and trust direction. The agreed draft identity profile uses a short-lived RS256 service JWT verified through KitsuSync JWKS, exact issuer/audience and Production/operation scopes. The Plugin has protocol validation and durable schema foundations, but does not yet expose that authenticated management API, verify service JWTs, or transmit its durable outbox. No Discord delivery belongs in this Plugin.
+
+Until the two draft PRs are accepted and the KitsuSync consumer is deployed, the contract is a coordinated implementation target only. Do not add a fallback unauthenticated alias or treat the in-memory fake provider/outbox as production integration.

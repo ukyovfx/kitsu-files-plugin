@@ -171,8 +171,12 @@ export function createFilesApi(client) {
       return `/api/${ROOT}/working-files/${encodeURIComponent(fileId)}/download`
     },
 
-    async stageWorkingSnapshot(taskId, files, baseRevisionId = null, onProgress = () => {}) {
+    async stageWorkingSnapshot(taskId, files, baseRevisionId = null, onProgress = () => {}, fileType = 'working', includeIntermediate = false) {
       if (!taskId || !files?.length) throw new TypeError('A Task and at least one file are required')
+      if (typeof fileType !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9 _-]{0,31}$/.test(fileType)) {
+        throw new TypeError('File type must be 1 to 32 letters, digits, spaces, underscores or hyphens')
+      }
+      if (typeof includeIntermediate !== 'boolean') throw new TypeError('Intermediate file opt-in must be explicit')
       const descriptors = []
       for (const file of files) {
         const digest = sha256.create()
@@ -180,11 +184,11 @@ export function createFilesApi(client) {
         for (let offset = 0; offset < file.size; offset += blockSize) {
           digest.update(new Uint8Array(await file.slice(offset, Math.min(offset + blockSize, file.size)).arrayBuffer()))
         }
-        descriptors.push({ name: file.name, size: file.size, sha256: bytesToHex(digest.digest()), category: 'working' })
+        descriptors.push({ name: file.name, size: file.size, sha256: bytesToHex(digest.digest()), category: fileType })
       }
       const revision = await readJson(await mutation('POST', `${ROOT}/tasks/${encodeURIComponent(taskId)}/working-revisions`, {
         headers: { 'Content-Type': 'application/json', 'Idempotency-Key': `working:${crypto.randomUUID()}` },
-        body: JSON.stringify({ base_revision_id: baseRevisionId, files: descriptors, dependencies: [] })
+        body: JSON.stringify({ base_revision_id: baseRevisionId, files: descriptors, dependencies: [], include_intermediate: includeIntermediate })
       }))
       const jobs = []
       let completedBytes = 0

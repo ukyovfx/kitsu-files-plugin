@@ -21,6 +21,7 @@ from ..models import (
 
 
 _HASH = re.compile(r"^[0-9a-f]{64}$")
+_FILE_TYPE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 _-]{0,31}$")
 _EXCLUDED_CATEGORIES = {"cache", "simulation", "intermediate_render"}
 
 
@@ -30,6 +31,18 @@ class WorkingConflict(Exception):
 
 class WorkingDenied(Exception):
     pass
+
+
+def validate_file_type(value: object) -> str:
+    """Validate a human-entered type label before storing it in the legacy category field."""
+    if not isinstance(value, str) or not _FILE_TYPE.fullmatch(value):
+        raise ValueError("Working file type must be 1 to 32 letters, digits, spaces, underscores or hyphens")
+    return value
+
+
+def requires_intermediate_opt_in(value: str) -> bool:
+    normalized = value.casefold().replace(" ", "_").replace("-", "_")
+    return normalized in _EXCLUDED_CATEGORIES
 
 
 @dataclass(frozen=True)
@@ -96,9 +109,8 @@ def reserve_working_revision(
             raise ValueError("Working file name is invalid")
         if not isinstance(size, int) or isinstance(size, bool) or size <= 0 or not isinstance(digest, str) or not _HASH.fullmatch(digest):
             raise ValueError("Working file size or SHA-256 is invalid")
-        if category not in {"working", *_EXCLUDED_CATEGORIES}:
-            raise ValueError("Working file category is invalid")
-        if category in _EXCLUDED_CATEGORIES and not include_intermediate:
+        category = validate_file_type(category)
+        if requires_intermediate_opt_in(category) and not include_intermediate:
             raise WorkingDenied("Cache, simulation and intermediate renders require explicit opt-in")
         mime_type = item.get("mime_type")
         if mime_type is not None and (not isinstance(mime_type, str) or len(mime_type) > 255):
