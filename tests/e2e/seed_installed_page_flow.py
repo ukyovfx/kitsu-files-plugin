@@ -165,6 +165,18 @@ def main():
             ("template-shot", "template-handoff", "Handoff"),
         ]
         for parent_id, folder_id, name in folders:
+            existing = storage.get(folder_id)
+            if existing is not None:
+                if (
+                    existing.parent_id != parent_id
+                    or existing.name != name
+                    or existing.mime_type != "folder"
+                    or existing.trashed
+                ):
+                    raise RuntimeError(
+                        f"Synthetic template object {folder_id} does not match the expected folder"
+                    )
+                continue
             storage.create_folder(parent_id, folder_id, {"display_name": name})
 
         cookie_name = app.config.get("JWT_ACCESS_COOKIE_NAME", "access_token_cookie")
