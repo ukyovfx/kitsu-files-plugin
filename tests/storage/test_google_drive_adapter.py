@@ -4,15 +4,16 @@ import json
 
 import pytest
 
-from plugin.storage.base import AmbiguousOutcome, PermissionFailure
+from plugin.storage.base import AmbiguousOutcome, PermissionFailure, RetryableStorageFailure
 from plugin.storage.google_drive import DriveConfig, GoogleDriveStorageAdapter, FOLDER_MIME
 
 
 class Response:
-    def __init__(self, status_code, data=None, content=b""):
+    def __init__(self, status_code, data=None, content=b"", headers=None):
         self.status_code = status_code
         self._data = data or {}
         self.content = content
+        self.headers = headers or {}
 
     def json(self):
         return self._data
@@ -82,6 +83,46 @@ def test_drive_404_is_ambiguous_not_proof_of_absence():
     adapter.capabilities("root-1")
     with pytest.raises(AmbiguousOutcome):
         adapter.get("unknown-object")
+
+
+def test_drive_403_does_not_retry_with_a_refreshed_token():
+    class Refreshable:
+        def __call__(self):
+            return "synthetic-access-token"
+
+        def refresh_after_unauthorized(self):
+            raise AssertionError("403 permission revocation must not be retried")
+
+    transport = FakeTransport([Response(200, {"id": "root-1", "mimeType": FOLDER_MIME, "driveId": "drive-1", "capabilities": {"canAddChildren": True}}), Response(403)])
+    adapter = GoogleDriveStorageAdapter(
+        DriveConfig("shared_drive", "root-1", "drive-1", None), Refreshable(), transport
+    )
+    adapter.capabilities("root-1")
+
+    with pytest.raises(PermissionFailure):
+        adapter.get("revoked-object")
+    assert len(transport.calls) == 2
+
+
+@pytest.mark.parametrize("status_code", [429, 500, 503])
+def test_retry_after_on_provider_transient_is_surfaced_to_durable_worker(status_code):
+    transport = FakeTransport([Response(status_code, headers={"Retry-After": "11"})])
+    adapter = drive(transport)
+
+    with pytest.raises(RetryableStorageFailure) as raised:
+        adapter.reserve_id("publish:stable-id")
+
+    assert raised.value.retry_after_seconds == 11
+
+
+def test_malformed_non_finite_retry_after_uses_safe_default():
+    transport = FakeTransport([Response(429, headers={"Retry-After": "Infinity"})])
+    adapter = drive(transport)
+
+    with pytest.raises(RetryableStorageFailure) as raised:
+        adapter.reserve_id("publish:stable-id")
+
+    assert raised.value.retry_after_seconds == 30
 
 
 def test_reserved_id_folder_create_has_no_name_based_identity():

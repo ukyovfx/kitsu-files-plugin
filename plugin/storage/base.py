@@ -10,6 +10,14 @@ class PermissionFailure(StorageError):
     pass
 
 
+class RetryableStorageFailure(StorageError):
+    def __init__(self, retry_after_seconds: int = 30, message: str = "Storage provider is temporarily unavailable"):
+        if isinstance(retry_after_seconds, bool) or not 1 <= int(retry_after_seconds) <= 3600:
+            raise ValueError("Storage retry delay is outside safe bounds")
+        self.retry_after_seconds = int(retry_after_seconds)
+        super().__init__(message)
+
+
 class AmbiguousOutcome(StorageError):
     pass
 
@@ -57,3 +65,10 @@ class StorageAdapter(Protocol):
     def capabilities(self, root_id: str) -> StorageCapabilities: ...
     def list_children(self, parent_id: str, page_token: str | None = None) -> Listing: ...
     def assert_parent_within_root(self, parent_id: str) -> None: ...
+
+
+def resolve_storage_adapter(adapter_or_factory, connection):
+    """Resolve a per-Production adapter while retaining fixed-adapter test support."""
+    if callable(getattr(adapter_or_factory, "capabilities", None)):
+        return adapter_or_factory
+    return adapter_or_factory(connection)

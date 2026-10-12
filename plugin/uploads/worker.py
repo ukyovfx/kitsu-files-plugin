@@ -9,10 +9,11 @@ from sqlalchemy import func, select
 
 from ..jobs.queue import JobResult, LeasedJob
 from ..models import Job, StorageConnection, UploadPart, UploadSession
-from ..storage.base import AlreadyExists, AmbiguousOutcome, PermissionFailure
+from ..storage.base import AlreadyExists, AmbiguousOutcome, PermissionFailure, resolve_storage_adapter
+from ..worker.scope import upload_job_scope_matches
 
 
-def make_upload_handler(session_factory, staging, adapter):
+def make_upload_handler(session_factory, staging, adapter_factory):
     """Build the worker's ``publish_source`` handler for resumable uploads.
 
     A provider ID is durably reserved under the current lease before any
@@ -42,10 +43,22 @@ def make_upload_handler(session_factory, staging, adapter):
             connection = session.get(StorageConnection, upload.storage_connection_id)
             if connection is None or not connection.enabled:
                 return JobResult("failed", error_code="storage_connection_unavailable")
+            from zou.app.models.task import Task
+
+            task = session.get(Task, upload.task_id)
+            if task is None or not upload_job_scope_matches(
+                upload_task_id=upload.task_id,
+                upload_actor_id=upload.actor_id,
+                task_project_id=task.project_id,
+                connection_production_id=connection.production_id,
+                payload=job.payload,
+            ):
+                return JobResult("failed", error_code="upload_scope_mismatch")
+            job_adapter = resolve_storage_adapter(adapter_factory, connection)
             if upload.provider_object_id:
                 provider_id = upload.provider_object_id
             else:
-                provider_id = adapter.reserve_id(f"upload:{upload.id}")
+                provider_id = job_adapter.reserve_id(f"upload:{upload.id}")
                 upload.provider_object_id = provider_id
             upload.state = "transferring"
             parent_id = connection.allowed_root_id
@@ -56,14 +69,14 @@ def make_upload_handler(session_factory, staging, adapter):
             ).all()
             parts = [(part.staging_key, part.byte_start, part.byte_count, part.sha256, part.state) for part in part_rows]
 
-        capabilities = adapter.capabilities(parent_id)
+        capabilities = job_adapter.capabilities(parent_id)
         if not capabilities.root_visible or not capabilities.can_add_children:
             raise PermissionFailure("Configured storage root is unavailable for writes")
-        adapter.assert_parent_within_root(parent_id)
+        job_adapter.assert_parent_within_root(parent_id)
 
-        existing = adapter.get(provider_id)
+        existing = job_adapter.get(provider_id)
         if existing is not None:
-            if adapter.verify(provider_id, expected_size, expected_sha256):
+            if job_adapter.verify(provider_id, expected_size, expected_sha256):
                 return JobResult("completed", True, provider_id, expected_size, expected_sha256)
             return JobResult("reconcile_required", error_code="provider_object_mismatch")
 
@@ -88,19 +101,19 @@ def make_upload_handler(session_factory, staging, adapter):
                 return JobResult("failed", error_code="staging_source_corrupt")
             source.seek(0)
             try:
-                adapter.upload(source, provider_id, expected_size, expected_sha256, parent_id)
+                job_adapter.upload(source, provider_id, expected_size, expected_sha256, parent_id)
             except AlreadyExists:
                 pass
             except AmbiguousOutcome:
                 try:
-                    if adapter.verify(provider_id, expected_size, expected_sha256):
+                    if job_adapter.verify(provider_id, expected_size, expected_sha256):
                         return JobResult("completed", True, provider_id, expected_size, expected_sha256)
                 except AmbiguousOutcome:
                     pass
                 return JobResult("reconcile_required", error_code="provider_outcome_ambiguous")
 
         try:
-            verified = adapter.verify(provider_id, expected_size, expected_sha256)
+            verified = job_adapter.verify(provider_id, expected_size, expected_sha256)
         except AmbiguousOutcome:
             return JobResult("reconcile_required", error_code="provider_verification_ambiguous")
         if not verified:

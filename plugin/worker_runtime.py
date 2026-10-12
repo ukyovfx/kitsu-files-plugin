@@ -9,6 +9,8 @@ import argparse
 import json
 import os
 import re
+import signal
+import threading
 from pathlib import Path
 from uuid import UUID, uuid4
 
@@ -65,12 +67,10 @@ def assert_restore_validation_complete():
 def build_runtime(app):
     if not _enabled("VFX_FILES_WORKER_ENABLED"):
         raise RuntimeError("VFX Files worker is disabled")
-    if os.environ.get("VFX_FILES_STORAGE_MODE") != "fake":
-        raise RuntimeError("No configured StorageAdapter is available to this worker build")
     staging_root = os.environ.get("VFX_FILES_STAGING_ROOT")
-    fake_root = os.environ.get("VFX_FILES_FAKE_STORAGE_ROOT")
-    if not staging_root or not fake_root:
-        raise RuntimeError("Worker staging and fake storage roots are required")
+    storage_mode = os.environ.get("VFX_FILES_STORAGE_MODE")
+    if not staging_root:
+        raise RuntimeError("Worker staging root is required")
 
     from sqlalchemy.orm import sessionmaker
     from zou import __version__ as host_version
@@ -78,7 +78,7 @@ def build_runtime(app):
 
     from .compat import SCHEMA_EPOCH, WORKER_BUILD
     from .jobs.queue import PostgresJobQueue
-    from .storage.fake import PersistentFakeStorage
+    from .storage.worker_factory import make_worker_storage_adapter_factory
     from .folders.worker import make_task_folder_handler
     from .uploads.staging import FileSystemStaging
     from .uploads.worker import make_upload_handler
@@ -88,10 +88,12 @@ def build_runtime(app):
 
     sessions = sessionmaker(bind=db.engine, expire_on_commit=False)
     queue = PostgresJobQueue(sessions)
-    adapter = PersistentFakeStorage(
-        fake_root,
-        root_id=os.environ.get("VFX_FILES_FAKE_ROOT_ID", "synthetic-root-id"),
-        drive_id=os.environ.get("VFX_FILES_FAKE_DRIVE_ID"),
+    adapter_factory = make_worker_storage_adapter_factory(
+        storage_mode,
+        fake_storage_path=os.environ.get("VFX_FILES_FAKE_STORAGE_ROOT"),
+        fake_root_id=os.environ.get("VFX_FILES_FAKE_ROOT_ID", "synthetic-root-id"),
+        fake_drive_id=os.environ.get("VFX_FILES_FAKE_DRIVE_ID"),
+        credentials_dir=os.environ.get("VFX_FILES_DRIVE_CREDENTIALS_DIR"),
     )
     staging = FileSystemStaging(staging_root)
     worker_id = UUID(os.environ["VFX_FILES_WORKER_ID"]) if os.environ.get("VFX_FILES_WORKER_ID") else uuid4()
@@ -100,19 +102,20 @@ def build_runtime(app):
         context=WorkerContext(worker_id, WORKER_BUILD, host_version, SCHEMA_EPOCH),
         authorize=_authorize_job,
         handlers={
-            "publish_source": make_upload_handler(sessions, staging, adapter),
-            "publish_artifact": make_publish_handler(sessions, adapter),
-            "provision_task_folders": make_task_folder_handler(sessions, adapter),
+            "publish_source": make_upload_handler(sessions, staging, adapter_factory),
+            "publish_artifact": make_publish_handler(sessions, adapter_factory),
+            "provision_task_folders": make_task_folder_handler(sessions, adapter_factory),
         },
     )
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description="Run a VFX Files worker process")
-    parser.add_argument("--once", action="store_true", help="Claim at most one durable job")
+    modes = parser.add_mutually_exclusive_group(required=True)
+    modes.add_argument("--once", action="store_true", help="Claim at most one durable job")
+    modes.add_argument("--poll", action="store_true", help="Continuously claim durable jobs until SIGTERM or SIGINT")
+    parser.add_argument("--idle-seconds", type=float, default=2.0, help="Idle delay for --poll (0.25 to 30 seconds)")
     args = parser.parse_args(argv)
-    if not args.once:
-        parser.error("Only --once is supported by this isolated worker entrypoint")
 
     assert_restore_validation_complete()
 
@@ -121,6 +124,21 @@ def main(argv=None):
     app = create_app()
     with app.app_context():
         runtime = build_runtime(app)
+        if args.poll:
+            if not 0.25 <= args.idle_seconds <= 30:
+                parser.error("--idle-seconds must be between 0.25 and 30")
+            stop_event = threading.Event()
+
+            def request_stop(_signum, _frame):
+                stop_event.set()
+
+            signal.signal(signal.SIGTERM, request_stop)
+            signal.signal(signal.SIGINT, request_stop)
+            from .worker.main import run_forever
+
+            run_forever(runtime, stop_event=stop_event, idle_seconds=args.idle_seconds)
+            return 0
+
         from .worker.main import process_one
 
         result = process_one(runtime)

@@ -6,7 +6,7 @@ import threading
 from typing import Any
 
 from ..jobs.queue import JobResult, LeasedJob, PostgresJobQueue
-from ..storage.base import AmbiguousOutcome, PermissionFailure
+from ..storage.base import AmbiguousOutcome, PermissionFailure, RetryableStorageFailure
 from .leases import WorkerContext, run_one
 
 
@@ -37,6 +37,12 @@ def process_one(runtime: WorkerRuntime):
             return JobResult("reconcile_required", error_code="external_outcome_ambiguous")
         except PermissionFailure:
             return JobResult("failed", error_code="provider_permission_denied")
+        except RetryableStorageFailure as error:
+            return JobResult(
+                "retry",
+                error_code="provider_temporarily_unavailable",
+                retry_after_seconds=error.retry_after_seconds,
+            )
         except Exception:
             return JobResult("retry", error_code="worker_operation_failed")
 

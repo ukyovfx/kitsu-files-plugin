@@ -1,4 +1,4 @@
-import { execFileSync } from 'node:child_process'
+import { execFileSync, spawnSync } from 'node:child_process'
 import { expect, test } from '@playwright/test'
 
 const host = process.env.VFX_FILES_LIVE_HOST_CONTAINER
@@ -82,6 +82,30 @@ function runWorker() {
   expect(output).toContain('"result": "completed"')
 }
 
+function runPollWorker() {
+  const result = spawnSync('docker', [
+    'exec',
+    '-e', 'SECRET_KEY=vfx-files-isolated-test-secret-key-32-bytes-minimum',
+    '-e', 'PLUGIN_FOLDER=/opt/zou/plugins',
+    '-e', 'PYTHONPATH=/opt/zou/plugins',
+    '-e', 'VFX_FILES_ENABLED=true',
+    '-e', 'VFX_FILES_WORKER_ENABLED=true',
+    '-e', 'VFX_FILES_STORAGE_MODE=fake',
+    '-e', `VFX_FILES_STAGING_ROOT=${process.env.VFX_FILES_LIVE_STAGING_ROOT}`,
+    '-e', `VFX_FILES_FAKE_STORAGE_ROOT=${process.env.VFX_FILES_LIVE_FAKE_STORAGE_PATH}`,
+    '-e', 'VFX_FILES_FAKE_ROOT_ID=synthetic-root-id',
+    '-e', 'VFX_FILES_FAKE_DRIVE_ID=synthetic-drive-id',
+    host,
+    '/usr/bin/timeout', '--signal=TERM', '8s',
+    '/opt/zou/env/bin/python', '-m', 'vfx_files.worker_runtime', '--poll', '--idle-seconds', '0.25'
+  ], { encoding: 'utf8', timeout: 12_000 })
+  expect(result.status).toBe(124)
+  const remaining = execFileSync('docker', [
+    'exec', host, 'sh', '-lc', "ps -eo args | grep '[v]fx_files.worker_runtime' || true"
+  ], { encoding: 'utf8' })
+  expect(remaining.trim()).toBe('')
+}
+
 test('installed Files page provisions folders and carries w001 through Artist B to immutable w002', async ({ browser }) => {
   test.skip(missingHostFixture, 'Requires synthetic identities on the pinned disposable Zou host.')
   test.setTimeout(150_000)
@@ -101,7 +125,7 @@ test('installed Files page provisions folders and carries w001 through Artist B 
   await managerPage.getByLabel('Provision Task folders').selectOption(taskId)
   await managerPage.getByRole('button', { name: 'Create or reuse' }).click()
   await expect(managerPage.getByText(/Folder job queued:/)).toBeVisible()
-  runWorker()
+  runPollWorker()
 
   await manager.page.reload()
   await openFilesFromProductionMenu(manager.page, productionId, { alreadySelected: true })

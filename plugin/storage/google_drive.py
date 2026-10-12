@@ -7,7 +7,7 @@ from itertools import chain
 from typing import BinaryIO, Mapping
 from uuid import uuid4
 
-from .base import AmbiguousOutcome, Listing, PermissionFailure, StorageCapabilities, StorageObject
+from .base import AmbiguousOutcome, Listing, PermissionFailure, RetryableStorageFailure, StorageCapabilities, StorageObject
 
 
 API = "https://www.googleapis.com/drive/v3"
@@ -37,19 +37,37 @@ class GoogleDriveStorageAdapter:
         self._root_verified = False
         self._root_can_add_children = False
 
-    def _request(self, method, url, *, params=None, json=None, data=None, headers=None):
+    def _request(self, method, url, *, params=None, json=None, data=None, headers=None, retry_unauthorized=True):
         token = self.token_provider()
         if not token:
             raise PermissionFailure("Drive credential is unavailable")
+        response = self._send(method, url, token, params=params, json=json, data=data, headers=headers)
+        refresh = getattr(self.token_provider, "refresh_after_unauthorized", None)
+        if response.status_code == 401 and refresh is not None:
+            token = refresh()
+            if not retry_unauthorized:
+                # Upload bodies are generators over durable staging streams. A
+                # second attempt here would replay an exhausted generator.
+                raise RetryableStorageFailure(1, "Drive upload authorization was refreshed; retry the durable job")
+            response = self._send(method, url, token, params=params, json=json, data=data, headers=headers)
+        if response.status_code == 429 or 500 <= response.status_code <= 599:
+            raise RetryableStorageFailure(_retry_after_seconds(response), "Drive provider requested a retry")
+        return response
+
+    def _send(self, method, url, token, *, params, json, data, headers):
         request_headers = dict(headers or {})
         request_headers["Authorization"] = f"Bearer {token}"
         try:
             return self.transport.request(method, url, params=params, json=json, data=data, headers=request_headers)
-        except Exception as exc:
-            raise AmbiguousOutcome("Drive transport outcome is unknown") from exc
+        except Exception:
+            # Do not attach the transport exception: client libraries may retain
+            # request headers, OAuth URLs, or provider response data.
+            raise AmbiguousOutcome("Drive transport outcome is unknown") from None
 
     def reserve_id(self, scope_key):
         response = self._request("GET", f"{API}/files/generateIds", params={"count": 1, "space": "drive", "type": "files"})
+        if response.status_code in (401, 403):
+            raise PermissionFailure("Drive ID reservation permission was denied")
         if response.status_code != 200 or len(response.json().get("ids", [])) != 1:
             raise AmbiguousOutcome("Could not reserve a Drive file ID")
         return response.json()["ids"][0]
@@ -155,6 +173,7 @@ class GoogleDriveStorageAdapter:
                 "Content-Type": f"multipart/related; boundary={boundary}",
                 "Content-Length": str(len(prefix) + size + len(suffix)),
             },
+            retry_unauthorized=False,
         )
         if response.status_code == 409:
             existing = self.get(reserved_id)
@@ -278,3 +297,20 @@ class GoogleDriveStorageAdapter:
             trashed=bool(data.get("trashed", False)),
             name=data.get("name"),
         )
+
+
+def _retry_after_seconds(response):
+    import email.utils
+    from datetime import datetime, timezone
+
+    raw = response.headers.get("Retry-After", "") if getattr(response, "headers", None) else ""
+    try:
+        return max(1, min(3600, int(float(raw))))
+    except (TypeError, ValueError, OverflowError):
+        try:
+            retry_at = email.utils.parsedate_to_datetime(raw)
+            if retry_at.tzinfo is None:
+                retry_at = retry_at.replace(tzinfo=timezone.utc)
+            return max(1, min(3600, int((retry_at - datetime.now(timezone.utc)).total_seconds())))
+        except (TypeError, ValueError, OverflowError):
+            return 30

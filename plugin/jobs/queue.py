@@ -26,6 +26,7 @@ class JobResult:
     byte_count: int | None = None
     sha256: str | None = None
     error_code: str | None = None
+    retry_after_seconds: int | None = None
 
 
 class PostgresJobQueue:
@@ -85,6 +86,11 @@ class PostgresJobQueue:
             raise ValueError("External mutation completion requires verified provider ID, byte count and SHA-256")
         if result.state not in ("completed", "retry", "reconcile_required", "blocked_authorization", "failed"):
             raise ValueError("Unsupported terminal job state")
+        if result.retry_after_seconds is not None and (
+            isinstance(result.retry_after_seconds, bool)
+            or not 1 <= result.retry_after_seconds <= 3600
+        ):
+            raise ValueError("Retry delay outside safe bounds")
         with self.session_factory.begin() as session:
             update_values = {
                 "state": result.state,
@@ -93,7 +99,7 @@ class PostgresJobQueue:
                 "last_error_code": result.error_code,
             }
             if result.state == "retry":
-                update_values["available_at"] = func.now() + timedelta(seconds=30)
+                update_values["available_at"] = func.now() + timedelta(seconds=result.retry_after_seconds or 30)
             update_stmt = update(Job).where(
                 Job.id == job_id,
                 Job.state == "leased",
