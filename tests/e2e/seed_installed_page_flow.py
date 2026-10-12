@@ -13,9 +13,10 @@ from zou.app.models.file_status import FileStatus
 from zou.app.models.output_type import OutputType
 from zou.app.models.task import Task, TaskPersonLink
 from zou.app.models.task_type import TaskType
-from zou.app.services.persons_service import create_access_token_for_raw_person
+from flask_jwt_extended import create_access_token, get_jti
 
 from seeder_safety import (
+    create_short_lived_person_token,
     new_synthetic_manager as _new_synthetic_manager,
     token_expiry_config,
     token_has_short_expiry as _token_has_short_expiry,
@@ -168,10 +169,10 @@ def main():
 
         cookie_name = app.config.get("JWT_ACCESS_COOKIE_NAME", "access_token_cookie")
         tokens = {
-            "manager_token": create_access_token_for_raw_person(manager),
-            "artist_a_token": create_access_token_for_raw_person(artist_a),
-            "artist_b_token": create_access_token_for_raw_person(artist_b),
-            "supervisor_token": create_access_token_for_raw_person(supervisor),
+            "manager_token": create_short_lived_person_token(manager, create_access_token, get_jti),
+            "artist_a_token": create_short_lived_person_token(artist_a, create_access_token, get_jti),
+            "artist_b_token": create_short_lived_person_token(artist_b, create_access_token, get_jti),
+            "supervisor_token": create_short_lived_person_token(supervisor, create_access_token, get_jti),
         }
         if not all(_token_has_short_expiry(token) for token in tokens.values()):
             raise RuntimeError("Refusing to emit a test identity without a short token expiry")

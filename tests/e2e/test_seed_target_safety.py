@@ -5,6 +5,7 @@ from datetime import timedelta
 import pytest
 
 from seeder_safety import (
+    create_short_lived_person_token,
     new_synthetic_manager,
     token_expiry_config,
     token_has_short_expiry,
@@ -105,3 +106,30 @@ def test_seed_manager_is_created_with_a_synthetic_identity():
 
 def test_seed_tokens_use_a_fifteen_minute_expiry():
     assert token_expiry_config() == timedelta(minutes=15)
+
+
+def test_seed_uses_explicit_short_lived_jwt_and_persists_jti():
+    class Person:
+        id = "synthetic-person-id"
+        is_bot = False
+
+        def save(self):
+            self.saved = True
+
+    person = Person()
+    issued = {}
+
+    def create_token(**kwargs):
+        issued.update(kwargs)
+        return "synthetic.jwt.value"
+
+    token = create_short_lived_person_token(
+        person, create_token, lambda value: "synthetic-jti"
+    )
+
+    assert token == "synthetic.jwt.value"
+    assert issued["identity"] == person.id
+    assert issued["additional_claims"] == {"identity_type": "person_api"}
+    assert issued["expires_delta"] == timedelta(minutes=15)
+    assert person.jti == "synthetic-jti"
+    assert person.saved

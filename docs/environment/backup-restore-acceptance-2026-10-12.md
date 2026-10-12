@@ -27,3 +27,11 @@ Before writing the restore-validation marker, a separate Worker process failed c
 | Production rollback using `vxf_0006` downgrade | **NOT TESTED / PROHIBITED** | Destructive downgrade is excluded; recovery requires a consistent snapshot restore |
 
 The rehearsal is an isolated restore proof, not a Production backup or deployment readiness claim. Production compatibility requires read-only confirmation of Kitsu and Zou version/build/commit/image digest, plugin registry and migration state, PostgreSQL version/encoding/extensions, reverse-proxy plugin route and upload limits, authentication/cookie/origin behavior, worker process configuration, durable staging mount, and sanitized Production/Task permission fixtures. Secrets and credential values must remain redacted.
+
+## Repeated acceptance on the patched candidate image
+
+The same snapshot/restore gates were also rerun against candidate image `sha256:22ea86def3bf277e00a14efa3ce7330d541750081304cf78a254953e3ddc31ec` using separate source and restore containers. The synthetic source first passed the installed-page end-to-end flow, so its snapshot contained folder bindings, two Working revisions, a completed Publish, QC, native Zou OutputFile, Approval, accepted Handoff, durable job state, staged data and persistent FakeStorage bytes. No live storage or production data was present.
+
+The snapshot manifest SHA-256 was `b4b31a1fb2e4e396780d2a412dc6335c983d140f0faaf412b9b762916faf616c`. The sanitized source/restored reports matched exactly. Worker execution failed closed before the marker without changing report state; after the marker matched the verified manifest, a separate one-shot Worker returned idle. The restored installed page then read `w001` and `w002`, downloaded both expected byte payloads, and displayed the completed QC/native OutputFile plus Latest Published and Latest Approved. The second restore container had the API feature gate enabled after integrity verification; no Worker daemon ran during restore.
+
+This repeat does not resolve encrypted/offsite backup custody, Production recovery, official host adoption, or live Google Drive reconciliation.

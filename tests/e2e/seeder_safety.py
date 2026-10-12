@@ -89,3 +89,23 @@ def new_synthetic_manager(person_type, suffix):
 
 def token_expiry_config():
     return timedelta(minutes=15)
+
+
+def create_short_lived_person_token(person, create_token, get_jti):
+    """Issue a browser-test JWT with an explicit bounded expiry.
+
+    Zou's create_access_token_for_raw_person passes ``expires_delta=False``
+    when the Person has no expiration date, overriding Flask-JWT-Extended's
+    configured default and producing a token without an ``exp`` claim.
+    Disposable test identities must not inherit that behavior.
+    """
+    token = create_token(
+        identity=person.id,
+        additional_claims={
+            "identity_type": "bot" if person.is_bot else "person_api"
+        },
+        expires_delta=token_expiry_config(),
+    )
+    person.jti = get_jti(token)
+    person.save()
+    return token
