@@ -37,6 +37,8 @@ class FakeTransport:
 def credential_dir(tmp_path, ref="studio-drive"):
     root = tmp_path / "credentials"
     root.mkdir()
+    if os.name == "posix":
+        root.chmod(0o700)
     path = root / f"{ref}.json"
     path.write_text(json.dumps({
         "client_id": "synthetic-client-id",
