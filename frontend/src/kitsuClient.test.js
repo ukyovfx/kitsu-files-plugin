@@ -56,6 +56,23 @@ describe('parseProductionContext', () => {
     expect(context).toEqual({
       productionId: 'not-a-uuid',
       episodeId: 'spoofed',
+      taskId: null,
+      entityId: null,
+      entityType: null,
+      taskTypeId: null,
+      darkTheme: false,
+      locale: null
+    })
+  })
+
+  it('passes selected Kitsu Task and Entity IDs through as untrusted panel context', () => {
+    expect(parseProductionContext('?production_id=p-1&task_id=t-1&entity_id=e-1&entity_type=Shot&task_type_id=tt-1')).toEqual({
+      productionId: 'p-1',
+      episodeId: null,
+      taskId: 't-1',
+      entityId: 'e-1',
+      entityType: 'Shot',
+      taskTypeId: 'tt-1',
       darkTheme: false,
       locale: null
     })

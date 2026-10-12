@@ -96,12 +96,15 @@ def normalize_role_mappings(tree: TemplateFolder, values: object) -> dict[str, s
         if not isinstance(folder_id, str) or folder_id not in available:
             raise ValueError("Template role mapping must reference a folder in the selected template")
         mappings[role] = folder_id
-    if not {"shot", "task"}.issubset(mappings):
-        raise ValueError("Shot and Task template mappings are required before provisioning can be activated")
-    if not _is_ancestor(tree, mappings["shot"], mappings["task"]):
-        raise ValueError("Task template role must be a descendant of the Shot role")
-    if "sequence" in mappings and not _is_ancestor(tree, mappings["sequence"], mappings["shot"]):
-        raise ValueError("Sequence template role must be an ancestor of the Shot role")
+    if "shot" in mappings and "asset" in mappings:
+        raise ValueError("Map either a Shot or Asset entity, not both")
+    entity_role = "shot" if "shot" in mappings else "asset" if "asset" in mappings else None
+    if entity_role is None or "task" not in mappings:
+        raise ValueError("A Shot or Asset role and a Task role are required before provisioning can be activated")
+    if not _is_ancestor(tree, mappings[entity_role], mappings["task"]):
+        raise ValueError("Task template role must be a descendant of its Shot or Asset role")
+    if "sequence" in mappings and (entity_role != "shot" or not _is_ancestor(tree, mappings["sequence"], mappings["shot"])):
+        raise ValueError("Sequence template role must be an ancestor of a Shot role")
     return mappings
 
 

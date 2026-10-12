@@ -3,11 +3,12 @@ import { computed, ref, watch } from 'vue'
 
 const props = defineProps({
   enabled: { type: Boolean, default: false },
+  fixedTaskId: { type: String, default: null },
   tasks: { type: Array, default: () => [] },
   api: { type: Object, required: true }
 })
 const emit = defineEmits(['uploaded'])
-const taskId = ref('')
+const taskId = ref(props.fixedTaskId || '')
 const busy = ref(false)
 const progress = ref(0)
 const message = ref('')
@@ -15,21 +16,32 @@ const problem = ref('')
 const working = ref({ latest_working_id: null, revisions: [] })
 const resumeRevision = ref(null)
 const fileInput = ref(null)
+let workingRequest = 0
 const percent = computed(() => progress.value ? Math.round(progress.value * 100) : 0)
 
 async function loadWorking() {
+  const requestId = ++workingRequest
   if (!taskId.value) {
     working.value = { latest_working_id: null, revisions: [] }
     return
   }
   try {
-    working.value = await props.api.listTaskWorkingRevisions(taskId.value)
+    const result = await props.api.listTaskWorkingRevisions(taskId.value)
+    if (requestId === workingRequest) working.value = result
   } catch (error) {
-    problem.value = error.message || 'Working revisions could not be loaded.'
+    if (requestId === workingRequest) problem.value = error.message || 'Working revisions could not be loaded.'
   }
 }
 
-watch(taskId, loadWorking)
+watch(taskId, loadWorking, { immediate: true })
+watch(() => props.fixedTaskId, (next) => {
+  taskId.value = next || ''
+  workingRequest += 1
+  working.value = { latest_working_id: null, revisions: [] }
+  resumeRevision.value = null
+  problem.value = ''
+  message.value = ''
+})
 
 async function chooseFile(event) {
   const files = [...(event.target.files || [])]
@@ -70,7 +82,8 @@ async function chooseFile(event) {
       <h2 id="upload-heading">Working Files</h2>
       <p>Each upload creates a new w### snapshot. Earlier revisions remain available.</p>
     </div>
-    <select v-model="taskId" class="task-select" aria-label="Choose Task" :disabled="!enabled || busy">
+    <p v-if="fixedTaskId" class="task-context">Current Kitsu Task <span class="mono">{{ fixedTaskId }}</span></p>
+    <select v-else v-model="taskId" class="task-select" aria-label="Choose Task" :disabled="!enabled || busy">
       <option value="">Choose Task</option>
       <option v-for="task in tasks" :key="task.id" :value="task.id">{{ task.task_type_id.slice(0, 8) }} · {{ task.entity_id.slice(0, 8) }}</option>
     </select>

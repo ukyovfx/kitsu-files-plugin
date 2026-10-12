@@ -54,3 +54,27 @@ def test_handoff_needs_fix_requires_feedback(handoff_environment):
     handoff = create_handoff(factory, task_id=task_id, publish_id=publish_id, sender_id=sender, recipient_id=recipient, idempotency_key=idempotency_key("handoff:create"))
     with pytest.raises(ValueError):
         transition_handoff(factory, actor_id=recipient, handoff_id=handoff.id, target="needs_fix", feedback=None, idempotency_key=idempotency_key("handoff:fix"))
+
+
+def test_department_handoff_targets_exact_task_and_requires_live_authorizer(handoff_environment):
+    factory, task_id, publish_id, sender, recipient = handoff_environment
+    department_id, receiving_task_id = uuid4(), uuid4()
+    first = create_handoff(
+        factory, task_id=task_id, publish_id=publish_id, sender_id=sender,
+        recipient_department_id=department_id, recipient_task_id=receiving_task_id,
+        recipient_person_id=recipient, idempotency_key=idempotency_key("handoff:department"),
+    )
+    duplicate = create_handoff(
+        factory, task_id=task_id, publish_id=publish_id, sender_id=sender,
+        recipient_department_id=department_id, recipient_task_id=receiving_task_id,
+        recipient_person_id=recipient, idempotency_key=idempotency_key("handoff:department-retry"),
+    )
+    assert duplicate.id == first.id
+    with pytest.raises(HandoffDenied):
+        transition_handoff(factory, actor_id=recipient, handoff_id=first.id, target="accepted", feedback=None, idempotency_key=idempotency_key("handoff:department-deny"))
+    accepted = transition_handoff(
+        factory, actor_id=recipient, handoff_id=first.id, target="accepted", feedback=None,
+        idempotency_key=idempotency_key("handoff:department-accept"),
+        authorize_department_recipient=lambda _session, _record, _actor: True,
+    )
+    assert accepted.state == "accepted"
