@@ -94,3 +94,9 @@ def test_cross_origin_mutation_rejected():
 def test_worker_rejects_schema_epoch_mismatch():
     with pytest.raises(RuntimeError):
         assert_compatible_host("1.0.94", 3, "2")
+
+
+def test_worker_accepts_only_vxf_0009_build_pair():
+    assert_compatible_host("1.0.94", 8, "8")
+    with pytest.raises(RuntimeError):
+        assert_compatible_host("1.0.94", 7, "7")
