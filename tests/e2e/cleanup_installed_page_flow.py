@@ -2,6 +2,7 @@
 
 import os
 import shutil
+import tempfile
 from pathlib import Path
 from uuid import UUID
 
@@ -47,7 +48,7 @@ def _remove_runtime_directory(value, required_prefix):
     if not value:
         return
     path = Path(value).resolve()
-    if path.parent != Path("/tmp") or not path.name.startswith(required_prefix):
+    if path.parent != Path(tempfile.gettempdir()).resolve() or not path.name.startswith(required_prefix):
         raise RuntimeError("Refusing to remove a path outside the task-owned synthetic test directory")
     if path.is_dir():
         shutil.rmtree(path)

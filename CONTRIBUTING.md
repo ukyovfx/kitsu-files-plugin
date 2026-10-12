@@ -23,6 +23,8 @@ npm audit
 
 Run the installed-page Playwright acceptance against the disposable pinned host for UI, API, PostgreSQL, Worker, and Storage changes. Fixture-only browser tests are not integration proof. Record each acceptance as PASS, FAIL, BLOCKED, or NOT TESTED, including the exact host lock and commit used.
 
+The installed-page seeder is credential-producing test code. Before running it, set `VFX_FILES_DISPOSABLE_TEST_MODE=1`, provide `VFX_FILES_E2E_ROOT_URL` for the disposable host, and use `VFX_FILES_DISPOSABLE_HOST_ACK=DISPOSABLE_PINNED_KITSU_ZOU_ONLY` only when that host uses a non-reserved name. Its JSON output contains short-lived browser JWTs: capture it only through a protected test harness, never a terminal transcript, CI log, issue, or PR. Do not point it at Production, Staging, or a real Google Drive account.
+
 ## Pull requests
 
 - Use a focused branch and draft pull request into `main`.

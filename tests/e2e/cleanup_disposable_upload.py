@@ -2,6 +2,7 @@
 
 import json
 import sys
+import tempfile
 from pathlib import Path
 from uuid import UUID
 
@@ -28,7 +29,7 @@ def main(seed_path):
     app = create_app()
     with app.app_context(), db.session.begin():
         uploads = db.session.scalars(select(UploadSession).where(UploadSession.task_id == task_id)).all()
-        staging_root = Path("/tmp/vfx-kitsu-test-root/staging")
+        staging_root = Path(tempfile.gettempdir()) / "vfx-kitsu-test-root" / "staging"
         staging = FileSystemStaging(staging_root)
         for upload in uploads:
             keys = db.session.scalars(select(UploadPart.staging_key).where(UploadPart.session_id == upload.id)).all()
