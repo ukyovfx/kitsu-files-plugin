@@ -67,3 +67,28 @@ Before unlocking the restore-gated Worker, independently compare the source and 
 Compose's `cpus`, `mem_limit`, and `pids_limit` are per-container limits enforced when the Docker Linux engine supports cgroups. Record `docker inspect` values for every service; Windows Docker Desktop still applies its own WSL2 VM-wide CPU/RAM ceilings. Compose named volumes have no portable maximum-size option, and these files do not assert a disk cap. Server UAT is blocked until a dedicated, quota-enforced data filesystem and its monitoring/restore capacity are supplied.
 
 This deployment template is intended for local review. Any VFX Studio Server UAT still needs a separately authorized, compatible isolated server instance, owner-approved synthetic identity policy, verified backups/restore, disk quota enforcement, patched-host approval, and a scoped change window. No Production or Staging installation is included.
+
+## Human acceptance in the installed Kitsu page
+
+The Kitsu home page at the unit's loopback URL is the normal landing page after standard Kitsu login. Use the Manager email and shared synthetic password from the protected `ACCOUNTS.txt`; never paste the password into an issue or report. The seeded Manager is a member of the seeded synthetic Production with the `manager` project role. The plugin metadata must show `frontend_project_enabled=true`, and API readiness now probes the authenticated Files health route instead of accepting the Kitsu home page alone.
+
+Follow this screen path:
+
+1. In Kitsu, open **Productions** and select `VFX Files Installed E2E <suffix>`.
+2. Open the Production's **Assets** section and choose **VFX Files**. If the menu link is absent, use the authenticated fallback `/api/plugins/vfx_files/frontend/?production_id=<Production UUID>` on the same loopback origin. The ordinary `/` page is only the Kitsu home page.
+3. As Manager, expand **Folder template setup**. For this FakeStorage-only unit use `https://drive.google.com/drive/folders/synthetic-root-id`, select **Discover**, choose **Shared Production Template**, map Sequence to `{sequence}`, Shot to `{shot}`, and Task to `{task}`. Save the disabled configuration, review the hierarchy, then select **Activate provisioning**.
+4. Select the seeded Kitsu Task and use **Create or reuse**. Refresh bindings until folders show `ready` and **Open folder** links appear.
+5. Sign out and sign in as Artist A. In **Working Files**, choose the seeded Task and upload a small synthetic text file. Confirm `w001` is completed and Latest Working. Do not use Production media.
+6. Sign out and sign in as Artist B. Download Artist A's `w001`, then upload a distinct synthetic text file for the same Task. Confirm `w002` becomes Latest Working while `w001` remains listed and downloadable.
+7. Sign in as Artist A. In **Publish and hand off**, select the Task, a completed file from `w002`, and **Synthetic Main**; choose **Publish Working File**. Wait for the immutable Publish to complete and QC to show `passed`.
+8. Sign in as the separate Supervisor, refresh Files, and approve that exact Publish. Confirm Latest Approved and Latest Published identify the expected version. A publisher attempting to approve their own work must be rejected.
+9. As an authorized Task participant, create a Handoff for the completed Publish addressed to Artist B. Sign in as Artist B, open the Production's Files page, and use **Accept** (or **Needs Fix** with feedback if testing rejection).
+10. Refresh after each identity change. Confirm `w001`, `w002`, the Publish manifest and both pointers remain persisted. Worker restart and snapshot restore are separate operational checks; restore into a new disposable unit and keep its Worker stopped until the snapshot integrity review is complete.
+
+For resource capture while performing the UI stages, run the read-only sampler from the repository root in a separate PowerShell window, once per stage:
+
+```powershell
+python .\deploy\uat\tools\measure_resources.py --project vfx-files-uat-<unit> --phase working-upload --duration-seconds 60 --interval-seconds 1 --output "$env:LOCALAPPDATA\VfxFilesPluginUAT\<unit>\working-upload.json"
+```
+
+Replace `<unit>` and `--phase` with `publish`, `restore`, or another stage label. The sampler reads Docker stats, inspect metadata, project volume sizes, writable layers, image virtual sizes, and log byte counts. It does not read log contents. Docker image virtual sizes may share layers; daemon-wide `docker system df` must not be reported as this unit's unique disk use.
