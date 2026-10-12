@@ -58,10 +58,10 @@ def sha256(payload: bytes) -> str:
 
 def make_manifest(files: dict[str, bytes], commit: str) -> bytes:
     package = toml_value(files["plugin/manifest.toml"].decode("utf-8"), "version")
-    host_lock = files["environment/host-lock.yaml"].decode("utf-8")
-    host_version = yaml_scalar(host_lock, "python_version")
-    node_version = yaml_scalar(host_lock, "node_version")
-    npm_version = yaml_scalar(host_lock, "npm_version")
+    host_lock = json.loads(files["environment/host-lock.yaml"])
+    host_version = str(host_lock["python_version"])
+    node_version = str(host_lock["node_version"])
+    npm_version = str(host_lock["npm_version"])
     frontend = json.loads(files["frontend/package.json"])
     sbom = json.loads(files["docs/oss/distribution-sbom.cdx.json"])
 
@@ -136,13 +136,6 @@ def toml_value(document: str, key: str) -> str:
     if not match:
         raise ValueError(f"Could not read {key} from plugin manifest")
     return match.group(1)
-
-
-def yaml_scalar(document: str, key: str) -> str:
-    match = re.search(rf"(?m)^{re.escape(key)}:\s*([^\s#]+)\s*$", document)
-    if not match:
-        raise ValueError(f"Could not read {key} from host lock")
-    return match.group(1).strip("\"'")
 
 
 def write_zip(path: Path, files: dict[str, bytes], manifest: bytes) -> None:
