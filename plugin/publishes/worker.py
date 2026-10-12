@@ -65,7 +65,7 @@ def _ensure_native_working_file(session_factory, *, task, revision, source):
     return UUID(str(created["id"]))
 
 
-def make_publish_handler(session_factory, adapter):
+def make_publish_handler(session_factory, adapter_factory):
     def handle(job):
         try:
             publish_id = UUID(str(job.payload["publish_id"]))
@@ -114,7 +114,7 @@ def make_publish_handler(session_factory, adapter):
                 payload=job.payload,
             ):
                 return JobResult("failed", error_code="publish_scope_mismatch")
-            job_adapter = resolve_storage_adapter(adapter, connection)
+            job_adapter = resolve_storage_adapter(adapter_factory, connection)
             source_id = source.provider_object_id
             source_size = source.provider_size
             source_sha256 = source.provider_sha256
@@ -141,12 +141,11 @@ def make_publish_handler(session_factory, adapter):
                     publish.provider_artifact_id = reserved_artifact_id
                 artifact_id = publish.provider_artifact_id
 
-        adapter = job_adapter
-        capabilities = adapter.capabilities(root_id)
+        capabilities = job_adapter.capabilities(root_id)
         if not capabilities.root_visible or not capabilities.can_add_children:
             raise PermissionFailure("Publish root is unavailable for writes")
-        adapter.assert_parent_within_root(destination_id)
-        if not adapter.verify(source_id, source_size, source_sha256):
+        job_adapter.assert_parent_within_root(destination_id)
+        if not job_adapter.verify(source_id, source_size, source_sha256):
             return JobResult("reconcile_required", error_code="publish_source_integrity_failed")
 
         if publish.state == "reserved":
@@ -161,25 +160,25 @@ def make_publish_handler(session_factory, adapter):
                 },
             )
 
-        stored_artifact = adapter.get(artifact_id)
+        stored_artifact = job_adapter.get(artifact_id)
         if stored_artifact is None:
             with tempfile.SpooledTemporaryFile(max_size=8 * 1024 * 1024, mode="w+b") as buffer:
-                byte_count, checksum = adapter.download_to(source_id, buffer)
+                byte_count, checksum = job_adapter.download_to(source_id, buffer)
                 if byte_count != source_size or checksum != source_sha256:
                     return JobResult("reconcile_required", error_code="publish_source_download_mismatch")
                 buffer.seek(0)
                 try:
-                    adapter.upload(buffer, artifact_id, source_size, source_sha256, destination_id)
+                    job_adapter.upload(buffer, artifact_id, source_size, source_sha256, destination_id)
                 except AlreadyExists:
                     pass
                 except AmbiguousOutcome:
                     pass
-            stored_artifact = adapter.get(artifact_id)
+            stored_artifact = job_adapter.get(artifact_id)
         try:
             artifact_verified = bool(
                 stored_artifact and not stored_artifact.trashed
                 and stored_artifact.parent_id == destination_id
-                and adapter.verify(artifact_id, source_size, source_sha256)
+                and job_adapter.verify(artifact_id, source_size, source_sha256)
             )
         except AmbiguousOutcome:
             return JobResult("reconcile_required", error_code="publish_provider_readback_ambiguous")

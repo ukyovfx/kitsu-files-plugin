@@ -126,11 +126,17 @@ def test_upload_worker_reconciles_ambiguous_provider_success_without_duplicate(z
             staging_key=f"upload/{upload_id}/0", state="staged"))
         session.add(Job(id=job_id, job_type="publish_source",
             idempotency_key=f"upload-finalize:{upload_id}",
-            payload={"upload_session_id": str(upload_id)}, state="queued"))
+            payload={
+                "upload_session_id": str(upload_id),
+                "task_id": str(task_id),
+                "actor_id": str(actor_id),
+            }, state="queued"))
 
     adapter = FakeStorage(root_id="synthetic-root-id")
     adapter.fail_upload_after_write = True
-    handler = make_upload_handler(zou_db_factory, staging, adapter)
+    # Production workers receive a per-StorageConnection factory. Keep this
+    # path covered so ID reservation uses the resolved adapter, not the factory.
+    handler = make_upload_handler(zou_db_factory, staging, lambda connection: adapter)
     queue = PostgresJobQueue(zou_db_factory)
     worker_id = uuid4()
     with zou_app.app_context():
