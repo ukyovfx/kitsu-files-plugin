@@ -172,4 +172,21 @@ describe('Files API', () => {
     expect(client.request.mock.calls.filter(([method]) => method === 'PUT')).toHaveLength(0)
     expect(client.request.mock.calls.at(-1)[1]).toBe('plugins/vfx_files/uploads/session-1/finalize')
   })
+
+  it('lists scoped Drive objects and reserves one Output Package with a stable retry key', async () => {
+    const client = { request: vi.fn()
+      .mockResolvedValueOnce(response({ task_id: 'task-1', parent_id: 'root', items: [], complete: true }))
+      .mockResolvedValueOnce(response({ csrf_token: 'package-csrf' }))
+      .mockResolvedValueOnce(response({ id: 'package-1', job_id: 'job-1', version: 1, state: 'verifying' })) }
+    const api = createFilesApi(client)
+    await expect(api.listTaskStorageObjects('task-1', 'root')).resolves.toMatchObject({ parent_id: 'root', complete: true })
+    await expect(api.createTaskOutputPackage('task-1', {
+      output_type_id: 'output-1', package_type: 'final-exr', frame_start: 1001, frame_end: 1002,
+      files: [{ provider_object_id: 'drive-1', frame_number: 1001 }]
+    }, 'output-package:retry-1')).resolves.toMatchObject({ id: 'package-1', version: 1 })
+    expect(client.request.mock.calls[0][1]).toBe('plugins/vfx_files/tasks/task-1/storage-objects?parent_id=root')
+    const create = client.request.mock.calls[2]
+    expect(create[1]).toBe('plugins/vfx_files/tasks/task-1/output-packages')
+    expect(create[2].headers['Idempotency-Key']).toBe('output-package:retry-1')
+  })
 })

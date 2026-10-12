@@ -92,6 +92,24 @@ tbody tr:last-child td { border-bottom: 0; }
 .handoff-main { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .handoff-actions { display: flex; justify-content: flex-end; gap: 7px; }
 .template-panel { margin-top: 14px; }
+.output-packages { margin: 14px 0; padding: 0 18px 18px; }
+.package-register { display: flex; flex-wrap: wrap; align-items: end; gap: 10px; padding-bottom: 14px; }
+.package-register label { display: grid; gap: 5px; color: var(--muted); font-size: 11px; }
+.package-register select, .package-register input, .frame-number input { min-width: 150px; padding: 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); color: var(--text); }
+.folder-breadcrumb { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; padding: 9px 0; color: var(--muted); }
+.folder-breadcrumb .text-button { margin-left: 0; font-size: 11px; }
+.storage-object-list, .package-history { display: grid; gap: 6px; margin: 8px 0 14px; }
+.storage-object-row, .package-row { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 9px 10px; border: 1px solid var(--border); border-radius: 7px; background: var(--surface); }
+.storage-object-row .object-name { display: flex; align-items: center; gap: 7px; min-width: 220px; margin: 0 auto 0 0; font-size: 11px; }
+.storage-object-row input[type='checkbox'] { accent-color: #558b8d; }
+.storage-object-row .frame-number { display: flex; align-items: center; gap: 5px; margin-left: auto; color: var(--muted); font-size: 10px; }
+.frame-number input { min-width: 80px; width: 90px; padding: 5px; }
+.package-row { display: grid; grid-template-columns: auto auto minmax(0, 1fr); }
+.package-row > .text-button { justify-self: start; margin-left: 0; font-size: 11px; }
+.package-row .muted { overflow-wrap: anywhere; }
+.package-row pre { grid-column: 1 / -1; white-space: pre-wrap; }
+.package-files { grid-column: 1 / -1; display: grid; gap: 6px; }
+.package-files a { color: #76b8bb; font-size: 11px; }
 .template-toggle { display: flex; width: 100%; align-items: center; justify-content: space-between; gap: 12px; padding: 16px 18px; border: 0; background: transparent; color: var(--text); text-align: left; cursor: pointer; }
 .template-toggle strong { display: block; margin-top: 3px; font-size: 13px; }
 .template-body { display: grid; gap: 10px; padding: 0 18px 18px; }

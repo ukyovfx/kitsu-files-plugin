@@ -85,6 +85,26 @@ def test_drive_404_is_ambiguous_not_proof_of_absence():
         adapter.get("unknown-object")
 
 
+def test_drive_missing_size_is_unknown_not_a_zero_byte_file():
+    transport = FakeTransport([
+        Response(200, {"id": "root-1", "mimeType": FOLDER_MIME, "driveId": "drive-1", "capabilities": {"canAddChildren": True}}),
+        Response(200, {"id": "object-1", "parents": ["root-1"], "mimeType": "application/octet-stream"}),
+    ])
+    adapter = drive(transport)
+    adapter.capabilities("root-1")
+    assert adapter.get("object-1").size is None
+
+
+def test_drive_missing_size_is_unknown_not_a_zero_byte_file():
+    transport = FakeTransport([
+        Response(200, {"id": "root-1", "mimeType": FOLDER_MIME, "driveId": "drive-1", "capabilities": {"canAddChildren": True}}),
+        Response(200, {"id": "object-1", "parents": ["root-1"], "mimeType": "application/octet-stream"}),
+    ])
+    adapter = drive(transport)
+    adapter.capabilities("root-1")
+    assert adapter.get("object-1").size is None
+
+
 def test_drive_403_does_not_retry_with_a_refreshed_token():
     class Refreshable:
         def __call__(self):
@@ -210,6 +230,21 @@ def test_upload_download_and_sha256_readback_are_byte_exact_on_shared_drive():
     upload_call = transport.calls[1]
     assert upload_call[2]["params"]["supportsAllDrives"] == "true"
     assert content in upload_call[2]["data"]
+
+
+def test_package_copy_upload_preserves_provider_filename_and_reserved_id():
+    content = b"immutable package copy"
+    digest = hashlib.sha256(content).hexdigest()
+    transport = FakeTransport([
+        Response(200, {"id": "root-1", "mimeType": FOLDER_MIME, "driveId": "drive-1", "capabilities": {"canAddChildren": True}}),
+        Response(200, {"id": "package-folder", "name": "Package", "parents": ["root-1"], "mimeType": FOLDER_MIME, "driveId": "drive-1"}),
+        Response(201, {"id": "target-file", "name": "plate.1001.exr", "parents": ["package-folder"], "mimeType": "application/octet-stream", "driveId": "drive-1", "size": len(content)}),
+    ])
+    adapter = drive(transport)
+    adapter.capabilities("root-1")
+    adapter.upload(io.BytesIO(content), "target-file", len(content), digest, "package-folder", file_name="plate.1001.exr")
+    metadata = json.loads(transport.calls[2][2]["data"].split(b"\r\n\r\n", 1)[1].split(b"\r\n--", 1)[0])
+    assert metadata == {"id": "target-file", "parents": ["package-folder"], "name": "plate.1001.exr"}
 
 
 def test_lost_upload_response_retries_same_reserved_id_and_verifies_existing_bytes():

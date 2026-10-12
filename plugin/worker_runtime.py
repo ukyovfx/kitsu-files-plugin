@@ -83,6 +83,7 @@ def build_runtime(app):
     from .uploads.staging import FileSystemStaging
     from .uploads.worker import make_upload_handler
     from .publishes.worker import make_publish_handler
+    from .packages.worker import make_output_package_handler
     from .worker.leases import WorkerContext
     from .worker.main import WorkerRuntime
 
@@ -104,6 +105,7 @@ def build_runtime(app):
         handlers={
             "publish_source": make_upload_handler(sessions, staging, adapter_factory),
             "publish_artifact": make_publish_handler(sessions, adapter_factory),
+            "verify_output_package": make_output_package_handler(sessions, adapter_factory),
             "provision_task_folders": make_task_folder_handler(sessions, adapter_factory),
         },
     )

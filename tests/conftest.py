@@ -91,7 +91,7 @@ def synthetic_upload_task(authenticated_plugin_client, zou_db_factory, tmp_path)
     from zou.app.models.project import Project, ProjectPersonLink
     from zou.app.models.task import Task, TaskPersonLink
     from zou.app.models.task_type import TaskType
-    from plugin.models import ApprovalEvent, FolderBinding, Handoff, HandoffEvent, Job, LatestWorkingPointer, NativeCreateEvent, OutputFamilyMapping, PinnedDependency, Publish, PublishCheckpoint, PublishPointer, ReconciliationFinding, SharedTemplateConfiguration, StorageConnection, UploadPart, UploadSession, WorkingDependency, WorkingRevision, WorkingRevisionFile
+    from plugin.models import ApprovalEvent, FolderBinding, Handoff, HandoffEvent, Job, LatestWorkingPointer, NativeCreateEvent, OutputFamilyMapping, OutputPackage, OutputPackageFile, OutputPackagePointer, PinnedDependency, Publish, PublishCheckpoint, PublishPointer, ReconciliationFinding, SharedTemplateConfiguration, StorageConnection, UploadPart, UploadSession, WorkingDependency, WorkingRevision, WorkingRevisionFile
 
     app = authenticated_plugin_client.vfx_app
     with app.app_context():
@@ -137,6 +137,10 @@ def synthetic_upload_task(authenticated_plugin_client, zou_db_factory, tmp_path)
                 # Completed Publish evidence is intentionally immutable. Keep
                 # its synthetic Kitsu graph together in the disposable host.
                 return
+        # Completed package rows and their provider artifacts are immutable.
+        # Preserve the synthetic Kitsu graph rather than bypassing those guards.
+        if session.scalar(select(OutputPackage.id).where(OutputPackage.task_id == task_id).limit(1)) is not None:
+            return
             native_output_ids = [row.native_output_file_id for row in publishes if row.native_output_file_id]
             native_source_ids = [row.source_working_file_id for row in publishes if row.source_working_file_id]
             handoffs = session.scalars(select(Handoff).where(Handoff.publish_id.in_(publish_ids))).all()
