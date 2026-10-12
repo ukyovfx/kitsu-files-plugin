@@ -1,0 +1,710 @@
+{
+  "bomFormat": "CycloneDX",
+  "specVersion": "1.5",
+  "serialNumber": "urn:uuid:1057020f-7c01-4f6a-a034-f23a9a1e13da",
+  "version": 1,
+  "metadata": {
+    "timestamp": "2026-10-12T00:00:00Z",
+    "component": {
+      "type": "application",
+      "name": "vfx-kitsu-files-plugin",
+      "version": "0.5.0",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "2cd3141dcfc2d1a24c7e9ad9c111810872a1470ce26fc21f9558bc5cff068bc5"
+        }
+      ]
+    }
+  },
+  "components": [
+    {
+      "type": "library",
+      "name": "vue",
+      "version": "3.5.43",
+      "purl": "pkg:npm/vue@3.5.43",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA512",
+          "content": "o5qZoksdnjIKvW1srZ3ab7pcDNYAerBjRe54D0LBLfRdCYFrSgBHVXokMas35czQc0//lmx4/tuY4ZNQ+Rf2Ng=="
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "@vue/runtime-dom",
+      "version": "3.5.43",
+      "purl": "pkg:npm/@vue%2fruntime-dom@3.5.43",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA512",
+          "content": "Bb2Jc0YjjJdMt1SJmb9b2L/IWd3I8lIT9x9eS/xvvP9CiVgna0ffua74xKRmt4/uSJ+0r4iN8ex1jrqkhQGWQw=="
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "@vue/runtime-core",
+      "version": "3.5.43",
+      "purl": "pkg:npm/@vue%2fruntime-core@3.5.43",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA512",
+          "content": "hU6U6VnVhBGQDpvlnnDlIB8ZGJBiOcgk2lh/0InltHiz3D8oSkluvuvY+do1G2H3+udeKFsmaBlgVYP7gXQzEw=="
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "@vue/reactivity",
+      "version": "3.5.43",
+      "purl": "pkg:npm/@vue%2freactivity@3.5.43",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA512",
+          "content": "G/c9GyOZNI2jVaaS6OX1EF1SSFSv7H0ERqNTl4+DTFMlZmB5eVAB53aLQNam/7NL2NPtaDD7RdVrzf8uJzMuOA=="
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "@vue/shared",
+      "version": "3.5.43",
+      "purl": "pkg:npm/@vue%2fshared@3.5.43",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA512",
+          "content": "uksS7YGMR5NZyr4JNq0Rp+QyLns0ueaz20KwzIPW9R0LH1Vnt4E+XUM29PNseEbf1www2gOuhuDi5AKOIXag9Q=="
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "@noble/hashes",
+      "version": "1.8.0",
+      "purl": "pkg:npm/@noble%2fhashes@1.8.0",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA512",
+          "content": "jCs9ldd7NwzpgXDIf6P3+NrHh9/sD6CQdxHyjQI+h/6rDNo88ypBxxz45UDuZHz9r3tNz7N/VInSVoVdtXEI4A=="
+        }
+      ]
+    },
+    {
+      "type": "file",
+      "name": "plugin/__init__.py",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "ea2b5923d06d3a3a4fcfa97ae718562f1a4bbe193a54a63f6e90e96f5fe044ff"
+        }
+      ]
+    },
+    {
+      "type": "file",
+      "name": "plugin/approvals/__init__.py",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "4e476f85cd8b226347594b20961d3778e4734ca57a8f617c37d81dbe6692f6ed"
+        }
+      ]
+    },
+    {
+      "type": "file",
+      "name": "plugin/approvals/service.py",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "81c5acb9f9a07c8943b056da9c4a31fdfc7d2f634e4bbb9884a63b4658cfd294"
+        }
+      ]
+    },
+    {
+      "type": "file",
+      "name": "plugin/authz.py",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "e6b8ece05e3c71c836b560f888d289a927b8433efda81cb8ce7842d6baa3e9e1"
+        }
+      ]
+    },
+    {
+      "type": "file",
+      "name": "plugin/compat.py",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "b16f9e8a9ceabbd11b56c2c5232446fb59f64a12bae8f782b18f4b34ef790a59"
+        }
+      ]
+    },
+    {
+      "type": "file",
+      "name": "plugin/folders/__init__.py",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "3ac84ca624a03db5557c8c8114d0920f870ff0f4420c00192a9485dabe5a17f1"
+        }
+      ]
+    },
+    {
+      "type": "file",
+      "name": "plugin/folders/discovery.py",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "48e6a248cf5318dd623dce86ccc9e7019931759bdde204ad9d277611ca56f3ff"
+        }
+      ]
+    },
+    {
+      "type": "file",
+      "name": "plugin/folders/provisioning.py",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "4ce397e90b8f264cb668ecda71024fccbab7d4e13bee6028ff11c8458d971380"
+        }
+      ]
+    },
+    {
+      "type": "file",
+      "name": "plugin/folders/service.py",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "696ad0c24f541e3cc2eeaa766c59f321800ac3154ba6d4d4722f6d5e2ff6b1ed"
+        }
+      ]
+    },
+    {
+      "type": "file",
+      "name": "plugin/folders/templates.py",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "472ce9fd29b85a012eed3971ef3c8372a811c02d342634b855db2ca6893033e0"
+        }
+      ]
+    },
+    {
+      "type": "file",
+      "name": "plugin/folders/worker.py",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "c3725f2c78aa33cd0dfe01bc98390cd4b10b0d97bd7b8f8392e8485a732ccbc5"
+        }
+      ]
+    },
+    {
+      "type": "file",
+      "name": "plugin/frontend/dist/assets/index-BzYD_Fuw.js",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "91a1925a07f00e171ee96ba9bb9ffc72de0fcc169a9480da9de3d9eb70ef8484"
+        }
+      ]
+    },
+    {
+      "type": "file",
+      "name": "plugin/frontend/dist/assets/index-DDoIgL2h.css",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "8b7e1e44d9e84b65db08ab8324e4f42991e4285bf2e57a588951ad5366b563b3"
+        }
+      ]
+    },
+    {
+      "type": "file",
+      "name": "plugin/frontend/dist/index.html",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "b68f84880b4169940e36652849b7c2f86354c2e2c142f8ee6b7b6d86cc556d8a"
+        }
+      ]
+    },
+    {
+      "type": "file",
+      "name": "plugin/handoffs/__init__.py",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "3507d453e84c4c828dc2ff9f9519aefe3deec006afb474b4ef932137d1fb9396"
+        }
+      ]
+    },
+    {
+      "type": "file",
+      "name": "plugin/handoffs/service.py",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "7afd35cdf3f5473220cfc16e1b071b7c73dc0eb7cbd1518e4b48e403375c7889"
+        }
+      ]
+    },
+    {
+      "type": "file",
+      "name": "plugin/jobs/__init__.py",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "e94fa02828e5c9a99696e4cc62be37127911a8b85e2e9e638f5f2ac8d1829c94"
+        }
+      ]
+    },
+    {
+      "type": "file",
+      "name": "plugin/jobs/queue.py",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "2b98d4314bdfc9834d5bd10af99b04919270c0eb0e4eed46f050ca90b34b55bc"
+        }
+      ]
+    },
+    {
+      "type": "file",
+      "name": "plugin/kitsu_files/__init__.py",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "57113b4444f3889ed687d5d9ae376c2673cbb22fdf13e8b98c84228aa1168f3a"
+        }
+      ]
+    },
+    {
+      "type": "file",
+      "name": "plugin/kitsu_files/adapter.py",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "0252d5e049644cae9b25286724642a2f498ea10d901611cff6d9985e583c8b15"
+        }
+      ]
+    },
+    {
+      "type": "file",
+      "name": "plugin/manifest.toml",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "afec8d929b35772c8cd4614d5b6a65570ecf4778951588ddad5c039009ac8651"
+        }
+      ]
+    },
+    {
+      "type": "file",
+      "name": "plugin/migrations/versions/0001_plugin_foundation.py",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "a56410033c22c3a96f1d51b3c0f6a37fe6903e18694bbe5e9e6c7ee8a6706453"
+        }
+      ]
+    },
+    {
+      "type": "file",
+      "name": "plugin/migrations/versions/0002_upload_transfer_evidence.py",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "dd3b6ae5f924610226b6c60b7ff1681d86fe2c65cf6c930f1847554d6de4aa32"
+        }
+      ]
+    },
+    {
+      "type": "file",
+      "name": "plugin/migrations/versions/0003_working_revisions.py",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "2339f7cd2eaa59d7e0859d14b041d283fbd94810b4ae7161cebced92144dd440"
+        }
+      ]
+    },
+    {
+      "type": "file",
+      "name": "plugin/migrations/versions/0004_shared_template_configuration.py",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "9406310c2e0bb901ffaf636305c8230588ef84ba3516b1c84813054841d1c6bc"
+        }
+      ]
+    },
+    {
+      "type": "file",
+      "name": "plugin/migrations/versions/0005_unique_folder_provider_binding.py",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "abaae01c024555f1f915d58bae1584145b3f3e9238871d36d45224de925ef1a3"
+        }
+      ]
+    },
+    {
+      "type": "file",
+      "name": "plugin/migrations/versions/0006_publish_source_and_destination.py",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "6a1069d516befbd60eb5630f8c1955c01f37cfb03743933e020dedb95da74f39"
+        }
+      ]
+    },
+    {
+      "type": "file",
+      "name": "plugin/models.py",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "7222ce18df41a79557c8ef3990ca55aa4bad848f770d45006c5ff86ef5287d00"
+        }
+      ]
+    },
+    {
+      "type": "file",
+      "name": "plugin/objects/__init__.py",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "b199a33c5b5e19664f57ce27bb5ca985368f76dfc0f405489646fcb5ad9fd52b"
+        }
+      ]
+    },
+    {
+      "type": "file",
+      "name": "plugin/objects/reconciliation.py",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "9424aca85250f01278f097db82e42141ed4501f52d7834ab67ec5d1d6ada1815"
+        }
+      ]
+    },
+    {
+      "type": "file",
+      "name": "plugin/publishes/__init__.py",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "35833b21f4e0576f93931e7bce1cee0d3ec8288822382ffe809d3535b2c9a271"
+        }
+      ]
+    },
+    {
+      "type": "file",
+      "name": "plugin/publishes/checkpoints.py",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "74aabc5239c69a564fa7222233af33762f15fbc4d37a29b4668e8c973b346cad"
+        }
+      ]
+    },
+    {
+      "type": "file",
+      "name": "plugin/publishes/manifest.py",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "fd792d9a334e32a569e35f55bdad07b3750e2566325e81b5edecaf1b795078d3"
+        }
+      ]
+    },
+    {
+      "type": "file",
+      "name": "plugin/publishes/qc.py",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "6173a92e897deb1aac14b48f40fabc8f8a9b6f7866831b491b8ecb9dbefe5363"
+        }
+      ]
+    },
+    {
+      "type": "file",
+      "name": "plugin/publishes/service.py",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "ad1679d8456148c70275249336b2765ffd920a786e8626a5067a0cc1df6a8965"
+        }
+      ]
+    },
+    {
+      "type": "file",
+      "name": "plugin/publishes/worker.py",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "22c0d33e9927d272419ce30e9fe66915cfb075aec20cfd0f2309bc4cc7dcf4e3"
+        }
+      ]
+    },
+    {
+      "type": "file",
+      "name": "plugin/resources.py",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "87b608d311232a8a73c324b7f7469edea8e644276a03d0067b39e452f9e6e579"
+        }
+      ]
+    },
+    {
+      "type": "file",
+      "name": "plugin/storage/__init__.py",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "f25fba4804c17be8e91ddc583df36cf11b5328a9c6bdb1fe47001de7135fed2b"
+        }
+      ]
+    },
+    {
+      "type": "file",
+      "name": "plugin/storage/base.py",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "b289d4a712b7d25543c7ce00849f45dc49888de2672e0b582385bd8322731ba1"
+        }
+      ]
+    },
+    {
+      "type": "file",
+      "name": "plugin/storage/drive_url.py",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "b365b9df66094e3fe68d6111b4552e52ea6e4203415ad938050b8efadff58047"
+        }
+      ]
+    },
+    {
+      "type": "file",
+      "name": "plugin/storage/fake.py",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "6de2f361d0c15c2fd2c9136c7337882b3466631b9c6224aba5ac5dea998c8e43"
+        }
+      ]
+    },
+    {
+      "type": "file",
+      "name": "plugin/storage/google_drive.py",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "8a0a9d2c927f9d300470d3c46c08d9b88fcc5fc34b1a7aed0257f0e7c49e0b48"
+        }
+      ]
+    },
+    {
+      "type": "file",
+      "name": "plugin/uploads/__init__.py",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "3a999e6b52d42c58e83982a254a9028963e0f165abf05e2a058be77f215b7558"
+        }
+      ]
+    },
+    {
+      "type": "file",
+      "name": "plugin/uploads/service.py",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "91cbc263e3b505902a5435e50cb0f2da9eaf97d5056acd84d5dfffc2f0d0abef"
+        }
+      ]
+    },
+    {
+      "type": "file",
+      "name": "plugin/uploads/staging.py",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "a4f9dc4f4e39b13b62205e2fa62b1c1345d26c47e28c57158fb65d8d8c3d3706"
+        }
+      ]
+    },
+    {
+      "type": "file",
+      "name": "plugin/uploads/worker.py",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "8fe15594b0c635c5d9735bd7cc10d580ebf96f4db5d537acc1b3c0387aa80488"
+        }
+      ]
+    },
+    {
+      "type": "file",
+      "name": "plugin/worker/__init__.py",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "419f300802c57c3aa207055b67b0aada6e3b52fbf01c1effa9793c20001fbabc"
+        }
+      ]
+    },
+    {
+      "type": "file",
+      "name": "plugin/worker/leases.py",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "63416b9ed05187ad7367d89654653b3f82f648d214aa1b57f84a5f3322c1ffe7"
+        }
+      ]
+    },
+    {
+      "type": "file",
+      "name": "plugin/worker/main.py",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "63105139e40ac38d71728a8ed57c48240be29b61d5e8511ab94e38aa34795e08"
+        }
+      ]
+    },
+    {
+      "type": "file",
+      "name": "plugin/worker_runtime.py",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "4d4f343115e6a43343fb5cea96bbd2b1f57f47d88d5529d94482541eaf561b0f"
+        }
+      ]
+    },
+    {
+      "type": "file",
+      "name": "plugin/working_files/service.py",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "c76f102b5d5e46762711854215026dec9d9f7043a3eabc4754bcd3fe98039a71"
+        }
+      ]
+    }
+  ],
+  "dependencies": [
+    {
+      "ref": "vfx-kitsu-files-plugin@0.5.0",
+      "dependsOn": [
+        "pkg:npm/vue@3.5.43",
+        "pkg:npm/@vue%2fruntime-dom@3.5.43",
+        "pkg:npm/@vue%2fruntime-core@3.5.43",
+        "pkg:npm/@vue%2freactivity@3.5.43",
+        "pkg:npm/@vue%2fshared@3.5.43",
+        "pkg:npm/@noble%2fhashes@1.8.0",
+        "plugin/__init__.py",
+        "plugin/approvals/__init__.py",
+        "plugin/approvals/service.py",
+        "plugin/authz.py",
+        "plugin/compat.py",
+        "plugin/folders/__init__.py",
+        "plugin/folders/discovery.py",
+        "plugin/folders/provisioning.py",
+        "plugin/folders/service.py",
+        "plugin/folders/templates.py",
+        "plugin/folders/worker.py",
+        "plugin/frontend/dist/assets/index-BzYD_Fuw.js",
+        "plugin/frontend/dist/assets/index-DDoIgL2h.css",
+        "plugin/frontend/dist/index.html",
+        "plugin/handoffs/__init__.py",
+        "plugin/handoffs/service.py",
+        "plugin/jobs/__init__.py",
+        "plugin/jobs/queue.py",
+        "plugin/kitsu_files/__init__.py",
+        "plugin/kitsu_files/adapter.py",
+        "plugin/manifest.toml",
+        "plugin/migrations/versions/0001_plugin_foundation.py",
+        "plugin/migrations/versions/0002_upload_transfer_evidence.py",
+        "plugin/migrations/versions/0003_working_revisions.py",
+        "plugin/migrations/versions/0004_shared_template_configuration.py",
+        "plugin/migrations/versions/0005_unique_folder_provider_binding.py",
+        "plugin/migrations/versions/0006_publish_source_and_destination.py",
+        "plugin/models.py",
+        "plugin/objects/__init__.py",
+        "plugin/objects/reconciliation.py",
+        "plugin/publishes/__init__.py",
+        "plugin/publishes/checkpoints.py",
+        "plugin/publishes/manifest.py",
+        "plugin/publishes/qc.py",
+        "plugin/publishes/service.py",
+        "plugin/publishes/worker.py",
+        "plugin/resources.py",
+        "plugin/storage/__init__.py",
+        "plugin/storage/base.py",
+        "plugin/storage/drive_url.py",
+        "plugin/storage/fake.py",
+        "plugin/storage/google_drive.py",
+        "plugin/uploads/__init__.py",
+        "plugin/uploads/service.py",
+        "plugin/uploads/staging.py",
+        "plugin/uploads/worker.py",
+        "plugin/worker/__init__.py",
+        "plugin/worker/leases.py",
+        "plugin/worker/main.py",
+        "plugin/worker_runtime.py",
+        "plugin/working_files/service.py"
+      ]
+    }
+  ]
+}
