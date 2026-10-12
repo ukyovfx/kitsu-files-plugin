@@ -88,6 +88,46 @@ export function createFilesApi(client) {
       return readJson(await client.request('GET', `${ROOT}/tasks/${encodeURIComponent(taskId)}/publish-options`))
     },
 
+    async getTaskOutputPackageOptions(taskId) {
+      if (!taskId) throw new TypeError('A Task ID is required')
+      return readJson(await client.request('GET', `${ROOT}/tasks/${encodeURIComponent(taskId)}/output-package-options`))
+    },
+
+    async listTaskStorageObjects(taskId, parentId, pageToken) {
+      if (!taskId) throw new TypeError('A Task ID is required')
+      const query = new URLSearchParams()
+      if (parentId) query.set('parent_id', parentId)
+      if (pageToken) query.set('page_token', pageToken)
+      return readJson(await client.request('GET', `${ROOT}/tasks/${encodeURIComponent(taskId)}/storage-objects?${query}`))
+    },
+
+    async listTaskOutputPackages(taskId, offset = 0) {
+      if (!taskId) throw new TypeError('A Task ID is required')
+      const query = new URLSearchParams({ limit: '50', offset: String(offset) })
+      return readJson(await client.request('GET', `${ROOT}/tasks/${encodeURIComponent(taskId)}/output-packages?${query}`))
+    },
+
+    async createTaskOutputPackage(taskId, descriptor, idempotencyKey) {
+      if (!taskId || !descriptor?.output_type_id || !descriptor?.package_type || !descriptor?.files?.length) {
+        throw new TypeError('A Task, Output Type, package type and at least one file are required')
+      }
+      if (!idempotencyKey) throw new TypeError('An idempotency key is required')
+      return readJson(await mutation('POST', `${ROOT}/tasks/${encodeURIComponent(taskId)}/output-packages`, {
+        headers: { 'Content-Type': 'application/json', 'Idempotency-Key': idempotencyKey },
+        body: JSON.stringify(descriptor)
+      }))
+    },
+
+    async listOutputPackageFiles(packageId, offset = 0) {
+      if (!packageId) throw new TypeError('An Output Package ID is required')
+      const query = new URLSearchParams({ limit: '200', offset: String(offset) })
+      return readJson(await client.request('GET', `${ROOT}/output-packages/${encodeURIComponent(packageId)}/files?${query}`))
+    },
+
+    outputPackageDownloadUrl(fileId) {
+      return `/api/${ROOT}/output-package-files/${encodeURIComponent(fileId)}/download`
+    },
+
     async listOutputFamilies(productionId) {
       if (!productionId) throw new TypeError('A Production ID is required')
       return readJson(await client.request('GET', `${ROOT}/productions/${encodeURIComponent(productionId)}/output-families`))

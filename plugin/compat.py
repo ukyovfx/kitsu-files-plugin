@@ -2,8 +2,8 @@
 
 HOST_KITSU_VERSION = "1.0.70"
 HOST_ZOU_VERSION = "1.0.94"
-SCHEMA_EPOCH = 6
-WORKER_BUILD = "6"
+SCHEMA_EPOCH = 7
+WORKER_BUILD = "7"
 
 
 def assert_runtime_host() -> None:

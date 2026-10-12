@@ -48,7 +48,7 @@ class FakeStorage:
             raise AmbiguousOutcome("provider accepted create but response was lost")
         return obj
 
-    def upload(self, source, reserved_id, size, sha256, parent_id):
+    def upload(self, source, reserved_id, size, sha256, parent_id, *, file_name=None):
         self.calls.append(("upload", reserved_id))
         body = source.read()
         if len(body) != size or hashlib.sha256(body).hexdigest() != sha256:
@@ -56,7 +56,7 @@ class FakeStorage:
         with self.lock:
             if reserved_id in self.objects:
                 raise AlreadyExists(reserved_id)
-            obj = StorageObject(reserved_id, parent_id, size, sha256, self.drive_id, "application/octet-stream")
+            obj = StorageObject(reserved_id, parent_id, size, sha256, self.drive_id, "application/octet-stream", name=file_name)
             self.objects[reserved_id] = obj
             self._bytes[reserved_id] = bytes(body)
         if self.fail_upload_after_write:
@@ -174,7 +174,7 @@ class PersistentFakeStorage(FakeStorage):
                     self._write_blob(reserved_id, b"")
             self._persist()
 
-    def upload(self, source, reserved_id, size, sha256, parent_id):
+    def upload(self, source, reserved_id, size, sha256, parent_id, *, file_name=None):
         body = source.read()
         existing = self.get(reserved_id)
         if existing is not None:
@@ -182,7 +182,7 @@ class PersistentFakeStorage(FakeStorage):
                 return existing
             raise AlreadyExists(reserved_id)
         try:
-            result = super().upload(io.BytesIO(body), reserved_id, size, sha256, parent_id)
+            result = super().upload(io.BytesIO(body), reserved_id, size, sha256, parent_id, file_name=file_name)
         except AmbiguousOutcome:
             obj = self.get(reserved_id)
             if obj is not None and obj.size == size:

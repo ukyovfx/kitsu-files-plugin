@@ -7,6 +7,7 @@ MIGRATION = ROOT / "plugin/migrations/versions/0001_plugin_foundation.py"
 FOLDER_BINDING_MIGRATION = ROOT / "plugin/migrations/versions/0005_unique_folder_provider_binding.py"
 PUBLISH_SOURCE_MIGRATION = ROOT / "plugin/migrations/versions/0006_publish_source_and_destination.py"
 TASK_OUTPUT_MIGRATION = ROOT / "plugin/migrations/versions/0007_task_outputs_and_department_handoffs.py"
+OUTPUT_PACKAGE_QC_MIGRATION = ROOT / "plugin/migrations/versions/0008_output_package_qc.py"
 
 
 def test_plugin_tables_are_namespaced_and_nullable_folder_identity_is_avoided():
@@ -87,3 +88,27 @@ def test_task_outputs_migration_keeps_department_targets_and_latest_pointers_sep
     assert "has_package_rows or has_team_handoff_rows" in downgrade
     assert "restore a consistent pre-migration snapshot" in downgrade
     assert "schema_epoch = 5" in downgrade
+
+
+def test_output_package_qc_is_plugin_owned_and_downgrade_fails_closed_with_data():
+    source = OUTPUT_PACKAGE_QC_MIGRATION.read_text()
+    assert 'revision = "vxf_0008"' in source
+    assert 'down_revision = "vxf_0007"' in source
+    assert 'sa.Column("qc_state", sa.String(24), nullable=False, server_default="pending")' in source
+    assert 'sa.Column("qc_report", postgresql.JSONB(), nullable=True)' in source
+    assert source.count('sa.Column("provider_folder_id", sa.String(255), nullable=True)') == 1
+    assert source.count('sa.Column("source_provider_object_id", sa.String(255), nullable=True)') == 1
+    assert source.count('op.drop_column("plugin_vfx_files_output_package_file", "source_provider_object_id")') == 1
+    upgrade = source.split("def downgrade():", 1)[0]
+    assert upgrade.index("DROP TRIGGER plugin_vfx_files_output_package_file_immutable") < upgrade.index(
+        "UPDATE plugin_vfx_files_output_package_file SET source_provider_object_id"
+    )
+    assert '"CREATE TRIGGER plugin_vfx_files_output_package_file_immutable "' in upgrade
+    assert 'op.alter_column("plugin_vfx_files_output_package_file", "sha256", existing_type=sa.String(64), nullable=True)' in source
+    assert "provider-readback digest" in source
+    assert "CREATE OR REPLACE FUNCTION plugin_vfx_files_reject_output_file_mutation()" in source
+    assert "schema_epoch = 7" in source
+    downgrade = source.split("def downgrade():", 1)[1]
+    assert "has_package_rows" in downgrade
+    assert "restore a consistent pre-migration snapshot" in downgrade
+    assert "schema_epoch = 6" in downgrade

@@ -127,7 +127,7 @@ class GoogleDriveStorageAdapter:
             raise AmbiguousOutcome("Drive folder create result is not confirmed")
         return self._object(response.json())
 
-    def upload(self, source: BinaryIO, reserved_id: str, size: int, sha256_hex: str, parent_id: str):
+    def upload(self, source: BinaryIO, reserved_id: str, size: int, sha256_hex: str, parent_id: str, *, file_name: str | None = None):
         if not self._root_verified:
             raise PermissionFailure("Allowed root must be verified before upload")
         if not self._root_can_add_children:
@@ -148,7 +148,12 @@ class GoogleDriveStorageAdapter:
         if counted != size or digest.hexdigest() != sha256_hex:
             raise ValueError("Upload source does not match expected size and SHA-256")
         boundary = f"vfx-files-{uuid4().hex}"
-        metadata = json.dumps({"id": reserved_id, "parents": [parent_id]}).encode("utf-8")
+        metadata_value = {"id": reserved_id, "parents": [parent_id]}
+        if file_name is not None:
+            if not isinstance(file_name, str) or not file_name.strip() or len(file_name) > 1024:
+                raise ValueError("Drive file name is invalid")
+            metadata_value["name"] = file_name
+        metadata = json.dumps(metadata_value).encode("utf-8")
         prefix = (
             f"--{boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n".encode()
             + metadata
@@ -290,7 +295,7 @@ class GoogleDriveStorageAdapter:
         return StorageObject(
             object_id=data["id"],
             parent_id=(data.get("parents") or [None])[0],
-            size=int(data["size"]) if data.get("size") is not None else 0,
+            size=int(data["size"]) if data.get("size") is not None else None,
             sha256=None,
             drive_id=data.get("driveId"),
             mime_type=data.get("mimeType"),

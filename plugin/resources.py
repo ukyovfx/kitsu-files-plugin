@@ -220,6 +220,9 @@ class OutputFamilies(MethodView):
             if binding is None:
                 abort(400, description="Publish destination must be a ready Production folder binding")
             adapter = _storage_adapter(connection)
+            capabilities = adapter.capabilities(connection.allowed_root_id)
+            if not capabilities.root_visible:
+                abort(409, description="Allowed storage root is unavailable")
             folder = adapter.get(publish_folder_id)
             if folder is None or folder.trashed or folder.mime_type != "folder":
                 abort(400, description="Publish destination folder is unavailable")
@@ -270,6 +273,9 @@ class OutputFamilyActivation(MethodView):
         if binding is None:
             abort(409)
         adapter = _storage_adapter(connection)
+        capabilities = adapter.capabilities(connection.allowed_root_id)
+        if not capabilities.root_visible:
+            abort(409, description="Allowed storage root is unavailable")
         folder = adapter.get(family.publish_folder_id)
         if folder is None or folder.trashed or folder.mime_type != "folder":
             abort(409)
@@ -278,6 +284,340 @@ class OutputFamilyActivation(MethodView):
         current_app.extensions["sqlalchemy"].session.flush()
         current_app.extensions["sqlalchemy"].session.commit()
         return {"id": str(family.id), "enabled": True}, 200
+
+
+class TaskOutputPackages(MethodView):
+    @jwt_required()
+    def get(self, task_id):
+        _require_enabled()
+        _assert_compatible()
+        try:
+            parsed_task_id = UUID(str(task_id))
+            from zou.app.models.task import Task
+            task = Task.query.filter_by(id=parsed_task_id).one_or_none()
+            if task is None:
+                abort(404)
+            actor = _request_actor(str(task.project_id))
+            scope = _resolve_scope(actor, str(task.project_id), str(task.id))
+            authorize(actor, Capability.READ, scope)
+            from .compat import authorize_task_read
+            if not authorize_task_read(actor, parsed_task_id):
+                abort(403)
+        except (PermissionDenied, NotFound, ValueError, TypeError):
+            abort(403)
+        from sqlalchemy import select
+        from .models import OutputPackage, OutputPackageFile, OutputPackagePointer
+        try:
+            limit = int(request.args.get("limit", 50))
+            offset = int(request.args.get("offset", 0))
+        except ValueError:
+            abort(400)
+        if not 1 <= limit <= 100 or not 0 <= offset <= 1000000:
+            abort(400)
+        rows = OutputPackage.query.filter_by(task_id=parsed_task_id).order_by(
+            OutputPackage.created_at.desc(), OutputPackage.id.desc()
+        ).limit(limit).offset(offset).all()
+        jobs = {}
+        if rows:
+            from .models import Job
+            for job in Job.query.filter(Job.payload["package_id"].astext.in_([str(row.id) for row in rows])).all():
+                jobs[job.payload["package_id"]] = job
+        pointers = {
+            (str(row.output_type_id), row.package_type): row
+            for row in OutputPackagePointer.query.filter_by(task_id=parsed_task_id).all()
+        }
+        return [{
+            "id": str(row.id), "production_id": str(row.production_id),
+            "entity_id": str(row.entity_id), "task_id": str(row.task_id),
+            "output_type_id": str(row.output_type_id), "package_type": row.package_type,
+            "version": row.version, "state": row.state, "qc_state": row.qc_state,
+            "job_state": jobs[str(row.id)].state if str(row.id) in jobs else None,
+            "job_error_code": jobs[str(row.id)].last_error_code if str(row.id) in jobs else None,
+            "qc_report": row.qc_report, "manifest_sha256": row.manifest_sha256,
+            "file_count": OutputPackageFile.query.filter_by(package_id=row.id).count(),
+            "manifest_summary": {
+                key: value for key, value in json.loads(row.manifest_bytes).items() if key != "files"
+            },
+            "latest_working": pointers.get((str(row.output_type_id), row.package_type)).latest_output_id == row.id if pointers.get((str(row.output_type_id), row.package_type)) else False,
+            "latest_published": pointers.get((str(row.output_type_id), row.package_type)).latest_published_id == row.id if pointers.get((str(row.output_type_id), row.package_type)) else False,
+            "latest_approved": pointers.get((str(row.output_type_id), row.package_type)).latest_approved_id == row.id if pointers.get((str(row.output_type_id), row.package_type)) else False,
+            "latest_final_delivery": pointers.get((str(row.output_type_id), row.package_type)).latest_final_delivery_id == row.id if pointers.get((str(row.output_type_id), row.package_type)) else False,
+        } for row in rows]
+
+    @jwt_required()
+    def post(self, task_id):
+        _require_enabled()
+        _assert_compatible()
+        try:
+            _require_mutation_origin()
+            parsed_task_id = UUID(str(task_id))
+            actor, scope = _task_actor_scope(parsed_task_id)
+            from .compat import authorize_task_mutation
+            if not authorize_task_mutation(actor, parsed_task_id, "publish"):
+                abort(403)
+            payload = request.get_json(silent=False) or {}
+            output_type_id = UUID(str(payload.get("output_type_id", "")))
+            package_type = payload.get("package_type")
+            source_revision_id = UUID(str(payload["source_working_revision_id"])) if payload.get("source_working_revision_id") else None
+            frame_start = payload.get("frame_start")
+            frame_end = payload.get("frame_end")
+            color_space = payload.get("color_space")
+            entries = payload.get("files")
+            if not isinstance(entries, list) or not 1 <= len(entries) <= 10000:
+                abort(400)
+            key = request.headers.get("Idempotency-Key", "").strip()
+            if not key or len(key) > 128:
+                abort(400)
+        except (PermissionDenied, NotFound, ValueError, TypeError, AttributeError):
+            abort(403)
+
+        from .models import OutputPackage, StorageConnection
+        from .packages.manifest import canonical_package_manifest
+        from .packages.service import PackageConflict, reserve_output_package
+        from zou.app.models.output_type import OutputType
+        from zou.app.models.task import Task
+        task = Task.query.filter_by(id=parsed_task_id).one_or_none()
+        if task is None or task.project_id != scope.production_id:
+            abort(404)
+        if current_app.extensions["sqlalchemy"].session.get(OutputType, output_type_id) is None:
+            abort(400, description="Output Type must be an existing Kitsu record")
+        connection = _production_storage_connection(scope.production_id)
+        adapter = _storage_adapter(connection)
+        capabilities = adapter.capabilities(connection.allowed_root_id)
+        if not capabilities.root_visible or not capabilities.can_add_children:
+            abort(409, description="Allowed storage root is not available for package files")
+        normalized = []
+        total_bytes = 0
+        try:
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    abort(400)
+                provider_id = entry.get("provider_object_id")
+                if not isinstance(provider_id, str) or not provider_id or len(provider_id) > 255:
+                    abort(400)
+                obj = adapter.get(provider_id)
+                if obj is None or obj.object_id != provider_id or obj.trashed or obj.mime_type == "folder" or obj.parent_id is None:
+                    abort(404)
+                adapter.assert_parent_within_root(obj.parent_id)
+                if obj.size is None:
+                    abort(409, description="Provider must supply the file size before package registration")
+                requested_sha256 = entry.get("sha256")
+                if requested_sha256 and obj.sha256 and requested_sha256.lower() != obj.sha256.lower():
+                    abort(409, description="Provided SHA-256 differs from provider metadata")
+                total_bytes += obj.size
+                normalized.append({
+                    "source_provider_object_id": obj.object_id, "file_name": obj.name or "unnamed",
+                    "byte_count": obj.size, "sha256": requested_sha256 or obj.sha256,
+                    "frame_number": entry.get("frame_number"),
+                    "file_format": entry.get("file_format"), "color_space": entry.get("color_space"),
+                    "is_proxy": entry.get("is_proxy", False),
+                })
+            if total_bytes + connection.used_bytes > connection.quota_bytes:
+                abort(413, description="Output Package exceeds the Production storage quota")
+            if source_revision_id is not None:
+                from .models import WorkingRevision
+                source = WorkingRevision.query.filter_by(id=source_revision_id).one_or_none()
+                if (source is None or source.task_id != parsed_task_id or source.production_id != scope.production_id
+                        or source.state != "completed"):
+                    abort(400, description="Source Working revision must be completed in the same Task and Production")
+            # Validate before opening the reservation transaction; the service repeats canonical encoding.
+            canonical_package_manifest(
+                output_type_id=str(output_type_id), package_type=package_type, files=normalized,
+                frame_start=frame_start, frame_end=frame_end, color_space=color_space,
+            )
+            from sqlalchemy.orm import sessionmaker
+            sessions = sessionmaker(bind=current_app.extensions["sqlalchemy"].engine, expire_on_commit=False)
+            result = reserve_output_package(
+                sessions, task_id=parsed_task_id, production_id=scope.production_id,
+                entity_id=task.entity_id, output_type_id=output_type_id,
+                package_type=package_type, actor_id=actor.actor_id, idempotency_key=key,
+                files=normalized, frame_start=frame_start, frame_end=frame_end,
+                color_space=color_space, source_working_revision_id=source_revision_id,
+            )
+        except (PermissionDenied, NotFound):
+            abort(403)
+        except PackageConflict as error:
+            abort(409, description=str(error))
+        except (ValueError, TypeError) as error:
+            abort(400, description=str(error))
+        return {"id": str(result.package_id), "job_id": str(result.job_id), "version": result.version, "state": result.state}, 202
+
+
+class TaskOutputPackageOptions(MethodView):
+    @jwt_required()
+    def get(self, task_id):
+        _require_enabled()
+        _assert_compatible()
+        try:
+            parsed_task_id = UUID(str(task_id))
+            from zou.app.models.output_type import OutputType
+            from zou.app.models.task import Task
+            task = Task.query.filter_by(id=parsed_task_id).one_or_none()
+            if task is None:
+                abort(404)
+            actor = _request_actor(str(task.project_id))
+            scope = _resolve_scope(actor, str(task.project_id), str(task.id))
+            authorize(actor, Capability.READ, scope)
+            from .compat import authorize_task_read
+            if not authorize_task_read(actor, task.id):
+                abort(403)
+            connection = _production_storage_connection(scope.production_id)
+        except (PermissionDenied, NotFound):
+            abort(403)
+        except (ValueError, TypeError):
+            abort(404)
+        adapter = _storage_adapter(connection)
+        capabilities = adapter.capabilities(connection.allowed_root_id)
+        if not capabilities.root_visible:
+            abort(409, description="Allowed storage root is unavailable")
+        output_types = OutputType.query.order_by(OutputType.name).limit(500).all()
+        return {
+            "task_id": str(task.id), "production_id": str(task.project_id),
+            "storage_root_id": connection.allowed_root_id,
+            "output_types": [{"id": str(row.id), "name": row.name} for row in output_types],
+        }
+
+
+class TaskStorageObjects(MethodView):
+    @jwt_required()
+    def get(self, task_id):
+        _require_enabled()
+        _assert_compatible()
+        try:
+            parsed_task_id = UUID(str(task_id))
+            from zou.app.models.task import Task
+            task = Task.query.filter_by(id=parsed_task_id).one_or_none()
+            if task is None:
+                abort(404)
+            actor = _request_actor(str(task.project_id))
+            scope = _resolve_scope(actor, str(task.project_id), str(task.id))
+            authorize(actor, Capability.READ, scope)
+            from .compat import authorize_task_read
+            if not authorize_task_read(actor, task.id):
+                abort(403)
+            connection = _production_storage_connection(scope.production_id)
+            adapter = _storage_adapter(connection)
+            capabilities = adapter.capabilities(connection.allowed_root_id)
+            if not capabilities.root_visible:
+                abort(409, description="Allowed storage root is unavailable")
+            parent_id = request.args.get("parent_id") or connection.allowed_root_id
+            if len(parent_id) > 255:
+                abort(400)
+            if parent_id != connection.allowed_root_id:
+                parent = adapter.get(parent_id)
+                if parent is None or parent.trashed or parent.mime_type != "folder":
+                    abort(404)
+            adapter.assert_parent_within_root(parent_id)
+            page_token = request.args.get("page_token")
+            if page_token is not None and len(page_token) > 2048:
+                abort(400)
+            listing = adapter.list_children(parent_id, page_token=page_token)
+        except (PermissionDenied, NotFound):
+            abort(403)
+        except (ValueError, TypeError):
+            abort(404)
+        return {
+            "task_id": str(task.id), "parent_id": parent_id,
+            "items": [{
+                "id": item.object_id, "parent_id": item.parent_id, "name": item.name,
+                "mime_type": item.mime_type, "is_folder": item.mime_type == "folder",
+                "size": item.size, "sha256": item.sha256, "trashed": item.trashed,
+            } for item in listing.items if not item.trashed],
+            "next_page_token": listing.next_page_token,
+            "complete": listing.complete,
+        }
+
+
+class OutputPackageFiles(MethodView):
+    @jwt_required()
+    def get(self, package_id):
+        _require_enabled()
+        _assert_compatible()
+        try:
+            parsed_package_id = UUID(str(package_id))
+            from .models import OutputPackage, OutputPackageFile
+            package = OutputPackage.query.filter_by(id=parsed_package_id).one_or_none()
+            if package is None:
+                abort(404)
+            actor = _request_actor(str(package.production_id))
+            scope = _resolve_scope(actor, str(package.production_id), str(package.task_id))
+            authorize(actor, Capability.READ, scope)
+            from .compat import authorize_task_read
+            if not authorize_task_read(actor, package.task_id):
+                abort(403)
+            limit = int(request.args.get("limit", 200))
+            offset = int(request.args.get("offset", 0))
+            if not 1 <= limit <= 500 or not 0 <= offset <= 10000000:
+                abort(400)
+        except (PermissionDenied, NotFound):
+            abort(403)
+        except (ValueError, TypeError):
+            abort(404)
+        rows = OutputPackageFile.query.filter_by(package_id=package.id).order_by(
+            OutputPackageFile.ordinal
+        ).limit(limit + 1).offset(offset).all()
+        has_more = len(rows) > limit
+        rows = rows[:limit]
+        return {
+            "package_id": str(package.id), "limit": limit, "offset": offset,
+            "next_offset": offset + limit if has_more else None,
+            "files": [{
+                "id": str(row.id), "ordinal": row.ordinal, "file_name": row.file_name,
+                "provider_object_id": row.provider_object_id if package.state == "completed" else None,
+                "frame_number": row.frame_number, "byte_count": row.byte_count,
+                "sha256": row.sha256, "file_format": row.file_format,
+                "color_space": row.color_space, "is_proxy": row.is_proxy,
+                "download_url": f"/api/vfx_files/output-package-files/{row.id}/download" if package.state == "completed" else None,
+            } for row in rows],
+        }
+
+
+class OutputPackageFileDownload(MethodView):
+    @jwt_required()
+    def get(self, package_file_id):
+        _require_enabled()
+        _assert_compatible()
+        try:
+            package_file_uuid = UUID(str(package_file_id))
+            from .models import OutputPackage, OutputPackageFile, StorageConnection
+            file_row = OutputPackageFile.query.filter_by(id=package_file_uuid).one_or_none()
+            package = OutputPackage.query.filter_by(id=file_row.package_id).one_or_none() if file_row else None
+            if package is None or file_row is None or package.state != "completed":
+                abort(404)
+            actor = _request_actor(str(package.production_id))
+            scope = _resolve_scope(actor, str(package.production_id), str(package.task_id))
+            authorize(actor, Capability.READ, scope)
+            from .compat import authorize_task_read
+            if not authorize_task_read(actor, package.task_id):
+                abort(403)
+            connection = _production_storage_connection(package.production_id)
+            adapter = _storage_adapter(connection)
+            capabilities = adapter.capabilities(connection.allowed_root_id)
+            if not capabilities.root_visible:
+                abort(403)
+            obj = adapter.get(file_row.provider_object_id)
+            if obj is None or obj.trashed or obj.parent_id is None:
+                abort(404)
+            adapter.assert_parent_within_root(obj.parent_id)
+            if not adapter.verify(file_row.provider_object_id, file_row.byte_count, file_row.sha256):
+                abort(409, description="Output Package file failed integrity verification")
+            stream = tempfile.SpooledTemporaryFile(max_size=8 * 1024 * 1024, mode="w+b")
+            try:
+                count, digest = adapter.download_to(file_row.provider_object_id, stream)
+                if count != file_row.byte_count or digest != file_row.sha256:
+                    abort(409, description="Downloaded Output Package file failed integrity verification")
+                stream.seek(0)
+                response = send_file(stream, mimetype="application/octet-stream", as_attachment=True,
+                                     download_name=file_row.file_name, conditional=False)
+                response.call_on_close(stream.close)
+                return response
+            except Exception:
+                stream.close()
+                raise
+        except (PermissionDenied, NotFound):
+            abort(403)
+        except (ValueError, TypeError):
+            abort(404)
 
 
 class TaskPublishes(MethodView):
@@ -920,6 +1260,9 @@ class WorkingFileDownload(MethodView):
             if connection is None or not file_row.provider_object_id:
                 abort(404)
             adapter = _storage_adapter(connection)
+            capabilities = adapter.capabilities(connection.allowed_root_id)
+            if not capabilities.root_visible:
+                abort(403)
             provider_object = adapter.get(file_row.provider_object_id)
             if provider_object is None or provider_object.trashed or provider_object.parent_id is None:
                 abort(404)
@@ -1433,6 +1776,11 @@ routes = [
     ("/publishes/<publish_id>/handoffs", HandoffCreate),
     ("/productions/<production_id>/output-families", OutputFamilies),
     ("/productions/<production_id>/output-families/<family_id>/activate", OutputFamilyActivation),
+    ("/tasks/<task_id>/output-packages", TaskOutputPackages),
+    ("/tasks/<task_id>/output-package-options", TaskOutputPackageOptions),
+    ("/tasks/<task_id>/storage-objects", TaskStorageObjects),
+    ("/output-packages/<package_id>/files", OutputPackageFiles),
+    ("/output-package-files/<package_file_id>/download", OutputPackageFileDownload),
     ("/tasks/<task_id>/publishes", TaskPublishes),
     ("/tasks/<task_id>/publish-options", TaskPublishOptions),
     ("/tasks/<task_id>/uploads", TaskUploads),

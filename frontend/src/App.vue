@@ -3,6 +3,7 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import HandoffPanel from './components/HandoffPanel.vue'
 import PublishList from './components/PublishList.vue'
 import PublishWorkflow from './components/PublishWorkflow.vue'
+import OutputPackagePanel from './components/OutputPackagePanel.vue'
 import SharedTemplateSetup from './components/SharedTemplateSetup.vue'
 import UploadPanel from './components/UploadPanel.vue'
 import { createRequestGeneration } from './taskContext.js'
@@ -142,6 +143,7 @@ onUnmounted(() => requests.invalidate())
         <p v-else class="muted">No verified Task folder bindings are ready yet. Folder names alone are never used to reconnect a binding.</p>
       </section>
       <UploadPanel :enabled="overview.upload_ready" :tasks="overview.tasks" :fixed-task-id="taskId" :api="api" @uploaded="load" />
+      <OutputPackagePanel v-if="taskId" :task-id="taskId" :api="api" @changed="load" />
       <PublishWorkflow :production-id="productionId" :tasks="overview.tasks" :publishes="overview.publishes" :fixed-task-id="taskId" :api="api" @changed="load" />
       <SharedTemplateSetup v-if="!overview.task_id" :production-id="productionId" :tasks="overview.tasks" :api="api" />
       <div class="content-grid">

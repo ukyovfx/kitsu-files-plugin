@@ -52,8 +52,10 @@
 
 - [x] Add Output Package/version/file models separately from native OutputFile revisions and independent latest pointer columns.
 - [x] Add manifest validation for stable provider object IDs, checksums, explicit frame ranges, missing frames and optional format/color metadata.
-- [ ] Add package reservation/API, resumable transfer worker, provider readback, QC/approval integration and pointer advancement. This is not implemented in this increment.
-- [ ] Test low-res and final EXR sequence fixtures, gaps, v001/v002 allocation, partial transfer restart and immutable downloads end-to-end.
+- [x] Add Task-scoped package reservation/list/page/download API, fenced worker copy to reserved immutable provider IDs, SHA-256 readback, sequence QC evidence and a separate Latest Working package pointer.
+- [ ] Integrate package versions with native Zou OutputFile revision reconciliation, Publish/Approval and Latest Published/Approved/Final Delivery pointers; preserve independent plugin and Zou numbering.
+- [ ] Add multi-recipient package handoffs with per-Task Accept/Needs Fix and immutable revision history.
+- [ ] Test low-res and final EXR sequence fixtures, gaps, v001/v002 allocation, interrupted transfer recovery and immutable downloads against pinned PostgreSQL/Zou and installed Files UI. Current host-only test is skipped locally because Zou is unavailable.
 
 ### Task 4: ID-bound folder sync and KitsuSync adapter contract
 
