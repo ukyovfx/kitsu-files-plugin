@@ -76,6 +76,7 @@ def test_removal_is_project_scoped_and_preserves_backup_directories():
     assert "docker system prune" not in remove
     assert "-Recurse" not in remove
     assert "backup directories were preserved" in remove
+    assert "@('--profile', 'worker', 'down', '--volumes', '--remove-orphans')" in remove
 
 
 def test_init_and_build_require_clean_committed_source_for_image_provenance():

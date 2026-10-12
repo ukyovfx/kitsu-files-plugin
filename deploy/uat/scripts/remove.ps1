@@ -12,7 +12,7 @@ foreach ($id in $ids) {
     $owner = (& docker inspect --format '{{ index .Config.Labels "com.docker.compose.project" }}' $id).Trim()
     if ($LASTEXITCODE -ne 0 -or $owner -cne $ctx.Project) { throw 'A container did not carry the exact UAT project label; refusing removal.' }
 }
-Invoke-UatCompose $ctx @('down', '--volumes', '--remove-orphans')
+Invoke-UatCompose $ctx @('--profile', 'worker', 'down', '--volumes', '--remove-orphans')
 foreach ($path in @($ctx.EnvFile, (Join-Path $ctx.Local 'ACCOUNTS.txt'))) {
     if (Test-Path -LiteralPath $path -PathType Leaf) { Remove-Item -LiteralPath $path -Force }
 }
