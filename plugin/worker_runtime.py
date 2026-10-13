@@ -107,6 +107,9 @@ def build_runtime(app):
     from .compat import SCHEMA_EPOCH, WORKER_BUILD
     from .folders.worker import make_task_folder_handler
     from .integrations.worker import make_hierarchy_sync_handler
+    from .integrations.event_delivery import (
+        HttpsEventReceiver, SqlAlchemyEventOutbox, load_event_delivery_config,
+    )
     from .integrations.oauth import make_drive_credential_revoke_handler
     from .jobs.queue import PostgresJobQueue
     from .packages.worker import make_output_package_handler
@@ -120,6 +123,7 @@ def build_runtime(app):
 
     sessions = sessionmaker(bind=db.engine, expire_on_commit=False)
     queue = PostgresJobQueue(sessions)
+    event_config = load_event_delivery_config()
     adapter_factory = make_worker_storage_adapter_factory(
         storage_mode,
         fake_storage_path=os.environ.get("VFX_FILES_FAKE_STORAGE_ROOT"),
@@ -146,6 +150,10 @@ def build_runtime(app):
             "sync_hierarchy": make_hierarchy_sync_handler(sessions, adapter_factory),
             "revoke_drive_credential": make_drive_credential_revoke_handler(sessions, app.config, app.extensions),
         },
+        event_delivery=(
+            (SqlAlchemyEventOutbox(sessions), HttpsEventReceiver(), event_config)
+            if event_config is not None else None
+        ),
     )
 
 

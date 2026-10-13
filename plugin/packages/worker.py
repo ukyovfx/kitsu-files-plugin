@@ -8,7 +8,7 @@ from uuid import UUID
 from sqlalchemy import func, select
 
 from ..jobs.queue import JobResult
-from ..models import Job, OutputPackage, OutputPackageFile, OutputPackagePointer, StorageConnection
+from ..models import Job, OutputPackage, OutputPackageFile, OutputPackagePointer
 from ..storage.base import (
     AlreadyExists,
     AmbiguousOutcome,
@@ -65,22 +65,19 @@ def make_output_package_handler(session_factory, adapter_factory):
                 if package is not None and package.state == "completed":
                     return JobResult("completed")
                 return JobResult("failed", error_code="package_not_verifiable")
-            connections = session.scalars(select(StorageConnection).where(
-                StorageConnection.production_id == package.production_id,
-                StorageConnection.enabled.is_(True),
-            ).limit(2)).all()
+            from ..integrations.storage_authority import selected_storage_connection
+
+            connection = selected_storage_connection(session, package.production_id)
             if (task is None or task.id != package.task_id or task.project_id != package.production_id
                     or task.entity_id != package.entity_id or task_id != package.task_id
                     or str(job.payload.get("actor_id")) != str(package.created_by)
-                    or len(connections) != 1):
+                    or connection is None):
                 return JobResult("failed", error_code="output_package_scope_unavailable")
-            connection = connections[0]
             if not connection.allowed_root_id:
                 return JobResult("failed", error_code="output_package_root_unavailable")
             expected_manifest = bytes(package.manifest_bytes)
             expected_manifest_sha256 = package.manifest_sha256
             folder_id = package.provider_folder_id
-            package_state = package.state
             files = session.scalars(select(OutputPackageFile).where(
                 OutputPackageFile.package_id == package.id,
             ).order_by(OutputPackageFile.ordinal)).all()
@@ -110,6 +107,10 @@ def make_output_package_handler(session_factory, adapter_factory):
             return JobResult("failed", error_code="output_package_manifest_invalid")
 
         adapter = resolve_storage_adapter(adapter_factory, connection)
+        from ..integrations.storage_authority import is_selected_storage_connection
+
+        if not is_selected_storage_connection(session_factory, package.production_id, connection.id):
+            return JobResult("blocked_authorization", error_code="storage_selection_changed")
         capabilities = adapter.capabilities(allowed_root_id)
         if not capabilities.root_visible or not capabilities.can_add_children:
             raise PermissionFailure("Output Package storage root is unavailable for writes")
@@ -120,6 +121,8 @@ def make_output_package_handler(session_factory, adapter_factory):
             if not _persist_reserved_id(session_factory, job, package_id=package_id, provider_id=folder_id):
                 return JobResult("retry", error_code="lease_lost_before_package_folder_reservation")
         folder_name = f"output-package-{package_id.hex}"
+        if not is_selected_storage_connection(session_factory, package.production_id, connection.id):
+            return JobResult("blocked_authorization", error_code="storage_selection_changed")
         try:
             folder = adapter.create_folder(
                 allowed_root_id, folder_id,
@@ -168,6 +171,8 @@ def make_output_package_handler(session_factory, adapter_factory):
                         or (expected_sha256 and expected_sha256 != source_sha256)):
                     return JobResult("reconcile_required", error_code="output_package_source_readback_failed")
                 media.seek(0)
+                if not is_selected_storage_connection(session_factory, package.production_id, connection.id):
+                    return JobResult("blocked_authorization", error_code="storage_selection_changed")
                 try:
                     adapter.upload(media, target_id, source_size, source_sha256, folder_id, file_name=row["file_name"])
                 except (AlreadyExists, AmbiguousOutcome):
@@ -196,6 +201,11 @@ def make_output_package_handler(session_factory, adapter_factory):
             package = session.scalar(select(OutputPackage).where(OutputPackage.id == package_id).with_for_update())
             if not _lease_is_current(session, job, lease) or package is None:
                 return JobResult("retry", error_code="lease_lost_after_package_verify")
+            from ..integrations.storage_authority import selected_storage_connection
+
+            selected = selected_storage_connection(session, package.production_id)
+            if selected is None or selected.id != connection.id:
+                return JobResult("blocked_authorization", error_code="storage_selection_changed")
             if package.state == "completed":
                 return JobResult("completed")
             for file_id, target_id, sha256 in verified_files:
@@ -223,6 +233,15 @@ def make_output_package_handler(session_factory, adapter_factory):
             )) if pointer and pointer.latest_output_id else None
             if pointer and (current_version is None or package.version > current_version):
                 pointer.latest_output_id = package.id
+            session.flush()
+            session.refresh(package, attribute_names=["completed_at"])
+            from ..integrations.event_producers import append_output_package_event
+
+            append_output_package_event(
+                session, package, event_type="output_package.ready",
+                selected_connection_id=connection.id,
+                expected_activation_epoch=package.event_activation_epoch,
+            )
         return JobResult("completed")
 
     return verify_package

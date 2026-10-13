@@ -12,7 +12,7 @@ def test_template_discovery_config_and_activation_are_production_scoped(
     authenticated_plugin_client, synthetic_upload_task, zou_db_factory, tmp_path, monkeypatch
 ):
     from sqlalchemy import select
-    from plugin.models import FolderBinding, Job, SharedTemplateConfiguration
+    from plugin.models import FolderBinding, Job, KitsuSyncDesiredConfiguration, KitsuSyncEventOutbox, SharedTemplateConfiguration
     from plugin.storage.fake import PersistentFakeStorage
     from zou.app.models.project import ProjectPersonLink
 
@@ -78,6 +78,12 @@ def test_template_discovery_config_and_activation_are_production_scoped(
     )
     assert activate.status_code == 200, activate.get_data(as_text=True)
     assert activate.json["enabled"] is True
+    with zou_db_factory.begin() as session:
+        desired = session.get(KitsuSyncDesiredConfiguration, production_id)
+        body = dict(desired.desired_config)
+        body["activation"] = {"enabled": True, "activated_at": "2026-10-13T00:00:00Z", "notification_epoch": 1}
+        desired.notification_epoch = 1
+        desired.desired_config = body
 
     provision_route = f"/plugins/vfx_files/productions/{production_id}/tasks/{_task_id}/shared-folders"
     queued = client.post(provision_route, json={}, headers=headers)
@@ -152,6 +158,13 @@ def test_template_discovery_config_and_activation_are_production_scoped(
         bindings = session.scalars(select(FolderBinding).where(FolderBinding.storage_connection_id == connection_id)).all()
         assert len(bindings) == 2
         assert all(binding.state == "ready" and binding.provider_folder_id for binding in bindings)
+        events = session.scalars(select(KitsuSyncEventOutbox).where(
+            KitsuSyncEventOutbox.production_id == production_id,
+        )).all()
+        assert len(events) == 1
+        assert events[0].event_type == "folder.provisioning.completed"
+        assert events[0].storage_connection_id == connection_id
+        assert events[0].payload["activation_epoch"] == 1
         task_binding = next(binding for binding in bindings if binding.canonical_scope_key.endswith(":task:" + str(_task_id)))
         shot_binding = next(binding for binding in bindings if binding.canonical_scope_key.endswith(":shot:" + str(_entity)))
         assert worker_storage.get(task_binding.provider_folder_id).parent_id == shot_binding.provider_folder_id

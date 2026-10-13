@@ -156,12 +156,14 @@ def _production_provision_scope(production_id):
 
 
 def _production_storage_connection(production_id):
-    from .models import StorageConnection
+    from .integrations.storage_authority import selected_storage_connection
 
-    connections = StorageConnection.query.filter_by(production_id=production_id, enabled=True).limit(2).all()
-    if len(connections) != 1:
-        raise ServiceUnavailable("Production must have exactly one enabled StorageConnection")
-    return connections[0]
+    connection = selected_storage_connection(
+        current_app.extensions["sqlalchemy"].session, production_id,
+    )
+    if connection is None:
+        raise ServiceUnavailable("Select and verify the Production Drive connection through KitsuSync first")
+    return connection
 
 
 def _template_tree_payload(tree):
@@ -199,7 +201,7 @@ class OutputFamilies(MethodView):
             _require_mutation_origin()
             actor, scope = _production_provision_scope(UUID(str(production_id)))
             payload = request.get_json(silent=False) or {}
-            from .models import FolderBinding, OutputFamilyMapping, StorageConnection
+            from .models import FolderBinding, OutputFamilyMapping
             from zou.app.models.file_status import FileStatus
             from zou.app.models.output_type import OutputType
             from zou.app.models.task_type import TaskType
@@ -223,10 +225,7 @@ class OutputFamilies(MethodView):
                 or db_ext.session.get(FileStatus, file_status_id) is None
             ):
                 abort(400, description="Output type, Task type and file status must be valid Kitsu records")
-            connections = StorageConnection.query.filter_by(production_id=scope.production_id, enabled=True).limit(2).all()
-            if len(connections) != 1:
-                raise ServiceUnavailable("Production must have exactly one enabled StorageConnection")
-            connection = connections[0]
+            connection = _production_storage_connection(scope.production_id)
             binding = FolderBinding.query.filter_by(
                 storage_connection_id=connection.id,
                 allowed_root_id=connection.allowed_root_id,
@@ -274,7 +273,7 @@ class OutputFamilyActivation(MethodView):
             family_uuid = UUID(str(family_id))
         except (PermissionDenied, NotFound, ValueError, TypeError):
             abort(403)
-        from .models import FolderBinding, OutputFamilyMapping, StorageConnection
+        from .models import FolderBinding, OutputFamilyMapping
         family = OutputFamilyMapping.query.filter_by(id=family_uuid, production_id=scope.production_id).one_or_none()
         if family is None or not family.publish_folder_id:
             abort(404)
@@ -321,7 +320,6 @@ class TaskOutputPackages(MethodView):
                 abort(403)
         except (PermissionDenied, NotFound, ValueError, TypeError):
             abort(403)
-        from sqlalchemy import select
         from .models import OutputPackage, OutputPackageFile, OutputPackagePointer
         try:
             limit = int(request.args.get("limit", 50))
@@ -387,7 +385,6 @@ class TaskOutputPackages(MethodView):
         except (PermissionDenied, NotFound, ValueError, TypeError, AttributeError):
             abort(403)
 
-        from .models import OutputPackage, StorageConnection
         from .packages.manifest import canonical_package_manifest
         from .packages.service import PackageConflict, reserve_output_package
         from zou.app.models.output_type import OutputType
@@ -446,6 +443,7 @@ class TaskOutputPackages(MethodView):
             result = reserve_output_package(
                 sessions, task_id=parsed_task_id, production_id=scope.production_id,
                 entity_id=task.entity_id, output_type_id=output_type_id,
+                storage_connection_id=connection.id,
                 package_type=package_type, actor_id=actor.actor_id, idempotency_key=key,
                 files=normalized, frame_start=frame_start, frame_end=frame_end,
                 color_space=color_space, source_working_revision_id=source_revision_id,
@@ -598,7 +596,7 @@ class OutputPackageFileDownload(MethodView):
         _assert_compatible()
         try:
             package_file_uuid = UUID(str(package_file_id))
-            from .models import OutputPackage, OutputPackageFile, StorageConnection
+            from .models import OutputPackage, OutputPackageFile
             file_row = OutputPackageFile.query.filter_by(id=package_file_uuid).one_or_none()
             package = OutputPackage.query.filter_by(id=file_row.package_id).one_or_none() if file_row else None
             if package is None or file_row is None or package.state != "completed":
@@ -755,8 +753,8 @@ class ProductionOverview(MethodView):
             abort(404)
         except PermissionDenied:
             abort(403)
-        from sqlalchemy import or_, select
-        from .models import Handoff, Job, OutputFamilyMapping, Publish, PublishPointer, StorageConnection, UploadSession
+        from sqlalchemy import or_
+        from .models import Handoff, Job, OutputFamilyMapping, Publish, PublishPointer, UploadSession
         from zou.app.models.task import Task
 
         if scope.task_id is not None:
@@ -803,10 +801,13 @@ class ProductionOverview(MethodView):
             })
         handoffs = Handoff.query.filter(or_(Handoff.task_id.in_(task_ids), Handoff.recipient_task_id.in_(task_ids))).order_by(Handoff.created_at.desc()).limit(200).all()
         uploads = UploadSession.query.filter(UploadSession.task_id.in_(task_ids)).order_by(UploadSession.created_at.desc()).limit(500).all()
-        storage_connections = StorageConnection.query.filter_by(production_id=scope.production_id, enabled=True).limit(2).all()
+        try:
+            storage_connection = _production_storage_connection(scope.production_id)
+        except ServiceUnavailable:
+            storage_connection = None
         worker_enabled = _setting("VFX_FILES_WORKER_ENABLED", "false") in (True, "true", "1", 1)
         staging_root = _setting("VFX_FILES_STAGING_ROOT")
-        upload_ready = len(storage_connections) == 1 and bool(staging_root) and worker_enabled and not tasks_truncated
+        upload_ready = storage_connection is not None and bool(staging_root) and worker_enabled and not tasks_truncated
         return {
             "production_id": str(scope.production_id),
             "task_id": str(scope.task_id) if scope.task_id else None,
@@ -1123,16 +1124,13 @@ class TaskUploads(MethodView):
             file_name = str(payload.get("file_name", "unnamed"))
         except (PermissionDenied, NotFound, ValueError, TypeError):
             abort(403)
-        from .models import StorageConnection
-        connections = StorageConnection.query.filter_by(production_id=scope.production_id, enabled=True).limit(2).all()
-        if len(connections) != 1:
-            raise ServiceUnavailable("Production must have exactly one enabled StorageConnection")
+        connection = _production_storage_connection(scope.production_id)
         from .uploads.service import UploadDenied
         try:
             created = _upload_service().create_upload(
                 task_id=parsed_task_id,
                 actor_id=actor.actor_id,
-                storage_connection_id=connections[0].id,
+                storage_connection_id=connection.id,
                 size=size,
                 sha256_hex=sha256_hex,
                 file_name=file_name,
@@ -1217,10 +1215,7 @@ class TaskWorkingRevisions(MethodView):
             parsed_task_id = UUID(str(task_id))
             actor, scope = _task_actor_scope(parsed_task_id)
             payload = request.get_json(silent=False) or {}
-            from .models import StorageConnection
-            connections = StorageConnection.query.filter_by(production_id=scope.production_id, enabled=True).limit(2).all()
-            if len(connections) != 1:
-                raise ServiceUnavailable("Production must have exactly one enabled StorageConnection")
+            connection = _production_storage_connection(scope.production_id)
             from sqlalchemy.orm import sessionmaker
             db = current_app.extensions["sqlalchemy"]
             sessions = sessionmaker(bind=db.engine, expire_on_commit=False)
@@ -1230,7 +1225,7 @@ class TaskWorkingRevisions(MethodView):
                 sessions,
                 production_id=scope.production_id,
                 task_id=parsed_task_id,
-                storage_connection_id=connections[0].id,
+                storage_connection_id=connection.id,
                 actor_id=actor.actor_id,
                 base_revision_id=UUID(str(payload["base_revision_id"])) if payload.get("base_revision_id") else None,
                 idempotency_key=key,
@@ -1264,7 +1259,7 @@ class WorkingFileDownload(MethodView):
         _assert_compatible()
         try:
             file_uuid = UUID(str(revision_file_id))
-            from .models import StorageConnection, WorkingRevision, WorkingRevisionFile
+            from .models import WorkingRevision, WorkingRevisionFile
             file_row = WorkingRevisionFile.query.filter_by(id=file_uuid).one_or_none()
             revision = WorkingRevision.query.filter_by(id=file_row.revision_id).one_or_none() if file_row else None
             if file_row is None or revision is None or revision.state != "completed" or file_row.state != "completed":
@@ -1275,8 +1270,11 @@ class WorkingFileDownload(MethodView):
             from .compat import authorize_task_read
             if not authorize_task_read(actor, revision.task_id):
                 abort(403)
-            connection = StorageConnection.query.filter_by(production_id=revision.production_id, enabled=True).one_or_none()
-            if connection is None or not file_row.provider_object_id:
+            try:
+                connection = _production_storage_connection(revision.production_id)
+            except ServiceUnavailable:
+                abort(404)
+            if not file_row.provider_object_id:
                 abort(404)
             adapter = _storage_adapter(connection)
             capabilities = adapter.capabilities(connection.allowed_root_id)
@@ -1495,7 +1493,6 @@ class TaskSharedFolders(MethodView):
             authorize(actor, Capability.READ, scope)
         except (PermissionDenied, NotFound):
             abort(403)
-        from sqlalchemy import select
         from .models import FolderBinding, SharedTemplateConfiguration
         from zou.app.models.entity import Entity
         from zou.app.models.task import Task
@@ -1651,6 +1648,12 @@ class TaskSharedFolders(MethodView):
                 idempotency_key = f"task-folders:{config.id}:{config.version}:{task_scope.task_id}"
                 job = session.scalar(select(Job).where(Job.idempotency_key == idempotency_key).with_for_update())
                 if job is None:
+                    from .integrations.event_producers import current_notification_epoch
+
+                    event_activation_epoch = current_notification_epoch(
+                        session, production_id=scope.production_id,
+                        selected_connection_id=connection.id,
+                    )
                     job = Job(
                         job_type="provision_task_folders",
                         idempotency_key=idempotency_key,
@@ -1661,6 +1664,7 @@ class TaskSharedFolders(MethodView):
                             "task_id": str(task_scope.task_id),
                             "configuration_id": str(config.id),
                             "configuration_version": config.version,
+                            "event_activation_epoch": event_activation_epoch,
                         },
                         state="queued",
                         attempts=0,
@@ -1785,7 +1789,7 @@ class CsrfToken(MethodView):
         return {"csrf_token": issue_csrf_token(secret_key, actor_id), "expires_in": 900}
 
 
-from .integrations.http import (
+from .integrations.http import (  # noqa: E402 - route declarations stay after local resource definitions
     ActivationResource,
     DeactivationResource,
     DesiredConfigurationResource,

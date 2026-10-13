@@ -1,6 +1,5 @@
 """Idempotent upload transfer handler for the durable Files job queue."""
 
-from contextlib import ExitStack
 import hashlib
 import tempfile
 from uuid import UUID
@@ -43,6 +42,11 @@ def make_upload_handler(session_factory, staging, adapter_factory):
             connection = session.get(StorageConnection, upload.storage_connection_id)
             if connection is None or not connection.enabled:
                 return JobResult("failed", error_code="storage_connection_unavailable")
+            from ..integrations.storage_authority import selected_storage_connection
+
+            selected = selected_storage_connection(session, connection.production_id)
+            if selected is None or selected.id != connection.id:
+                return JobResult("blocked_authorization", error_code="storage_selection_changed")
             from zou.app.models.task import Task
 
             task = session.get(Task, upload.task_id)
@@ -100,6 +104,10 @@ def make_upload_handler(session_factory, staging, adapter_factory):
             if total != expected_size or digest.hexdigest() != expected_sha256:
                 return JobResult("failed", error_code="staging_source_corrupt")
             source.seek(0)
+            from ..integrations.storage_authority import is_selected_storage_connection
+
+            if not is_selected_storage_connection(session_factory, upload.production_id, connection.id):
+                return JobResult("blocked_authorization", error_code="storage_selection_changed")
             try:
                 job_adapter.upload(source, provider_id, expected_size, expected_sha256, parent_id)
             except AlreadyExists:
@@ -118,6 +126,8 @@ def make_upload_handler(session_factory, staging, adapter_factory):
             return JobResult("reconcile_required", error_code="provider_verification_ambiguous")
         if not verified:
             return JobResult("reconcile_required", error_code="provider_verification_failed")
+        if not is_selected_storage_connection(session_factory, upload.production_id, connection.id):
+            return JobResult("blocked_authorization", error_code="storage_selection_changed")
         return JobResult("completed", True, provider_id, expected_size, expected_sha256)
 
     return transfer

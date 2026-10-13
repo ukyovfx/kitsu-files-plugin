@@ -301,6 +301,7 @@ class OutputPackage(db.Model):
     state = db.Column(String(24), nullable=False, default="receiving")
     manifest_bytes = db.Column(db.LargeBinary, nullable=False)
     manifest_sha256 = db.Column(String(64), nullable=False)
+    event_activation_epoch = db.Column(Integer)
     source_working_revision_id = db.Column(UUIDType(binary=False), ForeignKey("plugin_vfx_files_working_revision.id"))
     provider_folder_id = db.Column(String(255))
     created_by = db.Column(UUIDType(binary=False), nullable=False)
@@ -509,6 +510,7 @@ class KitsuSyncEventOutbox(db.Model):
     __tablename__ = "plugin_vfx_files_kitsusync_event_outbox"
     id = db.Column(UUIDType(binary=False), primary_key=True, default=uuid4)
     production_id = db.Column(UUIDType(binary=False), nullable=False, index=True)
+    storage_connection_id = db.Column(UUIDType(binary=False), ForeignKey("plugin_vfx_files_storage_connection.id"))
     event_id = db.Column(String(255), nullable=False)
     event_type = db.Column(String(128), nullable=False)
     payload = db.Column(JSONB, nullable=False)

@@ -15,13 +15,13 @@ def test_task_api_to_worker_creates_immutable_package_copy_and_verified_download
 ):
     from sqlalchemy import func, select
     from plugin.jobs.queue import LeasedJob
-    from plugin.models import Job, OutputPackage, OutputPackageFile, OutputPackagePointer
+    from plugin.models import Job, KitsuSyncDesiredConfiguration, KitsuSyncEventOutbox, OutputPackage, OutputPackageFile, OutputPackagePointer
     from plugin.packages.worker import make_output_package_handler
     from plugin.storage.fake import FakeStorage
     from zou.app.models.output_type import OutputType
 
     app = authenticated_plugin_client.vfx_app
-    production_id, _entity_type_id, _task_type_id, entity_id, task_id, _connection_id, _actor_id = synthetic_upload_task
+    production_id, _entity_type_id, _task_type_id, entity_id, task_id, connection_id, _actor_id = synthetic_upload_task
     content = b"synthetic-final-exr-frame"
     digest = sha256(content).hexdigest()
     storage = FakeStorage(root_id="synthetic-root-id", drive_id="synthetic-drive-id")
@@ -34,6 +34,15 @@ def test_task_api_to_worker_creates_immutable_package_copy_and_verified_download
             session.flush()
             output_type_id = output_type.id
     monkeypatch.setitem(app.extensions, "vfx_files_storage_adapter_factory", lambda _connection: storage)
+    with zou_db_factory.begin() as session:
+        desired = session.get(KitsuSyncDesiredConfiguration, production_id)
+        selected = dict(desired.desired_config)
+        selected["activation"] = {
+            "enabled": True, "activated_at": "2026-10-13T00:00:00Z",
+            "notification_epoch": 1,
+        }
+        desired.notification_epoch = 1
+        desired.desired_config = selected
     client = authenticated_plugin_client
     origin = "https://kitsu.test"
     headers = {"Origin": origin, "X-VFX-Files-CSRF": client.get("/plugins/vfx_files/csrf-token").json["csrf_token"]}
@@ -88,6 +97,12 @@ def test_task_api_to_worker_creates_immutable_package_copy_and_verified_download
         assert package.qc_state == "passed"
         assert package.provider_folder_id
         assert file_row.source_provider_object_id == "source-file"
+        outbox = session.scalars(select(KitsuSyncEventOutbox).where(
+            KitsuSyncEventOutbox.production_id == production_id,
+        ).order_by(KitsuSyncEventOutbox.created_at, KitsuSyncEventOutbox.event_type)).all()
+        assert {row.event_type for row in outbox} == {"output_package.created", "output_package.ready"}
+        assert all(row.storage_connection_id == connection_id and row.payload["activation_epoch"] == 1 for row in outbox)
+        assert all(row.state == "queued" for row in outbox)
         assert file_row.provider_object_id != file_row.source_provider_object_id
         assert file_row.sha256 == digest
         assert pointer.latest_output_id == package.id

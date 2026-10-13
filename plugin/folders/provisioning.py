@@ -145,7 +145,8 @@ def provision_task_folders(
     from zou.app.models.task import Task
     from zou.app.models.task_type import TaskType
 
-    from ..models import SharedTemplateConfiguration, StorageConnection
+    from ..models import SharedTemplateConfiguration
+    from ..integrations.storage_authority import selected_storage_connection
     from ..storage.base import resolve_storage_adapter
 
     with session_factory() as session:
@@ -155,15 +156,14 @@ def provision_task_folders(
                 SharedTemplateConfiguration.production_id == production_id,
             )
         )
-        connection = session.scalar(
-            select(StorageConnection).where(StorageConnection.id == config.storage_connection_id)
-        ) if config is not None else None
+        connection = selected_storage_connection(session, production_id) if config is not None else None
         task = session.get(Task, task_id)
         task_type = session.get(TaskType, task.task_type_id) if task is not None else None
         if (
             config is None or connection is None or task is None
             or not config.enabled or config.version != configuration_version
             or connection.production_id != production_id or not connection.enabled
+            or connection.id != config.storage_connection_id
             or config.allowed_root_id != connection.allowed_root_id
             or task.project_id != production_id or task_type is None or task_type.for_entity not in ("Shot", "Asset")
         ):
@@ -212,9 +212,9 @@ def provision_task_folders(
         # job retry interval.
         with session_factory() as session:
             current = session.scalar(select(SharedTemplateConfiguration).where(SharedTemplateConfiguration.id == configuration_id))
-            current_connection = session.scalar(select(StorageConnection).where(StorageConnection.id == connection_id))
+            current_connection = selected_storage_connection(session, production_id)
             if (
-                current is None or current_connection is None or not current.enabled
+                current is None or current_connection is None or current_connection.id != connection_id or not current.enabled
                 or current.version != configuration_version or not current_connection.enabled
                 or current.allowed_root_id != current_connection.allowed_root_id
                 or current_connection.allowed_root_id != production_root_id

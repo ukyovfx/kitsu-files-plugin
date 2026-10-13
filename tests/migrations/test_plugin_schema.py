@@ -13,6 +13,7 @@ DRIVE_OBSERVATION_MIGRATION = ROOT / "plugin/migrations/versions/0010_drive_reco
 KITSUSYNC_IDEMPOTENCY_MIGRATION = ROOT / "plugin/migrations/versions/0011_kitsusync_management_idempotency.py"
 KITSUSYNC_SYNC_MIGRATION = ROOT / "plugin/migrations/versions/0012_kitsusync_hierarchy_sync.py"
 DRIVE_OAUTH_MIGRATION = ROOT / "plugin/migrations/versions/0013_encrypted_drive_oauth.py"
+EVENT_OUTBOX_BINDING_MIGRATION = ROOT / "plugin/migrations/versions/0014_event_outbox_connection_binding.py"
 
 
 def test_plugin_tables_are_namespaced_and_nullable_folder_identity_is_avoided():
@@ -188,3 +189,20 @@ def test_encrypted_drive_oauth_migration_is_additive_and_refuses_data_loss():
     assert "state IN ('active','revoking','revoke_pending','revoked','reauth_required')" in source
     assert "restore a consistent snapshot instead of downgrading" in source
     assert "schema_epoch = 12" in source
+
+
+def test_event_outbox_binding_migration_is_additive_and_preserves_bound_rows():
+    source = EVENT_OUTBOX_BINDING_MIGRATION.read_text()
+    assert 'revision = "vxf_0014"' in source
+    assert 'down_revision = "vxf_0013"' in source
+    assert 'op.add_column(' in source
+    assert '"storage_connection_id"' in source
+    assert 'ForeignKey("plugin_vfx_files_storage_connection.id")' in source
+    assert 'nullable=True' in source
+    assert "schema_epoch = 13" in source and "schema_epoch = 12" in source
+    assert "WHERE storage_connection_id IS NOT NULL" in source
+    assert "event_activation_epoch IS NOT NULL" in source
+    assert '"plugin_vfx_files_output_package"' in source
+    assert '"event_activation_epoch"' in source
+    assert "restore a consistent snapshot instead of downgrading" in source
+    assert "Output Package event eligibility is immutable" in source

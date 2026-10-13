@@ -27,6 +27,7 @@ def reserve_output_package(
     session_factory,
     *, task_id: UUID, production_id: UUID, entity_id: UUID, output_type_id: UUID,
     package_type: str, actor_id: UUID, idempotency_key: str, files: list[dict],
+    storage_connection_id: UUID,
     frame_start: int | None = None, frame_end: int | None = None,
     color_space: str | None = None, source_working_revision_id: UUID | None = None,
 ) -> PackageReservation:
@@ -67,13 +68,18 @@ def reserve_output_package(
             OutputPackage.output_type_id == output_type_id,
             OutputPackage.package_type == package_type,
         )) or 0
+        from ..integrations.event_producers import current_notification_epoch
+
+        event_activation_epoch = current_notification_epoch(
+            session, production_id=production_id, selected_connection_id=storage_connection_id,
+        )
         package_id = uuid4()
         package = OutputPackage(
             id=package_id, production_id=production_id, entity_id=entity_id, task_id=task_id,
             output_type_id=output_type_id, package_type=package_type, version=latest + 1,
             state="verifying", qc_state="pending", manifest_bytes=manifest_bytes,
             manifest_sha256=manifest_sha256, source_working_revision_id=source_working_revision_id,
-            created_by=actor_id,
+            created_by=actor_id, event_activation_epoch=event_activation_epoch,
         )
         session.add(package)
         session.flush()
@@ -96,4 +102,11 @@ def reserve_output_package(
         )
         session.add(job)
         session.flush()
+        from ..integrations.event_producers import append_output_package_event
+
+        append_output_package_event(
+            session, package, event_type="output_package.created",
+            selected_connection_id=storage_connection_id,
+            expected_activation_epoch=event_activation_epoch,
+        )
         return PackageReservation(package_id, package.version, package.state, job.id)

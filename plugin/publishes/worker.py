@@ -97,10 +97,14 @@ def make_publish_handler(session_factory, adapter_factory):
             ) if publish and family and connection else None
             from zou.app.models.task import Task
             task = session.get(Task, publish.task_id) if publish else None
+            from ..integrations.storage_authority import selected_storage_connection
+
+            selected_connection = selected_storage_connection(session, task.project_id) if task is not None else None
             if (
                 publish is None or source is None or revision is None or family is None
                 or connection is None or task is None or binding is None
-                or not connection.enabled or not family.enabled
+                or not connection.enabled or selected_connection is None or selected_connection.id != connection.id
+                or not family.enabled
                 or publish.state not in ("reserved", "source_ready", "artifact_verified", "qc_recorded", "manifest_verified", "native_linked")
                 or revision.state != "completed" or source.state != "completed"
                 or task.project_id != connection.production_id or family.production_id != connection.production_id
@@ -167,6 +171,10 @@ def make_publish_handler(session_factory, adapter_factory):
                 if byte_count != source_size or checksum != source_sha256:
                     return JobResult("reconcile_required", error_code="publish_source_download_mismatch")
                 buffer.seek(0)
+                from ..integrations.storage_authority import is_selected_storage_connection
+
+                if not is_selected_storage_connection(session_factory, connection.production_id, connection.id):
+                    return JobResult("blocked_authorization", error_code="storage_selection_changed")
                 try:
                     job_adapter.upload(buffer, artifact_id, source_size, source_sha256, destination_id)
                 except AlreadyExists:
