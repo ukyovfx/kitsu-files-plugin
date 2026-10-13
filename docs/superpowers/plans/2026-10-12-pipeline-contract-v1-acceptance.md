@@ -134,7 +134,7 @@ The API and Worker image built from this source checkpoint has local manifest di
 
 ## Current-source OAuth / revocation closeout (2026-10-13)
 
-Source commit under test: `c8b36f5a9949f96471c1c3021eea4502016cc18c`. A new isolated unit `oauth03` was built from this clean source revision with a separate network/database/Redis/volumes and synthetic data. The UAT app/API image manifest digest is `sha256:b4d045befa5a66385f81c6982512cd18fcfca17cf5b0c5631cdaa09b89a1bfa3`; its Docker image ID is the same digest. Existing `oauth01` and `oauth02` units were preserved. The UAT unit is loopback-only at port 55283.
+Source commit under test: `c8b36f5a9949f96471c1c3021eea4502016cc18c`. A new isolated unit `oauth03` was built from this clean source revision with a separate network/database/Redis/volumes and synthetic data. The UAT app/API image manifest digest is `sha256:b4d045befa5a66385f81c6982512cd18fcfca17cf5b0c5631cdaa09b89a1bfa3`; its Docker image ID is the same digest. Existing `oauth01` was left running and unchanged. The task-created `oauth02` and `oauth03` units were stopped gracefully after testing; their named volumes, synthetic data, and protected local env files were preserved. The `oauth03` UI was loopback-only at port 55283 while it ran.
 
 | Gate | Status | Current-source evidence |
 |---|---|---|
