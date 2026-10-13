@@ -529,27 +529,83 @@ def test_installed_http_snapshot_preview_apply_worker_and_recovery(
         and replayed_activation.json == activation.json
     )
 
-    fresh_preview_key = f"active-preview-{uuid4()}"
-    fresh_preview = client.post(
+    refreshed_config = client.get(config_url, headers=headers("vfx.config.read"))
+    assert refreshed_config.status_code == 200
+    assert refreshed_config.json["config_revision"] == 2
+    stale_snapshot_preview = client.post(
         preview_url,
         json=preview_body,
+        headers=headers(
+            "vfx.sync.preview", idempotency=f"stale-snapshot-preview-{uuid4()}"
+        ),
+    )
+    assert stale_snapshot_preview.status_code == 409
+    assert stale_snapshot_preview.json["code"] == "stale_config"
+
+    # Activation increments config_revision. Upload a new immutable snapshot
+    # for the activated revision even if the hierarchy bytes are unchanged.
+    fresh_snapshot_id = uuid4()
+    fresh_snapshot_body = {
+        **snapshot_body,
+        "snapshot_id": str(fresh_snapshot_id),
+        "config_revision": refreshed_config.json["config_revision"],
+        "source_etag": hashlib.sha256(
+            b"synthetic-source-etag-after-activation"
+        ).hexdigest(),
+    }
+    fresh_started = client.post(
+        start_url,
+        json=fresh_snapshot_body,
+        headers=headers(
+            "vfx.sync.snapshot.write", idempotency=f"fresh-snapshot-start-{uuid4()}"
+        ),
+    )
+    assert fresh_started.status_code == 201
+    fresh_page_url = f"{prefix}/sync-snapshots/{fresh_snapshot_id}/pages/0"
+    fresh_page = client.put(
+        fresh_page_url,
+        json=page_body,
+        headers=headers(
+            "vfx.sync.snapshot.write", idempotency=f"fresh-snapshot-page-{uuid4()}"
+        ),
+    )
+    assert fresh_page.status_code == 200
+    fresh_complete_url = f"{prefix}/sync-snapshots/{fresh_snapshot_id}/complete"
+    fresh_completed = client.post(
+        fresh_complete_url,
+        json=complete_body,
+        headers=headers(
+            "vfx.sync.snapshot.write", idempotency=f"fresh-snapshot-complete-{uuid4()}"
+        ),
+    )
+    assert fresh_completed.status_code == 200
+
+    fresh_preview_key = f"active-preview-{uuid4()}"
+    fresh_preview_body = {
+        "contract_version": "1.0",
+        "config_revision": refreshed_config.json["config_revision"],
+        "snapshot_id": str(fresh_snapshot_id),
+    }
+    fresh_preview = client.post(
+        preview_url,
+        json=fresh_preview_body,
         headers=headers("vfx.sync.preview", idempotency=fresh_preview_key),
     )
     assert (
         fresh_preview.status_code == 200
         and fresh_preview.json["state"] == "preview_ready"
-    )
+    ), (fresh_preview.json or {}).get("code")
     assert fresh_preview.json["summary"]["create"] == 2
     fresh_preview_replay = client.post(
         preview_url,
-        json=preview_body,
+        json=fresh_preview_body,
         headers=headers("vfx.sync.preview", idempotency=fresh_preview_key),
     )
     assert fresh_preview_replay.json == fresh_preview.json
     apply_body = {
         "contract_version": "1.0",
         "preview_id": fresh_preview.json["preview_id"],
-        "config_revision": 1,
+        "config_revision": refreshed_config.json["config_revision"],
     }
     apply_key = f"explicit-apply-{uuid4()}"
     applied = client.post(
@@ -619,6 +675,10 @@ def test_installed_http_snapshot_preview_apply_worker_and_recovery(
             "VFX_FILES_TEST_PLUGIN_FOLDER": os.environ.get(
                 "VFX_FILES_TEST_PLUGIN_FOLDER", "/opt/zou/plugins"
             ),
+            "PYTHONPATH": os.pathsep.join(filter(None, (
+                os.environ.get("VFX_FILES_TEST_PLUGIN_FOLDER", "/opt/zou/plugins"),
+                os.environ.get("PYTHONPATH", ""),
+            ))),
         }
     )
     child = subprocess.run(
@@ -637,6 +697,9 @@ def test_installed_http_snapshot_preview_apply_worker_and_recovery(
     with zou_db_factory() as session:
         persisted_snapshot = session.get(KitsuSyncHierarchySnapshot, snapshot_id)
         persisted_page = session.get(KitsuSyncHierarchySnapshotPage, (snapshot_id, 0))
+        fresh_persisted_snapshot = session.get(
+            KitsuSyncHierarchySnapshot, fresh_snapshot_id
+        )
         bindings = session.scalars(
             select(FolderBinding).where(
                 FolderBinding.storage_connection_id == connection_id,
@@ -647,6 +710,9 @@ def test_installed_http_snapshot_preview_apply_worker_and_recovery(
             persisted_snapshot.state == "complete"
             and persisted_page.page_sha256 == page_digest
         )
+        assert fresh_persisted_snapshot.state == "complete"
+        assert fresh_persisted_snapshot.hierarchy_sha256 == persisted_snapshot.hierarchy_sha256
+        assert fresh_persisted_snapshot.id != persisted_snapshot.id
         assert persisted_job.state == "completed" and persisted_job.payload[
             "progress"
         ] == {"completed": 1, "total": 1}
@@ -662,7 +728,7 @@ def test_installed_http_snapshot_preview_apply_worker_and_recovery(
                     KitsuSyncManagementIdempotency.production_id == production_id,
                 )
             )
-            >= 8
+            >= 11
         )
         assert (
             session.scalar(

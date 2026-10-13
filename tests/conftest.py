@@ -92,6 +92,7 @@ def synthetic_upload_task(authenticated_plugin_client, zou_db_factory, tmp_path)
     from zou.app.models.task import Task, TaskPersonLink
     from zou.app.models.task_type import TaskType
     from plugin.models import ApprovalEvent, DriveReconciliationObservation, FolderBinding, Handoff, HandoffEvent, Job, LatestWorkingPointer, NativeCreateEvent, OutputFamilyMapping, OutputPackage, OutputPackageFile, OutputPackagePointer, PinnedDependency, Publish, PublishCheckpoint, PublishPointer, ReconciliationFinding, SharedTemplateConfiguration, StorageConnection, UploadPart, UploadSession, WorkingDependency, WorkingRevision, WorkingRevisionFile
+    from plugin.models import KitsuSyncHierarchySnapshot
 
     app = authenticated_plugin_client.vfx_app
     with app.app_context():
@@ -127,6 +128,15 @@ def synthetic_upload_task(authenticated_plugin_client, zou_db_factory, tmp_path)
 
     project_id, entity_type_id, task_type_id, entity_id, task_id, connection_id, _actor_id = values
     with zou_db_factory.begin() as session:
+        # Accepted hierarchy snapshots are immutable and intentionally anchor
+        # their synthetic Production graph for the lifetime of this disposable
+        # host. Do not delete around the database immutability constraints.
+        if session.scalar(
+            select(KitsuSyncHierarchySnapshot.id)
+            .where(KitsuSyncHierarchySnapshot.production_id == project_id)
+            .limit(1)
+        ) is not None:
+            return
         publishes = session.scalars(select(Publish).where(Publish.task_id == task_id)).all()
         publish_ids = [row.id for row in publishes]
         if publish_ids:

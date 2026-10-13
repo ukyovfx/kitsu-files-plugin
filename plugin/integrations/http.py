@@ -13,7 +13,6 @@ from .configuration import (
 )
 from .providers import (
     ProviderContractError,
-    connection_payload,
     root_verification_payload,
     templates_payload,
 )
@@ -25,6 +24,21 @@ from .v1 import (
     validate_snapshot_page_request,
     validate_snapshot_start,
 )
+
+
+def _integration_session_factory():
+    """Create independent sessions for transactional management operations.
+
+    Zou may already have opened its request-scoped ``db.session`` while
+    authenticating or serving an earlier request in the same app context.
+    Snapshot/config idempotency helpers own their transaction boundary, so
+    passing that scoped session can fail with "transaction already begun".
+    """
+    from flask import current_app
+    from sqlalchemy.orm import sessionmaker
+
+    database = current_app.extensions["sqlalchemy"]
+    return sessionmaker(bind=database.engine, expire_on_commit=False)
 
 
 def _sync_response(operation):
@@ -172,8 +186,6 @@ class SyncSnapshotStartResource(MethodView):
     def post(self, production_id, service_identity=None):
         from datetime import datetime, timezone
 
-        from zou.app import db
-
         from .snapshots import (
             SNAPSHOT_UPLOAD_TTL,
             run_snapshot_idempotent,
@@ -182,25 +194,27 @@ class SyncSnapshotStartResource(MethodView):
         )
 
         try:
+            sessions = _integration_session_factory()
             body = validate_snapshot_start(_snapshot_body())
             production_uuid = _snapshot_uuid(production_id, "production_id")
             snapshot_uuid = _snapshot_uuid(body["snapshot_id"], "snapshot_id")
 
-            def apply():
-                row = start_snapshot(
-                    db.session, production_id=production_uuid, snapshot_id=snapshot_uuid,
-                    config_revision=body["config_revision"], source_etag=body["source_etag"],
-                    page_count=body["page_count"], object_count=body["object_count"],
-                    snapshot_sha256=body["snapshot_sha256"],
-                    expires_at=datetime.now(timezone.utc) + SNAPSHOT_UPLOAD_TTL,
-                )
-                return snapshot_payload(db.session, row), 201, None
+            with sessions() as session:
+                def apply():
+                    row = start_snapshot(
+                        session, production_id=production_uuid, snapshot_id=snapshot_uuid,
+                        config_revision=body["config_revision"], source_etag=body["source_etag"],
+                        page_count=body["page_count"], object_count=body["object_count"],
+                        snapshot_sha256=body["snapshot_sha256"],
+                        expires_at=datetime.now(timezone.utc) + SNAPSHOT_UPLOAD_TTL,
+                    )
+                    return snapshot_payload(session, row), 201, None
 
-            return _snapshot_respond(lambda: run_snapshot_idempotent(
-                db.session, production_id=production_uuid, actor_id=service_identity.actor_id,
-                idempotency_key=request.headers.get("Idempotency-Key"),
-                operation="snapshot.start", request_body=body, apply=apply,
-            ), default_status=201)
+                return _snapshot_respond(lambda: run_snapshot_idempotent(
+                    session, production_id=production_uuid, actor_id=service_identity.actor_id,
+                    idempotency_key=request.headers.get("Idempotency-Key"),
+                    operation="snapshot.start", request_body=body, apply=apply,
+                ), default_status=201)
         except ContractValidationError:
             return _error("invalid_event", 400)
 
@@ -208,8 +222,6 @@ class SyncSnapshotStartResource(MethodView):
 class SyncSnapshotPageResource(MethodView):
     @service_scope("vfx.sync.snapshot.write", production_source="none")
     def put(self, snapshot_id, page_index, service_identity=None):
-        from zou.app import db
-
         from .snapshots import (
             put_snapshot_page,
             run_snapshot_idempotent,
@@ -217,20 +229,22 @@ class SyncSnapshotPageResource(MethodView):
         )
 
         try:
+            sessions = _integration_session_factory()
             body = validate_snapshot_page_request(_snapshot_body(), path_page_index=page_index)
             snapshot_uuid = _snapshot_uuid(snapshot_id, "snapshot_id")
-            def apply():
-                _bound_snapshot(db.session, snapshot_uuid, service_identity)
-                put_snapshot_page(db.session, snapshot_id=snapshot_uuid, page_index=page_index,
-                                  objects=body["objects"], page_sha256=body["page_sha256"])
-                current = db.session.get(_snapshot_resource_models(), snapshot_uuid)
-                return snapshot_payload(db.session, current), 200, None
+            with sessions() as session:
+                def apply():
+                    _bound_snapshot(session, snapshot_uuid, service_identity)
+                    put_snapshot_page(session, snapshot_id=snapshot_uuid, page_index=page_index,
+                                      objects=body["objects"], page_sha256=body["page_sha256"])
+                    current = session.get(_snapshot_resource_models(), snapshot_uuid)
+                    return snapshot_payload(session, current), 200, None
 
-            return _snapshot_respond(lambda: run_snapshot_idempotent(
-                db.session, production_id=service_identity.production_id, actor_id=service_identity.actor_id,
-                idempotency_key=request.headers.get("Idempotency-Key"),
-                operation=f"snapshot:{snapshot_uuid}:page:{page_index}", request_body=body, apply=apply,
-            ))
+                return _snapshot_respond(lambda: run_snapshot_idempotent(
+                    session, production_id=service_identity.production_id, actor_id=service_identity.actor_id,
+                    idempotency_key=request.headers.get("Idempotency-Key"),
+                    operation=f"snapshot:{snapshot_uuid}:page:{page_index}", request_body=body, apply=apply,
+                ))
         except ContractValidationError:
             return _error("invalid_event", 400)
 
@@ -238,8 +252,6 @@ class SyncSnapshotPageResource(MethodView):
 class SyncSnapshotCompleteResource(MethodView):
     @service_scope("vfx.sync.snapshot.write", production_source="none")
     def post(self, snapshot_id, service_identity=None):
-        from zou.app import db
-
         from .snapshots import (
             complete_snapshot,
             run_snapshot_idempotent,
@@ -247,22 +259,24 @@ class SyncSnapshotCompleteResource(MethodView):
         )
 
         try:
+            sessions = _integration_session_factory()
             body = validate_snapshot_complete_request(_snapshot_body())
             snapshot_uuid = _snapshot_uuid(snapshot_id, "snapshot_id")
-            def apply():
-                row = _bound_snapshot(db.session, snapshot_uuid, service_identity)
-                current = complete_snapshot(
-                    db.session, snapshot_id=snapshot_uuid, config_revision=row.config_revision,
-                    page_count=body["page_count"], object_count=body["object_count"],
-                    snapshot_sha256=body["snapshot_sha256"],
-                )
-                return snapshot_payload(db.session, current), 200, None
+            with sessions() as session:
+                def apply():
+                    row = _bound_snapshot(session, snapshot_uuid, service_identity)
+                    current = complete_snapshot(
+                        session, snapshot_id=snapshot_uuid, config_revision=row.config_revision,
+                        page_count=body["page_count"], object_count=body["object_count"],
+                        snapshot_sha256=body["snapshot_sha256"],
+                    )
+                    return snapshot_payload(session, current), 200, None
 
-            return _snapshot_respond(lambda: run_snapshot_idempotent(
-                db.session, production_id=service_identity.production_id, actor_id=service_identity.actor_id,
-                idempotency_key=request.headers.get("Idempotency-Key"),
-                operation=f"snapshot:{snapshot_uuid}:complete", request_body=body, apply=apply,
-            ))
+                return _snapshot_respond(lambda: run_snapshot_idempotent(
+                    session, production_id=service_identity.production_id, actor_id=service_identity.actor_id,
+                    idempotency_key=request.headers.get("Idempotency-Key"),
+                    operation=f"snapshot:{snapshot_uuid}:complete", request_body=body, apply=apply,
+                ))
         except ContractValidationError:
             return _error("invalid_event", 400)
 
@@ -517,7 +531,6 @@ class DriveRootsResource(MethodView):
     @service_scope("vfx.roots.verify", production_source="body")
     def post(self, connection_id, service_identity=None):
         from sqlalchemy.orm import sessionmaker
-        from zou.app import db
         from .snapshots import run_snapshot_idempotent
         payload = request.get_json(silent=True)
         if request.mimetype != "application/json" or not isinstance(payload, dict):
@@ -665,20 +678,19 @@ class DesiredConfigurationResource(MethodView):
     def put(self, production_id, service_identity=None):
         from uuid import UUID
 
-        from zou.app import db
+        with _integration_session_factory()() as session:
+            def apply():
+                return put_desired_config(
+                    session,
+                    production_id=UUID(production_id),
+                    actor_id=service_identity.actor_id,
+                    payload=_json_body(),
+                    idempotency_key=request.headers.get("Idempotency-Key"),
+                    if_match=request.headers.get("If-Match"),
+                    if_none_match=request.headers.get("If-None-Match"),
+                )
 
-        def apply():
-            return put_desired_config(
-                db.session,
-                production_id=UUID(production_id),
-                actor_id=service_identity.actor_id,
-                payload=_json_body(),
-                idempotency_key=request.headers.get("Idempotency-Key"),
-                if_match=request.headers.get("If-Match"),
-                if_none_match=request.headers.get("If-None-Match"),
-            )
-
-        return _respond(apply)
+            return _respond(apply)
 
 
 class ActivationResource(MethodView):
@@ -686,21 +698,19 @@ class ActivationResource(MethodView):
     def post(self, production_id, service_identity=None):
         from uuid import UUID
 
-        from zou.app import db
+        with _integration_session_factory()() as session:
+            def activate():
+                return set_activation(
+                    session,
+                    production_id=UUID(production_id),
+                    actor_id=service_identity.actor_id,
+                    enabled=True,
+                    payload=_json_body(),
+                    idempotency_key=request.headers.get("Idempotency-Key"),
+                    if_match=request.headers.get("If-Match"),
+                )
 
-        def activate():
-            body, status, etag = set_activation(
-                db.session,
-                production_id=UUID(production_id),
-                actor_id=service_identity.actor_id,
-                enabled=True,
-                payload=_json_body(),
-                idempotency_key=request.headers.get("Idempotency-Key"),
-                if_match=request.headers.get("If-Match"),
-            )
-            return body, status, etag
-
-        return _respond(activate)
+            return _respond(activate)
 
 
 class DeactivationResource(MethodView):
@@ -708,104 +718,97 @@ class DeactivationResource(MethodView):
     def post(self, production_id, service_identity=None):
         from uuid import UUID
 
-        from zou.app import db
+        with _integration_session_factory()() as session:
+            def deactivate():
+                return set_activation(
+                    session,
+                    production_id=UUID(production_id),
+                    actor_id=service_identity.actor_id,
+                    enabled=False,
+                    payload=_json_body(),
+                    idempotency_key=request.headers.get("Idempotency-Key"),
+                    if_match=request.headers.get("If-Match"),
+                )
 
-        def deactivate():
-            body, status, etag = set_activation(
-                db.session,
-                production_id=UUID(production_id),
-                actor_id=service_identity.actor_id,
-                enabled=False,
-                payload=_json_body(),
-                idempotency_key=request.headers.get("Idempotency-Key"),
-                if_match=request.headers.get("If-Match"),
-            )
-            return body, status, etag
-
-        return _respond(deactivate)
+            return _respond(deactivate)
 
 
 class SyncPreviewResource(MethodView):
     @service_scope("vfx.sync.preview")
     def post(self, production_id, service_identity=None):
-        from zou.app import db
-
         from .sync import create_sync_preview
         try:
             body = _sync_json_body()
             production_uuid = _sync_uuid(production_id, "production_id")
         except ContractValidationError:
             return _error("invalid_event", 400)
-        return _sync_response(lambda: create_sync_preview(
-            db.session, production_id=production_uuid, actor_id=service_identity.actor_id,
-            payload=body, idempotency_key=request.headers.get("Idempotency-Key"),
-        ))
+        with _integration_session_factory()() as session:
+            return _sync_response(lambda: create_sync_preview(
+                session, production_id=production_uuid, actor_id=service_identity.actor_id,
+                payload=body, idempotency_key=request.headers.get("Idempotency-Key"),
+            ))
 
 
 class SyncApplyResource(MethodView):
     @service_scope("vfx.sync.apply")
     def post(self, production_id, service_identity=None):
-        from zou.app import db
-
         from .sync import apply_sync_preview
         try:
             body = _sync_json_body()
             production_uuid = _sync_uuid(production_id, "production_id")
         except ContractValidationError:
             return _error("invalid_event", 400)
-        return _sync_response(lambda: apply_sync_preview(
-            db.session, production_id=production_uuid, actor_id=service_identity.actor_id,
-            payload=body, idempotency_key=request.headers.get("Idempotency-Key"),
-        ))
+        with _integration_session_factory()() as session:
+            return _sync_response(lambda: apply_sync_preview(
+                session, production_id=production_uuid, actor_id=service_identity.actor_id,
+                payload=body, idempotency_key=request.headers.get("Idempotency-Key"),
+            ))
 
 
 class SyncJobResource(MethodView):
     @service_scope("vfx.sync.read", production_source="none")
     def get(self, job_id, service_identity=None):
-        from zou.app import db
-
         from .sync import get_sync_job
         try:
             parsed = _sync_uuid(job_id, "job_id")
         except ContractValidationError:
             return _error("invalid_event", 400)
-        return _sync_response(lambda: (get_sync_job(
-            db.session, job_id=parsed, production_id=service_identity.production_id,
-            actor_id=service_identity.actor_id,
-        ), 200, None))
+        with _integration_session_factory()() as session:
+            return _sync_response(lambda: (get_sync_job(
+                session, job_id=parsed, production_id=service_identity.production_id,
+                actor_id=service_identity.actor_id,
+            ), 200, None))
 
 
 class SyncJobRetryResource(MethodView):
     @service_scope("vfx.sync.retry", production_source="none")
     def post(self, job_id, service_identity=None):
-        from zou.app import db
-
         from .sync import enqueue_sync_job_command, validate_operator_command
         try:
             parsed, body = _sync_uuid(job_id, "job_id"), _sync_json_body()
             validate_operator_command(body)
         except ContractValidationError:
             return _error("invalid_event", 400)
-        return _sync_response(lambda: enqueue_sync_job_command(
-            db.session, job_id=parsed, production_id=service_identity.production_id,
-            actor_id=service_identity.actor_id, command=body,
-            idempotency_key=request.headers.get("Idempotency-Key"), operation="retry",
-        ))
+        with _integration_session_factory()() as session:
+            return _sync_response(lambda: enqueue_sync_job_command(
+                session, job_id=parsed, production_id=service_identity.production_id,
+                actor_id=service_identity.actor_id, command=body,
+                idempotency_key=request.headers.get("Idempotency-Key"), operation="retry",
+            ))
 
 
 class SyncJobReconcileResource(MethodView):
     @service_scope("vfx.sync.reconcile", production_source="none")
     def post(self, job_id, service_identity=None):
-        from zou.app import db
-
         from .sync import enqueue_sync_job_command, validate_operator_command
         try:
             parsed, body = _sync_uuid(job_id, "job_id"), _sync_json_body()
             validate_operator_command(body)
         except ContractValidationError:
             return _error("invalid_event", 400)
-        return _sync_response(lambda: enqueue_sync_job_command(
-            db.session, job_id=parsed, production_id=service_identity.production_id,
-            actor_id=service_identity.actor_id, command=body,
-            idempotency_key=request.headers.get("Idempotency-Key"), operation="reconcile",
-        ))
+        with _integration_session_factory()() as session:
+            return _sync_response(lambda: enqueue_sync_job_command(
+                session, job_id=parsed, production_id=service_identity.production_id,
+                actor_id=service_identity.actor_id, command=body,
+                idempotency_key=request.headers.get("Idempotency-Key"), operation="reconcile",
+            ))
