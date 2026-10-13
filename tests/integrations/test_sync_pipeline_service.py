@@ -389,6 +389,38 @@ def test_sync_preview_rejects_stale_config_and_job_commands_are_explicit(sync_db
         assert stale.value.code == "stale_config"
 
 
+def test_sync_worker_lost_lease_fails_before_fake_storage_mutation(sync_db, monkeypatch):
+    from datetime import datetime, timedelta, timezone
+    from uuid import UUID, uuid4
+
+    from plugin.integrations import worker as sync_worker
+    from plugin.jobs.queue import LeasedJob
+    from plugin.storage.fake import FakeStorage
+
+    factory, *_ = sync_db
+    data = seed_sync_state(sync_db)
+    preview, _, _ = create_preview_for_worker(sync_db, data)
+    job_body, _, _ = apply_preview_for_worker(sync_db, preview)
+    recorded_worker_id, stale_worker_id = uuid4(), uuid4()
+    with factory.begin() as session:
+        job = session.get(sync_db[-1], UUID(job_body["id"]))
+        job.state = "leased"
+        job.lease_owner = recorded_worker_id
+        job.lease_generation = 2
+        job.lease_expires_at = datetime.now(timezone.utc) + timedelta(minutes=2)
+    with factory() as session:
+        leased_payload = dict(session.get(sync_db[-1], UUID(job_body["id"])).payload)
+    stale_lease = LeasedJob(UUID(job_body["id"]), "sync_hierarchy", leased_payload, stale_worker_id, 1, 1)
+    storage = FakeStorage(root_id="fake-root")
+    monkeypatch.setattr(sync_worker, "_authorized_manager", lambda *_: True)
+    monkeypatch.setattr(sync_worker, "_snapshot_task_matches_kitsu", lambda *_: True)
+
+    result = sync_worker.make_hierarchy_sync_handler(factory, storage)(stale_lease)
+
+    assert result.state == "retry" and result.error_code == "sync_lease_lost"
+    assert [item.object_id for item in storage.objects.values() if item.mime_type == "folder"] == ["fake-root"]
+
+
 def test_sync_apply_rejects_template_revision_changed_after_preview(sync_db):
     from uuid import UUID
 
