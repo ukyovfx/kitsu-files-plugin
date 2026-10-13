@@ -54,7 +54,7 @@
       "hashes": [
         {
           "alg": "SHA-256",
-          "content": "aae9c73e5a4a108523187d5882dfb3a59157296138bec5f0777922f53e855f6e"
+          "content": "3ee59441db87312a1def8aecd5aaeee327440c37742fefc85f231ed05672bd0b"
         }
       ]
     },
@@ -64,7 +64,7 @@
       "hashes": [
         {
           "alg": "SHA-256",
-          "content": "6d89b659b4fe8d5705b1ec52057be809724530e33c11ccb6a540a6a96971d2fd"
+          "content": "3b9a3d13de1cf8bd5eae4f467338335b1f099b5fa755b7f048bce3deeb95b106"
         }
       ]
     },
@@ -94,7 +94,7 @@
       "hashes": [
         {
           "alg": "SHA-256",
-          "content": "4eb7791fe8b7cd6db17a9f8b0ad4b3d3f321d377b2d76b7c3a151cae54b9d198"
+          "content": "17341ad066f69eaf768f9f8f7573ffe5216e05da6df63502144e29db1080ba44"
         }
       ]
     },
@@ -214,7 +214,7 @@
       "hashes": [
         {
           "alg": "SHA-256",
-          "content": "719c68434d2a0f0d66c884d029da22eae4bf08cb4ec16dfed7d6b5f9225a6548"
+          "content": "19c64a7d85f713563d5122450e8a26c3c6e4eb123d04403274bab54a15dfcc52"
         }
       ]
     },
@@ -225,6 +225,16 @@
         {
           "alg": "SHA-256",
           "content": "ed9726a41e37a4b46f46ce59a455830c16c28b21c943aa3f6bc741a1d8ad62c0"
+        }
+      ]
+    },
+    {
+      "type": "file",
+      "name": "plugin/integrations/oauth.py",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "3ab0a392489103a120afeba56d8e2d6119ccb727a1348030f7befcf6b2556e1d"
         }
       ]
     },
@@ -264,7 +274,17 @@
       "hashes": [
         {
           "alg": "SHA-256",
-          "content": "242ccdaaf23f46012b251147554597dae4610c3af9c6258e540a91c415c85da7"
+          "content": "95b333c586886e260536060fdd5df5a403705c1a2939741a8eb8baa48db27fbc"
+        }
+      ]
+    },
+    {
+      "type": "file",
+      "name": "plugin/integrations/sync.py",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "28af98632b566977536c9bcefcad9b3ff91096df00c2f395427e3ea61530c1af"
         }
       ]
     },
@@ -274,7 +294,17 @@
       "hashes": [
         {
           "alg": "SHA-256",
-          "content": "239049149c7ddde762f31eb2213522e584cd8f9b40f63e0377e5b23586f36eed"
+          "content": "5b3fb9d9d485a3d36d98b41fd13d1c9f3e9da6d6c9be7b3f5017a7a12d62e101"
+        }
+      ]
+    },
+    {
+      "type": "file",
+      "name": "plugin/integrations/worker.py",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "17e43cfbc64544b5fa7cd4cede153d0d61ff21210190586cead6661e239340a7"
         }
       ]
     },
@@ -294,7 +324,7 @@
       "hashes": [
         {
           "alg": "SHA-256",
-          "content": "f66971adc36755a9b3a1406e8320ae5a6e9a9c238cb9c31b1c672e34b5fff498"
+          "content": "9d9852e4a728b763bf05c8ea2cb98e786418699223074c9d589c2e1a3619fda6"
         }
       ]
     },
@@ -440,11 +470,31 @@
     },
     {
       "type": "file",
+      "name": "plugin/migrations/versions/0012_kitsusync_hierarchy_sync.py",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "61fac39e000fbc340eadbebe73abad34635016d433adad69ef660489d97e8003"
+        }
+      ]
+    },
+    {
+      "type": "file",
+      "name": "plugin/migrations/versions/0013_encrypted_drive_oauth.py",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "57a3ef1c4024dd4e90b57187420a65c9c4718ec4741e2c2b8a0b6daafdb31b01"
+        }
+      ]
+    },
+    {
+      "type": "file",
       "name": "plugin/models.py",
       "hashes": [
         {
           "alg": "SHA-256",
-          "content": "26d7e2e589d93cc52807de6476e489546f2b3484cd6fa6622528964a08bc2e10"
+          "content": "74cd00225a27a797c8c5223a766090d5dea179167c5728f6d56795053fcf41e5"
         }
       ]
     },
@@ -574,7 +624,7 @@
       "hashes": [
         {
           "alg": "SHA-256",
-          "content": "ccb48154d611ee35342850f8d379ca8dc8e32ac82b4a3a54e7fd6d6d14e616b1"
+          "content": "06472a8c1af86901986466add3be7d99f4d9dc61335a52e759d545f02759095a"
         }
       ]
     },
@@ -624,7 +674,7 @@
       "hashes": [
         {
           "alg": "SHA-256",
-          "content": "a40b099c9b2e1653e2448dbe4b27935d9b716bf5255d793ab7bd3b8958cd22a8"
+          "content": "f925fbc7eecd222ed0a0151c7f8c6a0a3ab6559eaf459d1888546137fa8084a1"
         }
       ]
     },
@@ -644,7 +694,7 @@
       "hashes": [
         {
           "alg": "SHA-256",
-          "content": "1200b75b1960c4bcf6c42b121504b94242588e83905e0db71637b1dbd0d23af0"
+          "content": "8928b6cf55f111bf1ff11b47381a17dbf9de2c930213e330ed86643478c2cd61"
         }
       ]
     },
@@ -734,7 +784,7 @@
       "hashes": [
         {
           "alg": "SHA-256",
-          "content": "c914828cbbd4b0c1779951097ce34abee95a256192f850a020bb02be0ee16154"
+          "content": "709406f58a8b723af3c5231c4659b6e82f335fe27e27601bc967ebb0909caaf4"
         }
       ]
     },
