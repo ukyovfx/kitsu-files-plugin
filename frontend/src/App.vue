@@ -6,6 +6,7 @@ import PublishWorkflow from './components/PublishWorkflow.vue'
 import OutputPackagePanel from './components/OutputPackagePanel.vue'
 import UploadPanel from './components/UploadPanel.vue'
 import { createRequestGeneration } from './taskContext.js'
+import { safeTaskFolderLinks } from './taskFolderLinks.js'
 
 const props = defineProps({ context: { type: Object, required: true }, api: { type: Object, required: true } })
 const overview = ref(null)
@@ -16,6 +17,7 @@ const productionId = computed(() => props.context.productionId)
 const taskId = computed(() => props.context.taskId || null)
 const scopeKey = computed(() => `${productionId.value || ''}:${taskId.value || ''}`)
 const folderState = ref(null)
+const verifiedFolderLinks = computed(() => safeTaskFolderLinks(folderState.value?.folders))
 const requests = createRequestGeneration()
 const receivedHandoffs = computed(() => (overview.value?.handoffs || []).filter((item) => item.recipient_id === overview.value?.actor_id || (taskId.value && item.recipient_task_id === taskId.value)))
 let pollTimer
@@ -116,7 +118,7 @@ onUnmounted(() => requests.invalidate())
       <section v-if="taskId" class="panel task-folders" aria-label="Task shared folders">
         <div class="panel-heading"><div><p class="eyebrow">Kitsu Task context</p><h2>Shared folders</h2></div></div>
         <p v-if="folderState?.error" class="upload-error" role="alert">{{ folderState.error }}</p>
-        <p v-else-if="folderState?.folders?.length" class="folder-links"><a v-for="folder in folderState.folders" :key="folder.scope_key" :href="folder.url" target="_blank" rel="noopener noreferrer">Open {{ folder.name }}</a></p>
+        <p v-else-if="verifiedFolderLinks.length" class="folder-links"><a v-for="folder in verifiedFolderLinks" :key="folder.scope_key" :href="folder.url" target="_blank" rel="noopener noreferrer">Open {{ folder.name }}</a></p>
         <p v-else class="muted">No verified Task folder bindings are ready yet. Drive connection, root, templates and synchronization are managed through KitsuSync.</p>
       </section>
       <UploadPanel :enabled="overview.upload_ready" :tasks="overview.tasks" :fixed-task-id="taskId" :api="api" @uploaded="load" />

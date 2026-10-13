@@ -86,7 +86,9 @@ async function chooseFile(event) {
 
 function displayVersion(revision) {
   if (!revision) return ''
-  return `v${String(revision.version).padStart(3, '0')}`
+  return /^w[0-9]{3,}$/.test(revision.version_label || '')
+    ? revision.version_label
+    : `w${String(revision.version).padStart(3, '0')}`
 }
 </script>
 
@@ -96,7 +98,7 @@ function displayVersion(revision) {
     <div class="upload-copy">
       <p class="eyebrow">Immutable Task snapshots</p>
       <h2 id="upload-heading">Working Files</h2>
-      <p>Each upload creates a new v### Working snapshot. Earlier revisions remain available.</p>
+      <p>Each upload creates a new w### Working snapshot. Earlier revisions remain available.</p>
     </div>
     <p v-if="fixedTaskId" class="task-context">Current Kitsu Task <span class="mono">{{ fixedTaskId }}</span></p>
     <select v-else v-model="taskId" class="task-select" aria-label="Choose Task" :disabled="!enabled || busy">
