@@ -287,6 +287,12 @@ def set_activation(session, *, production_id: UUID, actor_id: UUID, enabled: boo
         expected = int(if_match[1:-1])
         if expected != row.config_revision:
             _fail(409, "stale_config", expected_revision=expected, actual_revision=row.config_revision)
+        policy = row.desired_config.get("sync_policy", {})
+        if enabled and (not isinstance(policy, dict) or policy.get("mode") != "new_production"):
+            # Do not activate notifications or sync for a folder policy whose
+            # materialization semantics are not implemented. Deactivation stays
+            # available so old configurations can be made safe.
+            _fail(409, "invalid_event", field="sync_policy.mode")
         body = dict(row.desired_config)
         epoch = row.notification_epoch + 1
         body["activation"] = {

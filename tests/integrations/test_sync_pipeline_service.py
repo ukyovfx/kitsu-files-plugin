@@ -475,7 +475,7 @@ def test_preview_does_not_claim_entity_creation_without_a_provisionable_task():
             {"scope": "shot", "template_id": "vfx-files.shot.default", "revision": 1, "overrides": {}},
             {"scope": "task", "template_id": "vfx-files.task.default", "revision": 1, "overrides": {}},
         ]},
-        "sync_policy": {"scope": {"shots": True, "tasks": True, "task_type_ids": ["40000000-0000-4000-8000-000000000099"]}},
+        "sync_policy": {"mode": "new_production", "scope": {"shots": True, "tasks": True, "task_type_ids": ["40000000-0000-4000-8000-000000000099"]}},
     }
     summary, changes = build_sync_diff(
         production_id=UUID(PRODUCTION), root_id="root", desired=desired,
@@ -542,7 +542,8 @@ def test_explicit_apply_reaches_fenced_worker_and_fake_storage(sync_db, monkeypa
     monkeypatch.setattr(sync_worker, "_authorized_manager", lambda *_: True)
     monkeypatch.setattr(sync_worker, "_snapshot_task_matches_kitsu", lambda *_: True)
 
-    def fake_task_provision(session_factory, adapter, *, production_id, task_id, configuration_id, configuration_version, before_external):
+    def fake_task_provision(session_factory, adapter, *, production_id, task_id, configuration_id, configuration_version, before_external, allow_name_adoption):
+        assert allow_name_adoption is False
         parent = "fake-root"
         for kind, object_id, name in (("shot", SHOT, "sc01_sh005"), ("task", TASK, "Compositing")):
             if not before_external():
@@ -562,3 +563,150 @@ def test_explicit_apply_reaches_fenced_worker_and_fake_storage(sync_db, monkeypa
     with factory() as session:
         persisted_job = session.get(sync_db[-1], UUID(job_body["id"]))
         assert persisted_job.payload["progress"] == {"completed": 1, "total": 1}
+
+
+@pytest.mark.parametrize("mode", ["future_only", "adopt_existing", "", None])
+def test_unimplemented_modes_cannot_generate_creation_preview(mode):
+    from uuid import UUID
+
+    from plugin.integrations.sync import SyncOperationError, build_sync_diff
+
+    production = {"object_type": "production", "id": PRODUCTION, "parent_id": None, "name": "Film", "included_in_sync": True}
+    shot = {"object_type": "shot", "id": SHOT, "parent_id": PRODUCTION, "name": "Shot", "included_in_sync": True}
+    task = {"object_type": "task", "id": TASK, "parent_id": SHOT, "name": "Comp", "task_type_id": TASK_TYPE, "included_in_sync": True}
+    desired = {
+        "template_selection": {"selections": [
+            {"scope": "shot", "template_id": "vfx-files.shot.default", "revision": 1, "overrides": {}},
+            {"scope": "task", "template_id": "vfx-files.task.default", "revision": 1, "overrides": {}},
+        ]},
+        "sync_policy": {"mode": mode, "scope": {"shots": True, "tasks": True}},
+    }
+    with pytest.raises(SyncOperationError) as rejected:
+        build_sync_diff(
+            production_id=UUID(PRODUCTION), root_id="fake-root", desired=desired,
+            objects=[production, shot, task], bindings=[],
+            role_mappings={"shot": "shot-node", "task": "task-node"},
+        )
+    assert (rejected.value.status, rejected.value.code) == (409, "invalid_event")
+
+
+@pytest.mark.parametrize("mode", ["future_only", "adopt_existing"])
+def test_unsupported_mode_blocks_preview_and_existing_apply(sync_db, mode):
+    from uuid import UUID
+
+    from plugin.integrations.sync import SyncOperationError, apply_sync_preview, create_sync_preview
+
+    factory, Desired, *_ = sync_db
+    data = seed_sync_state(sync_db)
+    actor_id = UUID(ACTOR)
+    preview, _, _ = create_sync_preview(
+        factory(), production_id=UUID(PRODUCTION), actor_id=actor_id,
+        payload={"contract_version": "1.0", "config_revision": 4, "snapshot_id": str(data["snapshot_id"])},
+        idempotency_key="mode-initial-preview-key-0001",
+    )
+    with factory.begin() as session:
+        config = session.get(Desired, UUID(PRODUCTION))
+        desired = dict(config.desired_config)
+        desired["sync_policy"] = dict(desired["sync_policy"], mode=mode)
+        config.desired_config = desired
+    with factory() as session:
+        with pytest.raises(SyncOperationError) as rejected:
+            create_sync_preview(
+                session, production_id=UUID(PRODUCTION), actor_id=actor_id,
+                payload={"contract_version": "1.0", "config_revision": 4, "snapshot_id": str(data["snapshot_id"])},
+                idempotency_key="mode-blocked-preview-key-0001",
+            )
+        assert (rejected.value.status, rejected.value.code) == (409, "invalid_event")
+    with factory() as session:
+        with pytest.raises(SyncOperationError) as rejected:
+            apply_sync_preview(
+                session, production_id=UUID(PRODUCTION), actor_id=actor_id,
+                payload={"contract_version": "1.0", "preview_id": preview["preview_id"], "config_revision": 4},
+                idempotency_key="mode-blocked-apply-key-0001",
+            )
+        assert (rejected.value.status, rejected.value.code) == (409, "invalid_event")
+
+
+@pytest.mark.parametrize("mode", ["future_only", "adopt_existing"])
+def test_queued_old_mode_sync_job_cannot_mutate_fake_storage(sync_db, monkeypatch, mode):
+    from uuid import UUID, uuid4
+
+    from plugin.integrations import worker as sync_worker
+    from plugin.integrations.sync import apply_sync_preview, create_sync_preview
+    from plugin.jobs.queue import LeasedJob
+    from plugin.storage.fake import FakeStorage
+
+    factory, Desired, *_ = sync_db
+    data = seed_sync_state(sync_db)
+    actor_id = UUID(ACTOR)
+    preview, _, _ = create_sync_preview(
+        factory(), production_id=UUID(PRODUCTION), actor_id=actor_id,
+        payload={"contract_version": "1.0", "config_revision": 4, "snapshot_id": str(data["snapshot_id"])},
+        idempotency_key="old-mode-preview-key-0001",
+    )
+    job_body, _, _ = apply_sync_preview(
+        factory(), production_id=UUID(PRODUCTION), actor_id=actor_id,
+        payload={"contract_version": "1.0", "preview_id": preview["preview_id"], "config_revision": 4},
+        idempotency_key="old-mode-apply-key-0001",
+    )
+    worker_id = uuid4()
+    with factory.begin() as session:
+        config = session.get(Desired, UUID(PRODUCTION))
+        desired = dict(config.desired_config)
+        desired["sync_policy"] = dict(desired["sync_policy"], mode=mode)
+        config.desired_config = desired
+        job = session.get(sync_db[-1], UUID(job_body["id"]))
+        job.state = "leased"
+        job.lease_owner = worker_id
+        job.lease_generation = 1
+        job.lease_expires_at = datetime.now(timezone.utc) + timedelta(minutes=2)
+    with factory() as session:
+        payload = dict(session.get(sync_db[-1], UUID(job_body["id"])).payload)
+    lease = LeasedJob(UUID(job_body["id"]), "sync_hierarchy", payload, worker_id, 1, 1)
+    adapter = FakeStorage(root_id="fake-root")
+    monkeypatch.setattr(sync_worker, "_authorized_manager", lambda *_: True)
+    result = sync_worker.make_hierarchy_sync_handler(factory, adapter)(lease)
+    assert result.state == "blocked_authorization"
+    assert result.error_code == "sync_configuration_changed"
+    assert adapter.calls == []
+
+
+@pytest.mark.parametrize("mode", ["future_only", "adopt_existing"])
+def test_unsupported_mode_cannot_activate_but_can_be_deactivated(sync_db, monkeypatch, mode):
+    from uuid import UUID
+
+    from plugin.integrations import configuration
+
+    factory, Desired, *_ = sync_db
+    seed_sync_state(sync_db)
+    monkeypatch.setattr(configuration, "_lock_production", lambda *_: None)
+    with factory.begin() as session:
+        row = session.get(Desired, UUID(PRODUCTION))
+        changed = dict(row.desired_config)
+        changed["sync_policy"] = dict(changed["sync_policy"], mode=mode)
+        row.desired_config = changed
+
+    with factory() as session:
+        with pytest.raises(configuration.ConfigurationError) as refused:
+            configuration.set_activation(
+                session, production_id=UUID(PRODUCTION), actor_id=UUID(ACTOR), enabled=True,
+                payload={"contract_version": "1.0"},
+                idempotency_key="synthetic-unsupported-mode-activate",
+                if_match='"4"',
+            )
+        assert (refused.value.status, refused.value.code) == (409, "invalid_event")
+
+    with factory() as session:
+        row = session.get(Desired, UUID(PRODUCTION))
+        assert row.config_revision == 4 and row.notification_epoch == 3
+
+    with factory() as session:
+        response, status, etag = configuration.set_activation(
+            session, production_id=UUID(PRODUCTION), actor_id=UUID(ACTOR), enabled=False,
+            payload={"contract_version": "1.0"},
+            idempotency_key="synthetic-unsupported-mode-disable",
+            if_match='"4"',
+        )
+        assert status == 200 and etag == '"5"'
+        assert response["activation"]["enabled"] is False
+        assert response["activation"]["notification_epoch"] == 4

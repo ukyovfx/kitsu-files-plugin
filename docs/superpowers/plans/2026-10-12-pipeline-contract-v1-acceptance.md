@@ -199,3 +199,29 @@ The Worker delivery configuration is documented in `docs/oss/WORKER-DISTRIBUTION
 | Offline distribution bundle readback | PASS | Built from committed source `b962e83b869e42044f6a4f9a3f027d23b6e7d70e`; all 117 archive entries / 82 tracked Plugin files were read back and byte-compared to Git objects, with SHA-256 checks. Archive SHA-256 `422062fdc349ca9d07330f4584b6994d8896201dd6c1d3238fe10dde200a47db`; temporary archive removed after verification. |
 | Repository static checks | PARTIAL | `compileall` and `git diff --check` passed. Ruff was unavailable in the local interpreter and candidate runner image. |
 | KitsuSync template materialization | BLOCKED | The v1 contract does not map selected catalog template IDs/overrides into the Plugin's nested `SharedTemplateConfiguration` tree. The Files page no longer offers an alternate setup path; resolve this contract/provider prerequisite before running hierarchy provisioning in UAT. |
+
+## Template projector handoff and safe subset (2026-10-14)
+
+| Gate | Status | Evidence / limitation |
+|---|---|---|
+| Unsupported sync-mode safety | PASS (focused pinned runner tests) | Only `new_production` reaches Preview planning, Apply, or Worker execution. `future_only` and `adopt_existing` fail closed; activation is rejected for these modes while deactivation remains available. A queued old-mode job is fenced before FakeStorage calls. |
+| Name-only folder adoption | PASS (focused pinned runner test) | KitsuSync hierarchy Worker now disables the generic legacy name-adoption behavior. A same-name unbound provider folder is left untouched and marked for reconciliation; the Worker does not create or bind it. Existing UUID/provider-ID reservations continue to recover by exact ID. |
+| Selected catalog template materialization | BLOCKED | The KitsuSync v1 selection carries `template_id`, `revision`, and an untyped string map of `overrides`; it does not define how these values become the Plugin's nested folder tree and role mappings. The current Plugin catalog patterns are single-scope patterns, while examples in the KitsuSync contract use IDs not returned by that catalog. Do not invent a mapping or discard overrides. |
+| Episode hierarchy placement | BLOCKED | The contract can include Episodes in sync scope but exposes no Episode template scope or parent/path rule. A Sequence-under-Episode plan cannot be inferred safely. |
+| Selected root ↔ Production folder identity | BLOCKED | KitsuSync verifies a storage root, but the contract does not state that the verified root is the Production directory or authorize creating/adopting a Production child. No root alias or child creation may be inferred. |
+| Existing binding verification | PARTIAL | Database scope is checked, but a ready row alone is not provider proof. The current Worker follows exact reserved provider IDs; unbound same-name folders are not adopted. Provider ancestry/reuse reconciliation must remain a separate proof before a binding is treated as verified. |
+| Candidate template projector | NOT INTEGRATED | The local `chatgpt/kitsusync-template-projector` branch was reviewed and its focused tests passed, but its read-only module is not wired into HTTP Preview/Apply/Worker. It also assumes selected-root/Production identity, so it was not copied into PR #11. |
+| ChatGPT candidate validation | PASS (focused only) | On the disposable pinned test runner with synthetic/FakeStorage data: **79 passed**, one existing Flask-Caching deprecation warning. No claim of KitsuSync HTTP E2E or provider writes. |
+| PR #11 safe-subset regression validation | PASS (focused only) | On the disposable pinned PostgreSQL/Zou test runner with source mounted: **51 passed**, one existing Flask-Caching deprecation warning. Covered the synthetic HTTP→PostgreSQL→separate Worker→FakeStorage sync flow, sync service, queued-job fencing, activation/deactivation, folder provisioning, legacy route protection, and v1 protocol. |
+| Persistent test-queue recovery | PASS (regression fixed) | An initial repeat run exposed that the installed-page E2E assumed a globally empty job queue and exactly four objects in a shared persistent FakeStorage root. The test now scopes no-job assertions to its synthetic Production, waits for the exact durable Job to complete across bounded `--once` worker processes, and checks this Production's stable binding IDs rather than rejecting other synthetic folders. The actual sync Job completed and its persisted state and FakeStorage objects read back correctly. |
+| PR #11 GitHub Actions | BLOCKED | Both latest runs (`38399822112`, `38399827209`) failed within seconds with no runner name and zero reported job steps for Secret scan, Frontend checks, and Pinned host/Python checks. This does not establish a code failure or a scanner finding; job initialization failure remains the best evidence available. Secret-scan log contents were not retrieved. |
+
+### Local candidate commit disposition
+
+- `d4d9849` — projector implementation and tests were **not adopted** because it is not connected to the actual API/Worker path and relies on root semantics absent from the contract.
+- `8638716` — **adopted in substance**: KitsuSync hierarchy Worker refuses name-only adoption; implementation and regression coverage were applied on the current PR source.
+- `16c9f5e` — **partially adopted**: unsupported-mode guards were applied; its projector-module changes were omitted.
+- `2dfa4ba` — **adopted in substance**: queued old-mode Worker fencing regression was added.
+- `c8fcee5` — **adopted in substance**: activation blocks unsupported modes, while deactivation remains possible; regression coverage was added.
+
+The current branch still needs a coordinated contract revision or a fully specified catalog schema before selected templates can drive real folder creation. Until then, hierarchy sync remains unavailable for any unsupported policy and must not be described as integrated KitsuSync provisioning.

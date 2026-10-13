@@ -137,6 +137,7 @@ def provision_task_folders(
     configuration_id: UUID,
     configuration_version: int,
     before_external=None,
+    allow_name_adoption: bool = True,
 ):
     """Validate current Production/task/template bindings, then ensure the path."""
     from sqlalchemy import select
@@ -230,6 +231,7 @@ def provision_task_folders(
             canonical_scope_key=planned.scope_key,
             parent_id=parent_provider_id,
             display_name=planned.display_name,
+            allow_name_adoption=allow_name_adoption,
         )
         if result.state != "ready" or result.provider_folder_id is None:
             raise FolderProvisioningError("Provider folder creation needs reconciliation")

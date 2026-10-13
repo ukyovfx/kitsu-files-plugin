@@ -169,6 +169,7 @@ def _binding_scope(production_id, obj):
 def build_sync_diff(*, production_id: UUID, root_id: str, desired: dict, objects, bindings,
                     role_mappings=None):
     """Plan only stable-ID operations; names never adopt or reconnect folders."""
+    require_supported_sync_mode(desired)
     by_scope = {row.canonical_scope_key: row for row in bindings}
     role_mappings = role_mappings or {}
     selected_scopes = selected_template_scopes(desired)
@@ -228,6 +229,18 @@ def build_sync_diff(*, production_id: UUID, root_id: str, desired: dict, objects
     return summary, changes
 
 
+def require_supported_sync_mode(desired):
+    """Fail closed until every KitsuSync folder policy has safe semantics.
+
+    ``adopt_existing`` needs provider identity evidence and ``future_only``
+    needs a durable creation boundary. Neither can share the new-Production
+    creation plan safely.
+    """
+    policy = desired.get("sync_policy") if isinstance(desired, dict) else None
+    if not isinstance(policy, dict) or policy.get("mode") != "new_production":
+        raise SyncOperationError(409, "invalid_event")
+
+
 def _models():
     from ..models import (
         FolderBinding,
@@ -247,6 +260,7 @@ def _require_current_config(session, production_id, config_revision, *, require_
     config = session.scalar(select(Desired).where(Desired.production_id == production_id).with_for_update())
     if config is None or config.config_revision != config_revision:
         raise SyncOperationError(409, "stale_config")
+    require_supported_sync_mode(config.desired_config)
     activation = config.desired_config.get("activation", {})
     drive = config.desired_config.get("drive", {})
     if require_active and not activation.get("enabled"):

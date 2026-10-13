@@ -41,6 +41,7 @@ def provision_folder(
     canonical_scope_key: str,
     parent_id: str,
     display_name: str,
+    allow_name_adoption: bool = True,
 ) -> FolderReservation:
     """Reserve identity in local storage before create; reconcile by exact provider ID."""
     capabilities = adapter.capabilities(allowed_root_id)
@@ -80,6 +81,9 @@ def provision_folder(
         if len(matches) > 1:
             store.mark_reconcile(binding)
             raise FolderProvisioningError("Multiple existing folders have this display name; adoption is ambiguous")
+        if matches and not allow_name_adoption:
+            store.mark_reconcile(binding)
+            raise FolderProvisioningError("Existing folder needs identity-verified adoption and reconciliation")
         if matches:
             candidate_id = matches[0].object_id
             bound_elsewhere = getattr(store, "provider_id_in_use", lambda *_: False)(

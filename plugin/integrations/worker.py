@@ -173,6 +173,7 @@ def make_hierarchy_sync_handler(session_factory, adapter):
                     session_factory, adapter, production_id=production_id,
                     task_id=UUID(current_task["id"]), configuration_id=template_id,
                     configuration_version=template_version,
+                    allow_name_adoption=False,
                     before_external=lambda: _sync_fence_current(
                         session_factory, leased_job, payload, production_id, actor_id,
                     ),
