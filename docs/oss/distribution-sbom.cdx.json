@@ -1,10 +1,10 @@
 {
   "bomFormat": "CycloneDX",
   "specVersion": "1.5",
-  "serialNumber": "urn:uuid:1057020f-7c01-4f6a-a034-f23a9a1e13da",
-  "version": 1,
+  "serialNumber": "urn:uuid:b66ecf9f-4c9f-4bb6-8767-3bb0da4393c5",
+  "version": 2,
   "metadata": {
-    "timestamp": "2026-10-13T00:00:00Z",
+    "timestamp": "2026-10-13T12:27:12Z",
     "component": {
       "type": "application",
       "name": "vfx-kitsu-files-plugin",
@@ -12,12 +12,126 @@
       "hashes": [
         {
           "alg": "SHA-256",
-          "content": "2cd3141dcfc2d1a24c7e9ad9c111810872a1470ce26fc21f9558bc5cff068bc5"
+          "content": "817325e4577b9cfd5cfc20a1dfd99cc1c3e3e5a9b6291f5530dae6702473af8d"
         }
       ]
     }
   },
   "components": [
+    {
+      "type": "library",
+      "name": "@noble/hashes",
+      "version": "1.8.0",
+      "purl": "pkg:npm/@noble%2fhashes@1.8.0",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA512",
+          "content": "jCs9ldd7NwzpgXDIf6P3+NrHh9/sD6CQdxHyjQI+h/6rDNo88ypBxxz45UDuZHz9r3tNz7N/VInSVoVdtXEI4A=="
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "@vue/reactivity",
+      "version": "3.5.43",
+      "purl": "pkg:npm/@vue%2freactivity@3.5.43",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA512",
+          "content": "G/c9GyOZNI2jVaaS6OX1EF1SSFSv7H0ERqNTl4+DTFMlZmB5eVAB53aLQNam/7NL2NPtaDD7RdVrzf8uJzMuOA=="
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "@vue/runtime-core",
+      "version": "3.5.43",
+      "purl": "pkg:npm/@vue%2fruntime-core@3.5.43",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA512",
+          "content": "hU6U6VnVhBGQDpvlnnDlIB8ZGJBiOcgk2lh/0InltHiz3D8oSkluvuvY+do1G2H3+udeKFsmaBlgVYP7gXQzEw=="
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "@vue/runtime-dom",
+      "version": "3.5.43",
+      "purl": "pkg:npm/@vue%2fruntime-dom@3.5.43",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA512",
+          "content": "Bb2Jc0YjjJdMt1SJmb9b2L/IWd3I8lIT9x9eS/xvvP9CiVgna0ffua74xKRmt4/uSJ+0r4iN8ex1jrqkhQGWQw=="
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "@vue/shared",
+      "version": "3.5.43",
+      "purl": "pkg:npm/@vue%2fshared@3.5.43",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA512",
+          "content": "uksS7YGMR5NZyr4JNq0Rp+QyLns0ueaz20KwzIPW9R0LH1Vnt4E+XUM29PNseEbf1www2gOuhuDi5AKOIXag9Q=="
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "vue",
+      "version": "3.5.43",
+      "purl": "pkg:npm/vue@3.5.43",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA512",
+          "content": "o5qZoksdnjIKvW1srZ3ab7pcDNYAerBjRe54D0LBLfRdCYFrSgBHVXokMas35czQc0//lmx4/tuY4ZNQ+Rf2Ng=="
+        }
+      ]
+    },
     {
       "type": "file",
       "name": "plugin/__init__.py",
@@ -124,27 +238,27 @@
       "hashes": [
         {
           "alg": "SHA-256",
-          "content": "ea1c4dc2739d6c57f7444c6d3a2185f6cbc9c2fa3c5cb0e7d387b5f6c6d07570"
+          "content": "280d01406638c2a58569d9b00627214cf3b541a3d8c8da4b33c3865c4246dbf1"
         }
       ]
     },
     {
       "type": "file",
-      "name": "plugin/frontend/dist/assets/index-bHT22bH5.css",
+      "name": "plugin/frontend/dist/assets/index-C3IBcxkh.css",
       "hashes": [
         {
           "alg": "SHA-256",
-          "content": "995ae07488e01b95f13123439a3cde038955eaba1e7515be8a0fc1a2676d46d3"
+          "content": "b4f7e37e36bdde8887ede14afb9c0918c46d24437b764357620dac9c26d92d18"
         }
       ]
     },
     {
       "type": "file",
-      "name": "plugin/frontend/dist/assets/index-yCh33_Vm.js",
+      "name": "plugin/frontend/dist/assets/index-DzsYT2xg.js",
       "hashes": [
         {
           "alg": "SHA-256",
-          "content": "0caaffb2fedea396d09269040273b12d7f926d6d03d66fe0301563ee853718b1"
+          "content": "9049214e6b78e98f98bdbbc7b0d90f2723a64bfd97308c3864b8b3d92841ad84"
         }
       ]
     },
@@ -154,7 +268,7 @@
       "hashes": [
         {
           "alg": "SHA-256",
-          "content": "07686de18dffb81734c66d2d8c06c94b248e414a93b28f275ed6b48e22198c7a"
+          "content": "cc9fa4e9b1b878cac3c5994088f7a61b89a82e82928966185eeaa83c0334b02f"
         }
       ]
     },
@@ -664,7 +778,7 @@
       "hashes": [
         {
           "alg": "SHA-256",
-          "content": "7f2b5df35fa29d60ad7bf49c0b07c5a84fff1fa5aa6c4495134b4799c8d048dc"
+          "content": "edfdb378370008887b261d6eccc1f62d82039667284c8e44c14bf774ba8a12e0"
         }
       ]
     },
@@ -835,120 +949,6 @@
         {
           "alg": "SHA-256",
           "content": "54ab70c771057c7329949f2d7a2ea204c2a9c67a711e63d1c2ba7fb9f231d991"
-        }
-      ]
-    },
-    {
-      "type": "library",
-      "name": "@noble/hashes",
-      "version": "1.8.0",
-      "purl": "pkg:npm/@noble%2fhashes@1.8.0",
-      "licenses": [
-        {
-          "license": {
-            "id": "MIT"
-          }
-        }
-      ],
-      "hashes": [
-        {
-          "alg": "SHA512",
-          "content": "jCs9ldd7NwzpgXDIf6P3+NrHh9/sD6CQdxHyjQI+h/6rDNo88ypBxxz45UDuZHz9r3tNz7N/VInSVoVdtXEI4A=="
-        }
-      ]
-    },
-    {
-      "type": "library",
-      "name": "@vue/reactivity",
-      "version": "3.5.43",
-      "purl": "pkg:npm/@vue%2freactivity@3.5.43",
-      "licenses": [
-        {
-          "license": {
-            "id": "MIT"
-          }
-        }
-      ],
-      "hashes": [
-        {
-          "alg": "SHA512",
-          "content": "G/c9GyOZNI2jVaaS6OX1EF1SSFSv7H0ERqNTl4+DTFMlZmB5eVAB53aLQNam/7NL2NPtaDD7RdVrzf8uJzMuOA=="
-        }
-      ]
-    },
-    {
-      "type": "library",
-      "name": "@vue/runtime-core",
-      "version": "3.5.43",
-      "purl": "pkg:npm/@vue%2fruntime-core@3.5.43",
-      "licenses": [
-        {
-          "license": {
-            "id": "MIT"
-          }
-        }
-      ],
-      "hashes": [
-        {
-          "alg": "SHA512",
-          "content": "hU6U6VnVhBGQDpvlnnDlIB8ZGJBiOcgk2lh/0InltHiz3D8oSkluvuvY+do1G2H3+udeKFsmaBlgVYP7gXQzEw=="
-        }
-      ]
-    },
-    {
-      "type": "library",
-      "name": "@vue/runtime-dom",
-      "version": "3.5.43",
-      "purl": "pkg:npm/@vue%2fruntime-dom@3.5.43",
-      "licenses": [
-        {
-          "license": {
-            "id": "MIT"
-          }
-        }
-      ],
-      "hashes": [
-        {
-          "alg": "SHA512",
-          "content": "Bb2Jc0YjjJdMt1SJmb9b2L/IWd3I8lIT9x9eS/xvvP9CiVgna0ffua74xKRmt4/uSJ+0r4iN8ex1jrqkhQGWQw=="
-        }
-      ]
-    },
-    {
-      "type": "library",
-      "name": "@vue/shared",
-      "version": "3.5.43",
-      "purl": "pkg:npm/@vue%2fshared@3.5.43",
-      "licenses": [
-        {
-          "license": {
-            "id": "MIT"
-          }
-        }
-      ],
-      "hashes": [
-        {
-          "alg": "SHA512",
-          "content": "uksS7YGMR5NZyr4JNq0Rp+QyLns0ueaz20KwzIPW9R0LH1Vnt4E+XUM29PNseEbf1www2gOuhuDi5AKOIXag9Q=="
-        }
-      ]
-    },
-    {
-      "type": "library",
-      "name": "vue",
-      "version": "3.5.43",
-      "purl": "pkg:npm/vue@3.5.43",
-      "licenses": [
-        {
-          "license": {
-            "id": "MIT"
-          }
-        }
-      ],
-      "hashes": [
-        {
-          "alg": "SHA512",
-          "content": "o5qZoksdnjIKvW1srZ3ab7pcDNYAerBjRe54D0LBLfRdCYFrSgBHVXokMas35czQc0//lmx4/tuY4ZNQ+Rf2Ng=="
         }
       ]
     }
