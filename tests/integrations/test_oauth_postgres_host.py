@@ -154,15 +154,28 @@ def test_authenticated_oauth_callback_and_root_verification_persist_on_postgres(
     assert client.post(root_url, json=root_body, headers=root_headers).json == verified.json
     assert root_adapter.calls == 1
 
+    revoke_token = _service_token(
+        private, issuer=issuer, audience=audience, subject=subject, client_id=client_id,
+        production_id=production_id, actor_id=actor_id, scope="vfx.connections.revoke",
+    )
+    revoke_url = base + f"/{authorization.json['authorization_id']}/revoke"
+    revoke_headers = {"Authorization": "Bearer " + revoke_token, "X-KitsuSync-Actor-ID": str(actor_id),
+                      "Idempotency-Key": "synthetic-pg-revoke-01"}
+    revoked = client.post(revoke_url, json={"contract_version": "1.0"}, headers=revoke_headers)
+    assert revoked.status_code == 202, revoked.get_data(as_text=True)
+    assert client.post(revoke_url, json={"contract_version": "1.0"}, headers=revoke_headers).status_code == 202
+
     from zou.app import db
-    from plugin.models import DriveCredential, StorageConnection
+    from plugin.models import DriveCredential, Job, StorageConnection
     with app.app_context():
         connection_id = authorization.json["authorization_id"]
         credential = db.session.get(DriveCredential, connection_id)
         connection = db.session.get(StorageConnection, connection_id)
-        assert credential.state == "active" and credential.ciphertext
+        job = db.session.query(Job).filter_by(idempotency_key=f"drive-revoke:{production_id}:synthetic-pg-revoke-01").one()
+        assert credential.state == "revoking" and credential.ciphertext
         assert b"synthetic-pg-refresh-token" not in credential.ciphertext
-        assert connection.enabled and connection.allowed_root_id == "synthetic-pg-root"
+        assert not connection.enabled and connection.allowed_root_id == "synthetic-pg-root"
         assert connection.drive_id == "synthetic-pg-drive"
+        assert job.state == "queued" and job.payload["actor_id"] == str(actor_id)
 
     assert len(google.calls) == 2

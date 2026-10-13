@@ -363,7 +363,8 @@ class DriveConnectionRevokeResource(MethodView):
     def post(self, connection_id, service_identity=None):
         from uuid import UUID, uuid4
         from sqlalchemy import select
-        from zou.app import db
+        from sqlalchemy.orm import sessionmaker
+        from flask import current_app
         from ..models import DriveCredential, Job, KitsuSyncDesiredConfiguration, StorageConnection
         from .oauth import OAuthOperationError, connection_status
         from .sync import validate_operator_command
@@ -383,12 +384,14 @@ class DriveConnectionRevokeResource(MethodView):
             return _provider_error(exc.code, exc.status)
         production_id = service_identity.production_id
         try:
-            with db.session.begin():
-                connection = db.session.scalar(select(StorageConnection).where(
+            database = current_app.extensions["sqlalchemy"]
+            sessions = sessionmaker(bind=database.engine, expire_on_commit=False)
+            with sessions.begin() as session:
+                connection = session.scalar(select(StorageConnection).where(
                     StorageConnection.id == parsed,
                     StorageConnection.production_id == production_id,
                 ).with_for_update())
-                credential = db.session.scalar(select(DriveCredential).where(
+                credential = session.scalar(select(DriveCredential).where(
                     DriveCredential.connection_id == parsed,
                     DriveCredential.production_id == production_id,
                 ).with_for_update())
@@ -397,7 +400,7 @@ class DriveConnectionRevokeResource(MethodView):
                 if credential is None or credential.state == "revoked":
                     return jsonify(connection_status(connection, credential)), 202
                 job_key = f"drive-revoke:{production_id}:{key}"
-                existing = db.session.scalar(select(Job).where(Job.idempotency_key == job_key).with_for_update())
+                existing = session.scalar(select(Job).where(Job.idempotency_key == job_key).with_for_update())
                 payload = {
                     "job_type": "revoke_drive_credential", "production_id": str(production_id),
                     "actor_id": str(service_identity.actor_id), "connection_id": str(parsed),
@@ -408,7 +411,7 @@ class DriveConnectionRevokeResource(MethodView):
                     return jsonify(connection_status(connection, credential)), 202
                 connection.enabled = False
                 credential.state = "revoking"
-                desired = db.session.get(KitsuSyncDesiredConfiguration, production_id)
+                desired = session.get(KitsuSyncDesiredConfiguration, production_id)
                 if desired is not None:
                     desired_body = dict(desired.desired_config)
                     activation = dict(desired_body.get("activation", {}))
@@ -418,7 +421,7 @@ class DriveConnectionRevokeResource(MethodView):
                     desired.notification_epoch += 1
                     desired.config_revision += 1
                     desired.desired_config = desired_body
-                db.session.add(Job(
+                session.add(Job(
                     id=uuid4(), job_type="revoke_drive_credential", idempotency_key=job_key,
                     payload=payload, state="queued",
                 ))
