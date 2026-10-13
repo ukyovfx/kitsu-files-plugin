@@ -5,9 +5,26 @@ from uuid import uuid4
 from flask import current_app, jsonify, request
 from flask.views import MethodView
 
-from .configuration import ConfigurationError, get_desired_config, put_desired_config, set_activation
+from .configuration import (
+    ConfigurationError,
+    get_desired_config,
+    put_desired_config,
+    set_activation,
+)
+from .providers import (
+    ProviderContractError,
+    connection_payload,
+    root_verification_payload,
+    templates_payload,
+)
 from .service_auth import service_scope
-from .providers import ProviderContractError, connection_payload, root_verification_payload, templates_payload
+from .v1 import (
+    ContractValidationError,
+    SnapshotConflict,
+    validate_snapshot_complete_request,
+    validate_snapshot_page_request,
+    validate_snapshot_start,
+)
 
 
 def _error(code: str, status: int, details: dict | None = None):
@@ -49,9 +66,171 @@ def _provider_error(code: str, status: int, field: str | None = None):
     return _error(code, status, details)
 
 
+def _snapshot_respond(operation, *, default_status=200):
+    try:
+        body, status, etag = operation()
+    except SnapshotAccessError as exc:
+        return _error(exc.code, exc.status)
+    except SnapshotConflict:
+        return _error("idempotency_conflict", 409)
+    except ContractValidationError as exc:
+        message = str(exc)
+        code = "stale_config" if "configuration revision" in message or "config is stale" in message or "configuration changed" in message else "invalid_event"
+        status = 409 if code == "stale_config" else 400
+        return _error(code, status)
+    response = jsonify(body)
+    response.status_code = status or default_status
+    if etag:
+        response.headers["ETag"] = etag
+    return response
+
+
+def _snapshot_resource_models():
+    from ..models import KitsuSyncHierarchySnapshot
+    return KitsuSyncHierarchySnapshot
+
+
+def _snapshot_uuid(raw, field):
+    from uuid import UUID
+    try:
+        parsed = UUID(str(raw))
+        if str(parsed) != str(raw):
+            raise ValueError
+        return parsed
+    except (ValueError, TypeError, AttributeError):
+        raise ContractValidationError(f"{field} must be a canonical UUID") from None
+
+
+def _snapshot_body():
+    if request.mimetype != "application/json" or request.content_length is None or request.content_length > 2 * 1024 * 1024:
+        raise ContractValidationError("Snapshot request must be bounded JSON")
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        raise ContractValidationError("Snapshot request body is invalid")
+    return payload
+
+
+def _bound_snapshot(session, snapshot_id, identity):
+    snapshot_uuid = _snapshot_uuid(snapshot_id, "snapshot_id")
+    row = session.get(_snapshot_resource_models(), snapshot_uuid)
+    if row is None:
+        raise SnapshotAccessError(404, "invalid_event")
+    if row.production_id != identity.production_id:
+        raise SnapshotAccessError(403, "production_access_denied")
+    return row
+
+
+class SnapshotAccessError(Exception):
+    def __init__(self, status, code):
+        self.status = status
+        self.code = code
+
+
+class SyncSnapshotStartResource(MethodView):
+    @service_scope("vfx.sync.snapshot.write")
+    def post(self, production_id, service_identity=None):
+        from datetime import datetime, timezone
+
+        from zou.app import db
+
+        from .snapshots import (
+            SNAPSHOT_UPLOAD_TTL,
+            run_snapshot_idempotent,
+            snapshot_payload,
+            start_snapshot,
+        )
+
+        try:
+            body = validate_snapshot_start(_snapshot_body())
+            production_uuid = _snapshot_uuid(production_id, "production_id")
+            snapshot_uuid = _snapshot_uuid(body["snapshot_id"], "snapshot_id")
+
+            def apply():
+                row = start_snapshot(
+                    db.session, production_id=production_uuid, snapshot_id=snapshot_uuid,
+                    config_revision=body["config_revision"], source_etag=body["source_etag"],
+                    page_count=body["page_count"], object_count=body["object_count"],
+                    snapshot_sha256=body["snapshot_sha256"],
+                    expires_at=datetime.now(timezone.utc) + SNAPSHOT_UPLOAD_TTL,
+                )
+                return snapshot_payload(db.session, row), 201, None
+
+            return _snapshot_respond(lambda: run_snapshot_idempotent(
+                db.session, production_id=production_uuid, actor_id=service_identity.actor_id,
+                idempotency_key=request.headers.get("Idempotency-Key"),
+                operation="snapshot.start", request_body=body, apply=apply,
+            ), default_status=201)
+        except ContractValidationError:
+            return _error("invalid_event", 400)
+
+
+class SyncSnapshotPageResource(MethodView):
+    @service_scope("vfx.sync.snapshot.write", production_source="none")
+    def put(self, snapshot_id, page_index, service_identity=None):
+        from zou.app import db
+
+        from .snapshots import (
+            put_snapshot_page,
+            run_snapshot_idempotent,
+            snapshot_payload,
+        )
+
+        try:
+            body = validate_snapshot_page_request(_snapshot_body(), path_page_index=page_index)
+            snapshot_uuid = _snapshot_uuid(snapshot_id, "snapshot_id")
+            def apply():
+                _bound_snapshot(db.session, snapshot_uuid, service_identity)
+                put_snapshot_page(db.session, snapshot_id=snapshot_uuid, page_index=page_index,
+                                  objects=body["objects"], page_sha256=body["page_sha256"])
+                current = db.session.get(_snapshot_resource_models(), snapshot_uuid)
+                return snapshot_payload(db.session, current), 200, None
+
+            return _snapshot_respond(lambda: run_snapshot_idempotent(
+                db.session, production_id=service_identity.production_id, actor_id=service_identity.actor_id,
+                idempotency_key=request.headers.get("Idempotency-Key"),
+                operation=f"snapshot:{snapshot_uuid}:page:{page_index}", request_body=body, apply=apply,
+            ))
+        except ContractValidationError:
+            return _error("invalid_event", 400)
+
+
+class SyncSnapshotCompleteResource(MethodView):
+    @service_scope("vfx.sync.snapshot.write", production_source="none")
+    def post(self, snapshot_id, service_identity=None):
+        from zou.app import db
+
+        from .snapshots import (
+            complete_snapshot,
+            run_snapshot_idempotent,
+            snapshot_payload,
+        )
+
+        try:
+            body = validate_snapshot_complete_request(_snapshot_body())
+            snapshot_uuid = _snapshot_uuid(snapshot_id, "snapshot_id")
+            def apply():
+                row = _bound_snapshot(db.session, snapshot_uuid, service_identity)
+                current = complete_snapshot(
+                    db.session, snapshot_id=snapshot_uuid, config_revision=row.config_revision,
+                    page_count=body["page_count"], object_count=body["object_count"],
+                    snapshot_sha256=body["snapshot_sha256"],
+                )
+                return snapshot_payload(db.session, current), 200, None
+
+            return _snapshot_respond(lambda: run_snapshot_idempotent(
+                db.session, production_id=service_identity.production_id, actor_id=service_identity.actor_id,
+                idempotency_key=request.headers.get("Idempotency-Key"),
+                operation=f"snapshot:{snapshot_uuid}:complete", request_body=body, apply=apply,
+            ))
+        except ContractValidationError:
+            return _error("invalid_event", 400)
+
+
 def _provider_connection(connection_id, production_id):
     from uuid import UUID
+
     from zou.app import db
+
     from ..models import StorageConnection
 
     try:
@@ -75,7 +254,9 @@ class DriveConnectionsResource(MethodView):
     @service_scope("vfx.connections.read", production_source="query")
     def get(self, service_identity=None):
         from uuid import UUID
+
         from zou.app import db
+
         from ..models import StorageConnection
 
         production_id = UUID(request.args["production_id"])
@@ -199,8 +380,9 @@ class TemplatesResource(MethodView):
 class DesiredConfigurationResource(MethodView):
     @service_scope("vfx.config.read")
     def get(self, production_id, service_identity=None):
-        from zou.app import db
         from uuid import UUID
+
+        from zou.app import db
 
         try:
             payload, etag = get_desired_config(db.session, UUID(production_id))
@@ -212,8 +394,9 @@ class DesiredConfigurationResource(MethodView):
 
     @service_scope("vfx.config.write")
     def put(self, production_id, service_identity=None):
-        from zou.app import db
         from uuid import UUID
+
+        from zou.app import db
 
         def apply():
             return put_desired_config(
@@ -232,8 +415,9 @@ class DesiredConfigurationResource(MethodView):
 class ActivationResource(MethodView):
     @service_scope("vfx.activation.write")
     def post(self, production_id, service_identity=None):
-        from zou.app import db
         from uuid import UUID
+
+        from zou.app import db
 
         def activate():
             body, status, etag = set_activation(
@@ -253,8 +437,9 @@ class ActivationResource(MethodView):
 class DeactivationResource(MethodView):
     @service_scope("vfx.activation.write")
     def post(self, production_id, service_identity=None):
-        from zou.app import db
         from uuid import UUID
+
+        from zou.app import db
 
         def deactivate():
             body, status, etag = set_activation(

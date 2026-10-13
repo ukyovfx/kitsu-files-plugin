@@ -1777,6 +1777,9 @@ from .integrations.http import (
     DriveConnectionsResource,
     DriveRootsResource,
     TemplatesResource,
+    SyncSnapshotStartResource,
+    SyncSnapshotPageResource,
+    SyncSnapshotCompleteResource,
 )
 
 
@@ -1787,6 +1790,9 @@ routes = [
     ("/integrations/v1/productions/<production_id>/desired-config", DesiredConfigurationResource),
     ("/integrations/v1/productions/<production_id>/activation", ActivationResource),
     ("/integrations/v1/productions/<production_id>/deactivation", DeactivationResource),
+    ("/integrations/v1/productions/<production_id>/sync-snapshots", SyncSnapshotStartResource),
+    ("/integrations/v1/sync-snapshots/<snapshot_id>/pages/<int:page_index>", SyncSnapshotPageResource),
+    ("/integrations/v1/sync-snapshots/<snapshot_id>/complete", SyncSnapshotCompleteResource),
     ("/health", Health),
     ("/csrf-token", CsrfToken),
     ("/overview", ProductionOverview),

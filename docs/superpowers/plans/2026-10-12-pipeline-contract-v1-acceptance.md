@@ -51,6 +51,16 @@ This section records the narrow implementation added on `codex/confirmed-ux-driv
 | Native Kitsu Task detail Files entry | BLOCKED | Pinned Kitsu 1.0.70 TaskInfo has no official active-Task extension slot. Plugin-side Task context remains available, and Production → Assets → VFX Files remains the supported installed page. The generic same-origin iframe hook is still an upstream Kitsu patch proposal, not installed or browser-accepted. DOM injection remains rejected. |
 | KitsuSync v1 management integration | PARTIAL | Exact contract is KitsuSync PR #239 HEAD `c1746776a69b0afd9ef542abad466e49e0d1c068`; authenticated desired-config/activation and provider identity/root/template handlers are now registered. OAuth authorization/credential vault, sync API orchestration and event transmission remain unwired. Event HMAC remains separate. |
 
+## Hierarchy Snapshot API slice (2026-10-13)
+
+| Gate | Status | Evidence / limitation |
+|---|---|---|
+| Pinned host readiness | BLOCKED | One readiness attempt against the existing disposable host failed: Docker could not open `npipe:////./pipe/dockerDesktopLinuxEngine` because the path was not found. No retry, host recreation, or Production access was performed. |
+| Snapshot contract request validation | PASS | Focused pure tests validate strict v1 start/page/complete envelopes, RFC 8785 canonical page hashing, route/body page index binding, limits, replay conflict behavior, and reserved Production UUID binding. |
+| Authenticated Snapshot HTTP route registration | PASS (local handler tests) | Added the three exact PR #239 routes under the existing Plugin management base. Local Flask tests confirm unauthenticated requests return 401, incorrect scope returns 403, and a token for another Production is rejected on start. Route registry is checked against exact paths. |
+| Durable Snapshot PostgreSQL API flow | NOT TESTED | A pinned-host HTTP test now covers start, paged upload, idempotent replay/conflict, cross-Production page rejection, completion, and stored state/idempotency records. It skipped because Zou is not installed in this local Python environment and the disposable Docker engine was unavailable. |
+| `vxf_0011` migration / management-provider / Working-Publish regression suite | BLOCKED | Not attempted after the one-shot Docker readiness failure; no PostgreSQL, pinned API, or Worker runtime is available in this environment. |
+
 | Provider connection/root/template API slice | PARTIAL | Exact v1 GET connection list, GET root candidates, GET template catalog, and POST read-only root verification handlers are registered. Responses omit credential references, email/owner labels, and unverified My Drive subjects. Google adapter root enumeration verifies the configured OIDC subject or fixed Shared Drive ID; candidate verification is read-only and does not change the Worker allowed root. FakeStorage exposes only its synthetic root. Local unit tests pass; pinned HTTP/PostgreSQL coverage exists but is skipped without Zou. |
 
 ## Provider-side integration checkpoint (2026-10-13)
