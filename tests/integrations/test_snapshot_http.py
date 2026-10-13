@@ -135,17 +135,17 @@ def test_sync_management_routes_require_their_exact_signed_scopes():
 
 
 def test_sync_preview_http_handler_binds_valid_identity_and_forwards_idempotency(monkeypatch):
-    import sys
-    from types import ModuleType, SimpleNamespace
+    from contextlib import nullcontext
 
+    from plugin.integrations import http
     from plugin.integrations import sync
 
-    zou = ModuleType("zou")
-    zou_app = ModuleType("zou.app")
     fake_session = object()
-    zou_app.db = SimpleNamespace(session=fake_session)
-    monkeypatch.setitem(sys.modules, "zou", zou)
-    monkeypatch.setitem(sys.modules, "zou.app", zou_app)
+    monkeypatch.setattr(
+        http,
+        "_integration_session_factory",
+        lambda: lambda: nullcontext(fake_session),
+    )
     observed = {}
 
     def preview(session, *, production_id, actor_id, payload, idempotency_key):
