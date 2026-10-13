@@ -111,7 +111,7 @@ def _upload_service():
     return UploadService(sessions, FileSystemStaging(staging_root))
 
 
-def _storage_adapter(connection):
+def _storage_adapter(connection, *, allow_unconfigured=False):
     factory = current_app.extensions.get("vfx_files_storage_adapter_factory")
     if factory is not None:
         return factory(connection)
@@ -124,6 +124,21 @@ def _storage_adapter(connection):
             raise ServiceUnavailable("FakeStorage is not configured")
         return PersistentFakeStorage(fake_root, root_id=_setting("VFX_FILES_FAKE_ROOT_ID", connection.allowed_root_id))
     if storage_mode == "google_drive":
+        if not connection.enabled and not allow_unconfigured:
+            raise ServiceUnavailable("Google Drive storage connection is unavailable")
+        from sqlalchemy.orm import sessionmaker
+        from .models import DriveCredential
+
+        credential = DriveCredential.query.filter_by(connection_id=connection.id).one_or_none()
+        if credential is not None:
+            if credential.state != "active":
+                raise ServiceUnavailable("Google Drive credential is unavailable")
+            from .integrations.oauth import build_database_drive_adapter
+            database = current_app.extensions["sqlalchemy"]
+            sessions = sessionmaker(bind=database.engine, expire_on_commit=False)
+            return build_database_drive_adapter(connection, sessions, current_app.config, current_app.extensions)
+        if _setting("VFX_FILES_ALLOW_LEGACY_CREDENTIAL_FILES", "false").lower() not in ("1", "true", "yes"):
+            raise ServiceUnavailable("Encrypted Google Drive credentials are required")
         from .storage.worker_factory import build_google_drive_adapter
 
         credentials_dir = _setting("VFX_FILES_DRIVE_CREDENTIALS_DIR")
@@ -1774,8 +1789,12 @@ from .integrations.http import (
     ActivationResource,
     DeactivationResource,
     DesiredConfigurationResource,
+    DriveAuthorizationResource,
     DriveConnectionsResource,
+    DriveConnectionRevokeResource,
+    DriveConnectionStatusResource,
     DriveRootsResource,
+    GoogleOAuthCallbackResource,
     TemplatesResource,
     SyncSnapshotStartResource,
     SyncSnapshotPageResource,
@@ -1789,8 +1808,12 @@ from .integrations.http import (
 
 
 routes = [
+    ("/integrations/v1/drive-connections/authorizations", DriveAuthorizationResource),
     ("/integrations/v1/drive-connections", DriveConnectionsResource),
+    ("/integrations/v1/drive-connections/<connection_id>", DriveConnectionStatusResource),
+    ("/integrations/v1/drive-connections/<connection_id>/revoke", DriveConnectionRevokeResource),
     ("/integrations/v1/drive-connections/<connection_id>/roots", DriveRootsResource),
+    ("/oauth/google/callback", GoogleOAuthCallbackResource),
     ("/integrations/v1/templates", TemplatesResource),
     ("/integrations/v1/productions/<production_id>/desired-config", DesiredConfigurationResource),
     ("/integrations/v1/productions/<production_id>/activation", ActivationResource),

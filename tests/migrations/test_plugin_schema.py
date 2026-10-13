@@ -12,6 +12,7 @@ KITSUSYNC_DELIVERY_MIGRATION = ROOT / "plugin/migrations/versions/0009_kitsusync
 DRIVE_OBSERVATION_MIGRATION = ROOT / "plugin/migrations/versions/0010_drive_reconciliation_observations.py"
 KITSUSYNC_IDEMPOTENCY_MIGRATION = ROOT / "plugin/migrations/versions/0011_kitsusync_management_idempotency.py"
 KITSUSYNC_SYNC_MIGRATION = ROOT / "plugin/migrations/versions/0012_kitsusync_hierarchy_sync.py"
+DRIVE_OAUTH_MIGRATION = ROOT / "plugin/migrations/versions/0013_encrypted_drive_oauth.py"
 
 
 def test_plugin_tables_are_namespaced_and_nullable_folder_identity_is_avoided():
@@ -173,3 +174,17 @@ def test_kitsusync_hierarchy_sync_migration_allows_repeated_content_and_preserve
     assert "GROUP BY production_id, config_revision, hierarchy_sha256 HAVING count(*) > 1" in source
     assert "restore a consistent pre-migration snapshot instead of downgrading" in source
     assert "schema_epoch = 11" in source and "schema_epoch = 10" in source
+
+
+def test_encrypted_drive_oauth_migration_is_additive_and_refuses_data_loss():
+    source = DRIVE_OAUTH_MIGRATION.read_text()
+    assert 'revision = "vxf_0013"' in source
+    assert 'down_revision = "vxf_0012"' in source
+    assert 'op.create_table(\n        "plugin_vfx_files_drive_credential"' in source
+    assert 'op.create_table(\n        "plugin_vfx_files_drive_authorization_intent"' in source
+    assert 'sa.Column("ciphertext", sa.LargeBinary(), nullable=True)' in source
+    assert 'sa.Column("state_sha256", sa.String(64), nullable=False)' in source
+    assert "owner_subject = account_subject" in source
+    assert "state IN ('active','revoking','revoke_pending','revoked','reauth_required')" in source
+    assert "restore a consistent snapshot instead of downgrading" in source
+    assert "schema_epoch = 12" in source

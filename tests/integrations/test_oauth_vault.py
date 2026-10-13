@@ -1,0 +1,695 @@
+"""Synthetic tests for encrypted, Production-bound Google OAuth state."""
+
+import base64
+import json
+import sys
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timedelta, timezone
+from types import ModuleType
+from urllib.parse import parse_qs, urlsplit
+from uuid import UUID, uuid4
+
+import pytest
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.asymmetric import padding, rsa
+from flask import Flask, g
+
+
+PRODUCTION = UUID("10000000-0000-4000-8000-000000000001")
+ACTOR = UUID("20000000-0000-4000-8000-000000000002")
+SETTINGS = {
+    "VFX_FILES_GOOGLE_CLIENT_ID": "synthetic-client-id",
+    "VFX_FILES_GOOGLE_CLIENT_SECRET": "synthetic-client-secret",
+    "VFX_FILES_GOOGLE_OAUTH_REDIRECT_URI": "https://files.example.test/api/plugins/vfx_files/oauth/google/callback",
+    "VFX_FILES_KITSUSYNC_RETURN_URI": "https://sync.example.test/admin/vfx-files/authorization-return",
+}
+
+
+@pytest.fixture
+def oauth_db(monkeypatch, tmp_path):
+    sqlalchemy = pytest.importorskip("sqlalchemy")
+    from sqlalchemy import Boolean, DateTime, Integer, JSON, LargeBinary, String, Uuid, UniqueConstraint, create_engine
+    from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
+
+    class Base(DeclarativeBase):
+        pass
+
+    class StorageConnection(Base):
+        __tablename__ = "storage_connection"
+        id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+        production_id: Mapped[UUID] = mapped_column(Uuid)
+        provider: Mapped[str] = mapped_column(String)
+        account_mode: Mapped[str] = mapped_column(String)
+        owner_subject: Mapped[str | None] = mapped_column(String, nullable=True)
+        drive_id: Mapped[str | None] = mapped_column(String, nullable=True)
+        allowed_root_id: Mapped[str] = mapped_column(String)
+        credential_ref: Mapped[str] = mapped_column(String)
+        enabled: Mapped[bool] = mapped_column(Boolean)
+
+    class DriveCredential(Base):
+        __tablename__ = "drive_credential"
+        connection_id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
+        production_id: Mapped[UUID] = mapped_column(Uuid)
+        account_mode: Mapped[str] = mapped_column(String)
+        account_subject: Mapped[str] = mapped_column(String)
+        owner_subject: Mapped[str | None] = mapped_column(String, nullable=True)
+        drive_id: Mapped[str | None] = mapped_column(String, nullable=True)
+        key_id: Mapped[str] = mapped_column(String)
+        nonce: Mapped[bytes] = mapped_column(LargeBinary)
+        ciphertext: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
+        state: Mapped[str] = mapped_column(String)
+        updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+    class DriveAuthorizationIntent(Base):
+        __tablename__ = "drive_authorization_intent"
+        id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
+        production_id: Mapped[UUID] = mapped_column(Uuid)
+        actor_id: Mapped[UUID] = mapped_column(Uuid)
+        connection_id: Mapped[UUID] = mapped_column(Uuid)
+        account_mode: Mapped[str] = mapped_column(String)
+        state_sha256: Mapped[str] = mapped_column(String, unique=True)
+        key_id: Mapped[str] = mapped_column(String)
+        verifier_nonce: Mapped[bytes] = mapped_column(LargeBinary)
+        verifier_ciphertext: Mapped[bytes] = mapped_column(LargeBinary)
+        response_nonce: Mapped[bytes] = mapped_column(LargeBinary)
+        response_ciphertext: Mapped[bytes] = mapped_column(LargeBinary)
+        idempotency_key: Mapped[str] = mapped_column(String)
+        request_sha256: Mapped[str] = mapped_column(String)
+        status: Mapped[str] = mapped_column(String)
+        expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+        consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+        created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+    class KitsuSyncDesiredConfiguration(Base):
+        __tablename__ = "desired_config"
+        production_id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
+        config_revision: Mapped[int] = mapped_column(Integer)
+        notification_epoch: Mapped[int] = mapped_column(Integer)
+        desired_config: Mapped[dict] = mapped_column(JSON)
+
+    class Job(Base):
+        __tablename__ = "job"
+        id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
+        job_type: Mapped[str] = mapped_column(String)
+        idempotency_key: Mapped[str] = mapped_column(String, unique=True)
+        payload: Mapped[dict] = mapped_column(JSON)
+        state: Mapped[str] = mapped_column(String)
+        lease_owner: Mapped[UUID | None] = mapped_column(Uuid, nullable=True)
+        lease_generation: Mapped[int] = mapped_column(Integer)
+        lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    class KitsuSyncManagementIdempotency(Base):
+        __tablename__ = "management_idempotency"
+        id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+        production_id: Mapped[UUID] = mapped_column(Uuid)
+        idempotency_key: Mapped[str] = mapped_column(String)
+        actor_id: Mapped[UUID] = mapped_column(Uuid)
+        operation: Mapped[str] = mapped_column(String)
+        request_sha256: Mapped[str] = mapped_column(String)
+        response_status: Mapped[int] = mapped_column(Integer)
+        response_etag: Mapped[str | None] = mapped_column(String, nullable=True)
+        response_body: Mapped[dict] = mapped_column(JSON)
+        __table_args__ = (UniqueConstraint("production_id", "idempotency_key"),)
+
+    class KitsuSyncHierarchySnapshot(Base):
+        __tablename__ = "hierarchy_snapshot_stub"
+        id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
+
+    class KitsuSyncHierarchySnapshotPage(Base):
+        __tablename__ = "hierarchy_snapshot_page_stub"
+        snapshot_id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
+        page_index: Mapped[int] = mapped_column(Integer, primary_key=True)
+
+    models = ModuleType("plugin.models")
+    for model in (
+        StorageConnection, DriveCredential, DriveAuthorizationIntent, KitsuSyncDesiredConfiguration,
+        Job, KitsuSyncManagementIdempotency, KitsuSyncHierarchySnapshot, KitsuSyncHierarchySnapshotPage,
+    ):
+        setattr(models, model.__name__, model)
+    monkeypatch.setitem(sys.modules, "plugin.models", models)
+    engine = create_engine(f"sqlite:///{tmp_path / 'oauth.sqlite'}", connect_args={"check_same_thread": False})
+    Base.metadata.create_all(engine)
+    sessions = sessionmaker(engine, expire_on_commit=False)
+
+    from plugin.integrations.oauth import CredentialKeyring
+    keyring = CredentialKeyring("test-key-1", {"test-key-1": b"k" * 32})
+    extensions = {"vfx_files_credential_keyring": keyring}
+    return sessions, models, keyring, extensions
+
+
+class FakeResponse:
+    def __init__(self, status_code, body=None):
+        self.status_code = status_code
+        self.body = body or {}
+
+    def json(self):
+        return self.body
+
+
+class OAuthTransport:
+    def __init__(self, *, subject="oidc-subject-a", refresh_token="synthetic-refresh-token", refresh_status=200, granted_scopes="openid https://www.googleapis.com/auth/drive.file"):
+        self.subject = subject
+        self.refresh_token = refresh_token
+        self.refresh_status = refresh_status
+        self.granted_scopes = granted_scopes
+        self.calls = []
+        self._guard = __import__("threading").Lock()
+
+    def request(self, method, url, **kwargs):
+        with self._guard:
+            self.calls.append((method, url, kwargs))
+        if url.endswith("/token") and kwargs.get("data", {}).get("grant_type") == "authorization_code":
+            return FakeResponse(200, {
+                "access_token": "synthetic-access-token", "refresh_token": self.refresh_token,
+                "expires_in": 3600, "scope": self.granted_scopes,
+            })
+        if url.endswith("/userinfo"):
+            return FakeResponse(200, {"sub": self.subject})
+        if url.endswith("/token"):
+            if self.refresh_status != 200:
+                return FakeResponse(self.refresh_status, {"error": "synthetic provider error"})
+            return FakeResponse(200, {"access_token": "refreshed-access-token", "refresh_token": "rotated-refresh-token", "expires_in": 3600})
+        if url.endswith("/revoke"):
+            return FakeResponse(200)
+        raise AssertionError("Unexpected provider endpoint")
+
+
+def _intent(session_factory, extensions, *, mode="my_drive", connection_id=None, key="oauth-idempotency-key-01", actor=ACTOR):
+    from plugin.integrations.oauth import start_authorization
+    body = {"contract_version": "1.0", "production_id": str(PRODUCTION), "account_mode": mode}
+    if connection_id is not None:
+        body["connection_id"] = str(connection_id)
+    with session_factory() as session:
+        return start_authorization(
+            session, payload=body, actor_id=actor, idempotency_key=key,
+            settings=SETTINGS, extensions=extensions,
+        )
+
+
+def _state_from_response(response):
+    parsed = parse_qs(urlsplit(response["authorization_url"]).query)
+    return parsed["state"][0], parsed
+
+
+def _service_bearer(private_key, *, issuer, audience, scope):
+    def b64(value):
+        return base64.urlsafe_b64encode(value).rstrip(b"=").decode("ascii")
+
+    now = int(datetime.now(timezone.utc).timestamp())
+    header = {"typ": "at+JWT", "alg": "RS256", "kid": "oauth-http-test"}
+    claims = {
+        "iss": issuer, "aud": audience, "sub": "synthetic-service", "client_id": "synthetic-client",
+        "iat": now, "nbf": now, "exp": now + 120, "jti": str(uuid4()), "scope": scope,
+        "production_id": str(PRODUCTION), "actor_id": str(ACTOR), "actor_role": "production_admin",
+    }
+    signing_input = f"{b64(json.dumps(header, separators=(',', ':')).encode())}.{b64(json.dumps(claims, separators=(',', ':')).encode())}"
+    signature = private_key.sign(signing_input.encode("ascii"), padding.PKCS1v15(), hashes.SHA256())
+    return f"{signing_input}.{b64(signature)}"
+
+
+def test_oauth_intent_is_pkce_bound_durable_idempotent_and_secret_free(oauth_db):
+    sessions, models, _keyring, extensions = oauth_db
+    first, status = _intent(sessions, extensions)
+    assert status == 201
+    state, params = _state_from_response(first)
+    assert params["code_challenge_method"] == ["S256"]
+    assert params["scope"] == ["openid https://www.googleapis.com/auth/drive.file"]
+    assert "include_granted_scopes" not in params
+    assert "prompt" not in params
+    with sessions() as session:
+        intent = session.get(models.DriveAuthorizationIntent, UUID(first["authorization_id"]))
+        assert intent.state_sha256 != state
+        assert state.encode() not in intent.verifier_ciphertext
+        assert b"synthetic-client-secret" not in intent.response_ciphertext
+    replay, replay_status = _intent(sessions, extensions)
+    assert replay == first and replay_status == 201
+
+
+def test_callback_query_rejects_duplicates_conflicting_results_and_unknown_parameters():
+    from werkzeug.datastructures import MultiDict
+    from plugin.integrations.oauth import OAuthOperationError, validate_google_callback_query
+
+    state = "s" * 43
+    assert validate_google_callback_query(MultiDict([("state", state), ("code", "synthetic-code")])) == (
+        state, "synthetic-code", None,
+    )
+    invalid_queries = (
+        MultiDict([("state", state), ("state", state), ("code", "synthetic-code")]),
+        MultiDict([("state", state), ("code", "synthetic-code"), ("error", "access_denied")]),
+        MultiDict([("state", state), ("code", "synthetic-code"), ("next", "https://evil.example")]),
+        MultiDict([("state", state), ("error", "access_denied"), ("error_description", "ignored"), ("code", "synthetic-code")]),
+    )
+    for query in invalid_queries:
+        with pytest.raises(OAuthOperationError) as rejected:
+            validate_google_callback_query(query)
+        assert rejected.value.code == "authorization_invalid"
+
+
+def test_authenticated_http_authorize_callback_and_status_use_persistent_encrypted_grant(oauth_db, monkeypatch):
+    sessions, models, _keyring, extensions = oauth_db
+    from types import SimpleNamespace
+    from plugin.integrations.http import DriveAuthorizationResource, DriveConnectionStatusResource, DriveRootsResource, GoogleOAuthCallbackResource
+    from plugin.integrations.service_auth import JWKSCache
+    from plugin.storage.base import StorageCapabilities
+
+    issuer = "https://sync.example.test"
+    audience = "https://files.example.test/api/plugins/vfx_files/integrations/v1"
+    app = Flask(__name__)
+    app.config.update(
+        TESTING=True,
+        VFX_FILES_KITSUSYNC_ISSUER=issuer,
+        VFX_FILES_KITSUSYNC_AUDIENCE=audience,
+        VFX_FILES_KITSUSYNC_SUBJECT="synthetic-service",
+        VFX_FILES_KITSUSYNC_CLIENT_ID="synthetic-client",
+        VFX_FILES_STORAGE_MODE="google_drive",
+        **SETTINGS,
+    )
+    private = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    public = private.public_key().public_numbers()
+    def b64(value):
+        return base64.urlsafe_b64encode(value).rstrip(b"=").decode("ascii")
+    jwks = {"keys": [{
+        "kty": "RSA", "use": "sig", "alg": "RS256", "kid": "oauth-http-test",
+        "n": b64(public.n.to_bytes((public.n.bit_length() + 7) // 8, "big")),
+        "e": b64(public.e.to_bytes((public.e.bit_length() + 7) // 8, "big")),
+    }]}
+    app.extensions["vfx_files_kitsusync_jwks_cache"] = JWKSCache(issuer, fetcher=lambda _url: jwks)
+    app.extensions.update(extensions)
+    app.extensions["vfx_files_oauth_transport"] = OAuthTransport()
+    class RootAdapter:
+        def __init__(self):
+            self.calls = 0
+        def verify_root_candidate(self, root_id):
+            self.calls += 1
+            return StorageCapabilities(True, root_id, None, False, True, (root_id,))
+    root_adapter = RootAdapter()
+    app.extensions["vfx_files_storage_adapter_factory"] = lambda _connection: root_adapter
+    app.extensions["sqlalchemy"] = SimpleNamespace(engine=sessions.kw["bind"])
+    zou_module = ModuleType("zou")
+    zou_app_module = ModuleType("zou.app")
+    class RequestDatabase:
+        @property
+        def session(self):
+            return g.db_session
+    zou_app_module.db = RequestDatabase()
+    @app.before_request
+    def open_request_session():
+        g.db_session = sessions()
+    @app.teardown_request
+    def close_request_session(_error):
+        g.db_session.close()
+    monkeypatch.setitem(sys.modules, "zou", zou_module)
+    monkeypatch.setitem(sys.modules, "zou.app", zou_app_module)
+
+    prefix = "/plugins/vfx_files"
+    app.add_url_rule(prefix + "/integrations/v1/drive-connections/authorizations",
+        view_func=DriveAuthorizationResource.as_view("oauth_authorize"))
+    app.add_url_rule(prefix + "/integrations/v1/drive-connections/<connection_id>",
+        view_func=DriveConnectionStatusResource.as_view("oauth_status"))
+    app.add_url_rule(prefix + "/integrations/v1/drive-connections/<connection_id>/roots",
+        view_func=DriveRootsResource.as_view("oauth_roots"))
+    app.add_url_rule(prefix + "/oauth/google/callback", view_func=GoogleOAuthCallbackResource.as_view("oauth_callback"))
+    client = app.test_client()
+    authorize_headers = {
+        "Authorization": "Bearer " + _service_bearer(private, issuer=issuer, audience=audience, scope="vfx.connections.authorize"),
+        "X-KitsuSync-Actor-ID": str(ACTOR), "Idempotency-Key": "oauth-http-idempotency-001",
+    }
+    authorized = client.post(prefix + "/integrations/v1/drive-connections/authorizations", json={
+        "contract_version": "1.0", "production_id": str(PRODUCTION), "account_mode": "my_drive",
+    }, headers=authorize_headers)
+    assert authorized.status_code == 201, authorized.get_data(as_text=True)
+    assert set(authorized.json) == {"contract_version", "authorization_id", "authorization_url", "expires_at"}
+    assert "synthetic-client-secret" not in authorized.get_data(as_text=True)
+    state, _params = _state_from_response(authorized.json)
+    status_url = prefix + f"/integrations/v1/drive-connections/{authorized.json['authorization_id']}?production_id={PRODUCTION}"
+    status_headers = {
+        "Authorization": "Bearer " + _service_bearer(private, issuer=issuer, audience=audience, scope="vfx.connections.read"),
+        "X-KitsuSync-Actor-ID": str(ACTOR),
+    }
+    before = client.get(status_url, headers=status_headers)
+    assert before.status_code == 200 and before.json["state"] == "not_configured"
+
+    callback = client.get(prefix + "/oauth/google/callback", query_string={"state": state, "code": "synthetic-code"})
+    assert callback.status_code == 303
+    assert callback.headers["Cache-Control"] == "no-store"
+    assert callback.headers["Referrer-Policy"] == "no-referrer"
+    assert callback.headers["Location"].startswith(SETTINGS["VFX_FILES_KITSUSYNC_RETURN_URI"])
+    assert "synthetic-code" not in callback.headers["Location"]
+    after = client.get(status_url, headers=status_headers)
+    assert after.status_code == 200 and after.json["state"] == "connected"
+    root_headers = {
+        "Authorization": "Bearer " + _service_bearer(private, issuer=issuer, audience=audience, scope="vfx.roots.verify"),
+        "X-KitsuSync-Actor-ID": str(ACTOR), "Idempotency-Key": "oauth-root-verify-idempotency-001",
+    }
+    verified_root = client.post(
+        prefix + f"/integrations/v1/drive-connections/{authorized.json['authorization_id']}/roots",
+        json={"contract_version": "1.0", "account_mode": "my_drive", "production_id": str(PRODUCTION), "root_id": "synthetic-root-01"},
+        headers=root_headers,
+    )
+    assert verified_root.status_code == 200, verified_root.get_data(as_text=True)
+    assert verified_root.json["owner_subject"] == "oidc-subject-a"
+    replayed_root = client.post(
+        prefix + f"/integrations/v1/drive-connections/{authorized.json['authorization_id']}/roots",
+        json={"contract_version": "1.0", "account_mode": "my_drive", "production_id": str(PRODUCTION), "root_id": "synthetic-root-01"},
+        headers=root_headers,
+    )
+    assert replayed_root.status_code == 200 and replayed_root.json == verified_root.json
+    assert root_adapter.calls == 1
+    conflicting_root = client.post(
+        prefix + f"/integrations/v1/drive-connections/{authorized.json['authorization_id']}/roots",
+        json={"contract_version": "1.0", "account_mode": "my_drive", "production_id": str(PRODUCTION), "root_id": "different-root"},
+        headers=root_headers,
+    )
+    assert conflicting_root.status_code == 409 and conflicting_root.json["code"] == "idempotency_conflict"
+    with sessions() as session:
+        grant = session.get(models.DriveCredential, UUID(authorized.json["authorization_id"]))
+        connection = session.get(models.StorageConnection, UUID(authorized.json["authorization_id"]))
+        assert grant.state == "active" and grant.ciphertext
+        assert b"synthetic-refresh-token" not in grant.ciphertext
+        assert connection.enabled is True and connection.allowed_root_id == "synthetic-root-01"
+
+
+def test_idempotency_key_cannot_be_replayed_by_another_actor(oauth_db):
+    sessions, _models, _keyring, extensions = oauth_db
+    from plugin.integrations.oauth import OAuthOperationError, start_authorization
+
+    first, _ = _intent(sessions, extensions)
+    with sessions() as session:
+        with pytest.raises(OAuthOperationError) as conflict:
+            start_authorization(
+                session,
+                payload={"contract_version": "1.0", "production_id": str(PRODUCTION), "account_mode": "my_drive"},
+                actor_id=UUID("20000000-0000-4000-8000-000000000003"),
+                idempotency_key="oauth-idempotency-key-01", settings=SETTINGS, extensions=extensions,
+            )
+    assert conflict.value.code == "idempotency_conflict"
+    assert first["authorization_id"]
+
+
+def test_callback_requires_identity_and_credentials_never_persist_plaintext(oauth_db):
+    sessions, models, keyring, extensions = oauth_db
+    from plugin.integrations.oauth import complete_authorization
+
+    intent, _ = _intent(sessions, extensions)
+    state, _params = _state_from_response(intent)
+    return_url = complete_authorization(
+        sessions, state=state, code="synthetic-code", oauth_error=None,
+        settings=SETTINGS, extensions=extensions, transport=OAuthTransport(),
+    )
+    assert return_url.startswith("https://sync.example.test/admin/vfx-files/authorization-return?")
+    assert "synthetic-code" not in return_url and "synthetic-refresh-token" not in return_url
+    connection_id = UUID(intent["authorization_id"])
+    with sessions() as session:
+        credential = session.get(models.DriveCredential, connection_id)
+        connection = session.get(models.StorageConnection, connection_id)
+        assert credential.state == "active"
+        assert credential.account_subject == "oidc-subject-a"
+        assert credential.owner_subject == "oidc-subject-a"
+        assert connection.owner_subject == "oidc-subject-a"
+        assert connection.enabled is False  # No operations until root verification.
+        assert b"synthetic-refresh-token" not in credential.ciphertext
+        secret = keyring.decrypt(credential.key_id, credential.nonce, credential.ciphertext,
+            f"vfx-files:drive-credential:1:{PRODUCTION}:{connection_id}:oidc-subject-a".encode())
+        assert secret["refresh_token"] == "synthetic-refresh-token"
+        assert secret["access_token"] == "synthetic-access-token"
+    with pytest.raises(Exception, match="authorization_replayed"):
+        complete_authorization(
+            sessions, state=state, code="synthetic-code", oauth_error=None,
+            settings=SETTINGS, extensions=extensions, transport=OAuthTransport(),
+        )
+
+
+def test_account_switch_is_rejected_for_existing_production_connection(oauth_db):
+    sessions, models, _keyring, extensions = oauth_db
+    from plugin.integrations.oauth import OAuthOperationError, complete_authorization
+
+    first, _ = _intent(sessions, extensions)
+    first_state, _ = _state_from_response(first)
+    complete_authorization(sessions, state=first_state, code="code-a", oauth_error=None,
+        settings=SETTINGS, extensions=extensions, transport=OAuthTransport(subject="subject-a"))
+    second, _ = _intent(sessions, extensions, connection_id=UUID(first["authorization_id"]), key="oauth-idempotency-key-02")
+    second_state, _ = _state_from_response(second)
+    with pytest.raises(OAuthOperationError) as mismatch:
+        complete_authorization(sessions, state=second_state, code="code-b", oauth_error=None,
+            settings=SETTINGS, extensions=extensions, transport=OAuthTransport(subject="subject-b"))
+    assert mismatch.value.code == "account_mismatch"
+    with sessions() as session:
+        credential = session.get(models.DriveCredential, UUID(first["authorization_id"]))
+        assert credential.account_subject == "subject-a"
+
+
+def test_callback_rejects_unrequested_google_scopes(oauth_db):
+    sessions, models, _keyring, extensions = oauth_db
+    from plugin.integrations.oauth import OAuthOperationError, complete_authorization
+
+    intent, _ = _intent(sessions, extensions)
+    state, _ = _state_from_response(intent)
+    transport = OAuthTransport(granted_scopes="openid https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/drive")
+    with pytest.raises(OAuthOperationError) as error:
+        complete_authorization(
+            sessions, state=state, code="synthetic-code", oauth_error=None,
+            settings=SETTINGS, extensions=extensions, transport=transport,
+        )
+    assert error.value.code == "authorization_failed"
+    assert len(transport.calls) == 1
+    with sessions() as session:
+        assert session.get(models.DriveCredential, UUID(intent["authorization_id"])) is None
+
+
+def test_consent_is_requested_only_after_stored_grant_requires_reauthorization(oauth_db):
+    sessions, models, _keyring, extensions = oauth_db
+    from plugin.integrations.oauth import OAuthOperationError, complete_authorization
+
+    first, _ = _intent(sessions, extensions)
+    first_state, _ = _state_from_response(first)
+    complete_authorization(sessions, state=first_state, code="code-a", oauth_error=None,
+        settings=SETTINGS, extensions=extensions, transport=OAuthTransport(subject="subject-a"))
+    connection_id = UUID(first["authorization_id"])
+    with sessions.begin() as session:
+        session.get(models.DriveCredential, connection_id).state = "reauth_required"
+
+    renewal, _ = _intent(
+        sessions, extensions, connection_id=connection_id, key="oauth-idempotency-key-02",
+    )
+    renewal_state, params = _state_from_response(renewal)
+    assert params["prompt"] == ["consent"]
+    with pytest.raises(OAuthOperationError) as missing_grant:
+        complete_authorization(sessions, state=renewal_state, code="code-b", oauth_error=None,
+            settings=SETTINGS, extensions=extensions, transport=OAuthTransport(subject="subject-a", refresh_token=None))
+    assert missing_grant.value.code == "reauthorization_required"
+
+
+def test_active_connection_reauthorization_does_not_force_consent(oauth_db):
+    sessions, _models, _keyring, extensions = oauth_db
+    from plugin.integrations.oauth import complete_authorization
+
+    first, _ = _intent(sessions, extensions)
+    first_state, _ = _state_from_response(first)
+    complete_authorization(sessions, state=first_state, code="code-a", oauth_error=None,
+        settings=SETTINGS, extensions=extensions, transport=OAuthTransport(subject="subject-a"))
+    renewal, _ = _intent(
+        sessions, extensions, connection_id=UUID(first["authorization_id"]), key="oauth-idempotency-key-02",
+    )
+    _state, params = _state_from_response(renewal)
+    assert "prompt" not in params
+
+
+def test_database_refresh_is_cached_rotates_refresh_token_and_serializes_threads(oauth_db):
+    sessions, models, keyring, extensions = oauth_db
+    from plugin.integrations.oauth import DatabaseDriveTokenProvider, complete_authorization
+
+    intent, _ = _intent(sessions, extensions)
+    state, _ = _state_from_response(intent)
+    complete_authorization(sessions, state=state, code="synthetic-code", oauth_error=None,
+        settings=SETTINGS, extensions=extensions, transport=OAuthTransport())
+    connection_id = UUID(intent["authorization_id"])
+    transport = OAuthTransport()
+    provider = DatabaseDriveTokenProvider(sessions, connection_id, keyring, "synthetic-client-id", "synthetic-client-secret", transport)
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        tokens = list(pool.map(lambda _i: provider(), range(16)))
+    assert set(tokens) == {"synthetic-access-token"}  # Valid callback token reused without refresh.
+    with sessions() as session:
+        credential = session.get(models.DriveCredential, connection_id)
+        secret = keyring.decrypt(credential.key_id, credential.nonce, credential.ciphertext,
+            f"vfx-files:drive-credential:1:{PRODUCTION}:{connection_id}:oidc-subject-a".encode())
+        assert secret["refresh_token"] == "synthetic-refresh-token"
+        secret["access_token_expires_at"] = (datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat()
+        credential.key_id, credential.nonce, credential.ciphertext = keyring.encrypt(
+            secret, f"vfx-files:drive-credential:1:{PRODUCTION}:{connection_id}:oidc-subject-a".encode(),
+        )
+        session.commit()
+    provider._expires_at = 0
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        refreshed = list(pool.map(lambda _i: provider(), range(16)))
+    assert set(refreshed) == {"refreshed-access-token"}
+    assert sum(1 for method, url, kwargs in transport.calls if url.endswith("/token") and kwargs.get("data", {}).get("grant_type") == "refresh_token") == 1
+    with sessions() as session:
+        credential = session.get(models.DriveCredential, connection_id)
+        secret = keyring.decrypt(credential.key_id, credential.nonce, credential.ciphertext,
+            f"vfx-files:drive-credential:1:{PRODUCTION}:{connection_id}:oidc-subject-a".encode())
+        assert secret["refresh_token"] == "rotated-refresh-token"
+
+    # A second API/worker process may receive a 401 for the prior token after
+    # the first process already rotated it. It must reuse the DB's newer token
+    # instead of refreshing the same grant again.
+    second_process = DatabaseDriveTokenProvider(
+        sessions, connection_id, keyring, "synthetic-client-id", "synthetic-client-secret", transport,
+    )
+    assert second_process.refresh_after_unauthorized("synthetic-access-token") == "refreshed-access-token"
+    assert sum(1 for method, url, kwargs in transport.calls if url.endswith("/token") and kwargs.get("data", {}).get("grant_type") == "refresh_token") == 1
+
+
+def test_cached_access_token_is_rejected_after_cross_process_credential_revocation(oauth_db):
+    sessions, models, keyring, extensions = oauth_db
+    from plugin.integrations.oauth import DatabaseDriveTokenProvider, complete_authorization
+    from plugin.storage.base import PermissionFailure
+
+    intent, _ = _intent(sessions, extensions)
+    state, _ = _state_from_response(intent)
+    complete_authorization(sessions, state=state, code="synthetic-code", oauth_error=None,
+        settings=SETTINGS, extensions=extensions, transport=OAuthTransport())
+    connection_id = UUID(intent["authorization_id"])
+    transport = OAuthTransport()
+    provider = DatabaseDriveTokenProvider(sessions, connection_id, keyring, "synthetic-client-id", "synthetic-client-secret", transport)
+    assert provider() == "synthetic-access-token"
+    with sessions.begin() as session:
+        session.get(models.DriveCredential, connection_id).state = "revoking"
+    with pytest.raises(PermissionFailure):
+        provider()
+    assert transport.calls == []
+
+
+def test_expired_authorization_state_is_consumed_and_cannot_be_replayed(oauth_db):
+    sessions, models, _keyring, extensions = oauth_db
+    from plugin.integrations.oauth import OAuthOperationError, complete_authorization
+
+    intent, _ = _intent(sessions, extensions)
+    state, _ = _state_from_response(intent)
+    with sessions() as session:
+        row = session.get(models.DriveAuthorizationIntent, UUID(intent["authorization_id"]))
+        row.expires_at = datetime.now(timezone.utc) - timedelta(seconds=1)
+        session.commit()
+    expected = ("authorization_expired", "authorization_replayed")
+    for code in expected:
+        with pytest.raises(OAuthOperationError) as expired:
+            complete_authorization(
+                sessions, state=state, code="synthetic-code", oauth_error=None,
+                settings=SETTINGS, extensions=extensions, transport=OAuthTransport(),
+            )
+        assert expired.value.code == code
+    with sessions() as session:
+        row = session.get(models.DriveAuthorizationIntent, UUID(intent["authorization_id"]))
+        assert row.status == "expired" and row.consumed_at is not None
+
+
+def test_invalid_refresh_fails_closed_without_leaking_provider_body(oauth_db):
+    sessions, models, keyring, extensions = oauth_db
+    from plugin.integrations.oauth import DatabaseDriveTokenProvider, complete_authorization
+    from plugin.storage.base import PermissionFailure
+
+    intent, _ = _intent(sessions, extensions)
+    state, _ = _state_from_response(intent)
+    complete_authorization(sessions, state=state, code="synthetic-code", oauth_error=None,
+        settings=SETTINGS, extensions=extensions, transport=OAuthTransport())
+    connection_id = UUID(intent["authorization_id"])
+    with sessions() as session:
+        session.add(models.KitsuSyncDesiredConfiguration(
+            production_id=PRODUCTION,
+            config_revision=6,
+            notification_epoch=4,
+            desired_config={"contract_version": "1.0", "activation": {"enabled": True, "activated_at": "synthetic"}},
+        ))
+        session.commit()
+    with sessions() as session:
+        credential = session.get(models.DriveCredential, connection_id)
+        secret = keyring.decrypt(credential.key_id, credential.nonce, credential.ciphertext,
+            f"vfx-files:drive-credential:1:{PRODUCTION}:{connection_id}:oidc-subject-a".encode())
+        secret["access_token_expires_at"] = (datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat()
+        credential.key_id, credential.nonce, credential.ciphertext = keyring.encrypt(
+            secret, f"vfx-files:drive-credential:1:{PRODUCTION}:{connection_id}:oidc-subject-a".encode(),
+        )
+        session.commit()
+    provider = DatabaseDriveTokenProvider(sessions, connection_id, keyring, "client", "secret", OAuthTransport(refresh_status=400))
+    provider._expires_at = 0
+    with pytest.raises(PermissionFailure) as rejected:
+        provider()
+    assert "synthetic provider error" not in str(rejected.value)
+    with sessions() as session:
+        credential = session.get(models.DriveCredential, connection_id)
+        connection = session.get(models.StorageConnection, connection_id)
+        desired = session.get(models.KitsuSyncDesiredConfiguration, PRODUCTION)
+        assert credential.state == "reauth_required"
+        assert connection.enabled is False
+        assert desired.config_revision == 7
+        assert desired.notification_epoch == 5
+        assert desired.desired_config["activation"]["enabled"] is False
+
+
+def test_key_rotation_reencrypts_pending_and_completed_intents(oauth_db):
+    sessions, models, old_keyring, extensions = oauth_db
+    from plugin.integrations.oauth import CredentialKeyring, complete_authorization, rotate_configured_encrypted_records
+
+    pending, _ = _intent(sessions, extensions)
+    first, _ = _intent(sessions, extensions, key="oauth-idempotency-key-02")
+    first_state, _ = _state_from_response(first)
+    complete_authorization(sessions, state=first_state, code="synthetic-code", oauth_error=None,
+        settings=SETTINGS, extensions=extensions, transport=OAuthTransport())
+    new_keyring = CredentialKeyring("test-key-2", {"test-key-1": b"k" * 32, "test-key-2": b"n" * 32})
+    changed = rotate_configured_encrypted_records(
+        sessions,
+        {"VFX_FILES_CREDENTIAL_PREVIOUS_KEY_ID": "test-key-1"},
+        {"vfx_files_credential_keyring": new_keyring},
+    )
+    assert changed == 3  # One credential and two intent rows.
+    with sessions() as session:
+        intent = session.get(models.DriveAuthorizationIntent, UUID(pending["authorization_id"]))
+        assert intent.key_id == "test-key-2"
+        assert new_keyring.decrypt(intent.key_id, intent.response_nonce, intent.response_ciphertext,
+            f"vfx-files:authorization-response:1:{PRODUCTION}:{intent.connection_id}:{ACTOR}".encode())["authorization_id"] == pending["authorization_id"]
+
+
+@pytest.mark.parametrize(("revoke_status", "expected_state", "credential_state"), [
+    (200, "completed", "revoked"),
+    (503, "retry", "revoking"),
+    (400, "reconcile_required", "revoke_pending"),
+])
+def test_durable_revoke_disables_locally_and_only_erases_after_confirmed_provider_response(oauth_db, revoke_status, expected_state, credential_state):
+    sessions, models, keyring, extensions = oauth_db
+    from types import SimpleNamespace
+    from plugin.integrations.oauth import complete_authorization, make_drive_credential_revoke_handler
+
+    intent, _ = _intent(sessions, extensions)
+    state, _ = _state_from_response(intent)
+    complete_authorization(sessions, state=state, code="synthetic-code", oauth_error=None,
+        settings=SETTINGS, extensions=extensions, transport=OAuthTransport())
+    connection_id = UUID(intent["authorization_id"])
+    worker_id, job_id = uuid4(), uuid4()
+    payload = {"job_type": "revoke_drive_credential", "connection_id": str(connection_id), "production_id": str(PRODUCTION)}
+    with sessions.begin() as session:
+        credential = session.get(models.DriveCredential, connection_id)
+        connection = session.get(models.StorageConnection, connection_id)
+        credential.state = "revoking"
+        connection.enabled = False
+        session.add(models.Job(
+            id=job_id, job_type="revoke_drive_credential", idempotency_key="revoke-test-job-00001",
+            payload=payload, state="leased", lease_owner=worker_id, lease_generation=2,
+            lease_expires_at=datetime.now(timezone.utc) + timedelta(minutes=2),
+        ))
+
+    class RevokeTransport(OAuthTransport):
+        def request(self, method, url, **kwargs):
+            if url.endswith("/revoke"):
+                return FakeResponse(revoke_status, {"error": "synthetic failure"})
+            return super().request(method, url, **kwargs)
+
+    handler = make_drive_credential_revoke_handler(sessions, SETTINGS, extensions, transport=RevokeTransport())
+    result = handler(SimpleNamespace(
+        payload=payload, job_id=job_id, worker_id=worker_id, generation=2,
+    ))
+    assert result.state == expected_state
+    with sessions() as session:
+        credential = session.get(models.DriveCredential, connection_id)
+        connection = session.get(models.StorageConnection, connection_id)
+        assert connection.enabled is False
+        assert credential.state == credential_state
+        assert (credential.ciphertext is None) == (expected_state == "completed")

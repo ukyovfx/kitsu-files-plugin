@@ -105,3 +105,44 @@ def test_templates_handler_fails_closed_on_invalid_scope_or_actor():
     )
     assert actor_mismatch.status_code == 401
     assert actor_mismatch.json["code"] == "unauthorized_service"
+
+
+def test_oauth_management_and_callback_routes_are_registered_on_plugin_surface():
+    from plugin.integrations.http import (
+        DriveAuthorizationResource,
+        DriveConnectionRevokeResource,
+        DriveConnectionStatusResource,
+        GoogleOAuthCallbackResource,
+    )
+    from plugin.resources import routes
+
+    registered = {path: view for path, view in routes}
+    assert registered["/integrations/v1/drive-connections/authorizations"] is DriveAuthorizationResource
+    assert registered["/integrations/v1/drive-connections/<connection_id>"] is DriveConnectionStatusResource
+    assert registered["/integrations/v1/drive-connections/<connection_id>/revoke"] is DriveConnectionRevokeResource
+    assert registered["/oauth/google/callback"] is GoogleOAuthCallbackResource
+
+
+def test_authorization_management_handler_rejects_missing_or_wrong_scope_before_storage_access():
+    from plugin.integrations.http import DriveAuthorizationResource
+
+    client = _client()
+    client.application.add_url_rule(
+        "/plugins/vfx_files/integrations/v1/drive-connections/authorizations",
+        view_func=DriveAuthorizationResource.as_view("drive_authorization"),
+    )
+    url = "/plugins/vfx_files/integrations/v1/drive-connections/authorizations"
+    body = {
+        "contract_version": "1.0",
+        "production_id": PRODUCTION_ID,
+        "account_mode": "my_drive",
+    }
+    denied = client.post(url, json=body)
+    assert denied.status_code == 401
+    assert denied.json["code"] == "unauthorized_service"
+    wrong_scope = client.post(url, json=body, headers={
+        "Authorization": f"Bearer {client.provider_token('vfx.connections.read')}",
+        "X-KitsuSync-Actor-ID": ACTOR_ID,
+    })
+    assert wrong_scope.status_code == 403
+    assert wrong_scope.json["code"] == "invalid_scope"

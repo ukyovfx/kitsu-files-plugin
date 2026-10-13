@@ -21,6 +21,18 @@ def _enabled(name):
 
 def _authorize_job(payload):
     """Recheck the submitting actor's current Zou task permission before I/O."""
+    if payload.get("job_type") == "revoke_drive_credential":
+        # This monotonic cleanup was authorized when queued; finishing it after
+        # an actor loses membership can only reduce external access.
+        from .models import DriveCredential, StorageConnection
+        try:
+            connection_id = UUID(str(payload["connection_id"]))
+            production_id = UUID(str(payload["production_id"]))
+        except (KeyError, ValueError, TypeError):
+            return False
+        connection = StorageConnection.query.filter_by(id=connection_id, production_id=production_id).one_or_none()
+        credential = DriveCredential.query.filter_by(connection_id=connection_id, production_id=production_id).one_or_none()
+        return bool(connection is not None and credential is not None and credential.state in ("revoking", "revoke_pending", "revoked"))
     from zou.app.models.person import Person
     from zou.app.models.project import ProjectPersonLink
     from zou.app.models.task import Task, TaskPersonLink
@@ -95,6 +107,7 @@ def build_runtime(app):
     from .compat import SCHEMA_EPOCH, WORKER_BUILD
     from .folders.worker import make_task_folder_handler
     from .integrations.worker import make_hierarchy_sync_handler
+    from .integrations.oauth import make_drive_credential_revoke_handler
     from .jobs.queue import PostgresJobQueue
     from .packages.worker import make_output_package_handler
     from .publishes.worker import make_publish_handler
@@ -113,6 +126,10 @@ def build_runtime(app):
         fake_root_id=os.environ.get("VFX_FILES_FAKE_ROOT_ID", "synthetic-root-id"),
         fake_drive_id=os.environ.get("VFX_FILES_FAKE_DRIVE_ID"),
         credentials_dir=os.environ.get("VFX_FILES_DRIVE_CREDENTIALS_DIR"),
+        session_factory=sessions,
+        settings=app.config,
+        extensions=app.extensions,
+        allow_legacy_credentials=os.environ.get("VFX_FILES_ALLOW_LEGACY_CREDENTIAL_FILES", "false").lower() in ("1", "true", "yes"),
     )
     staging = FileSystemStaging(staging_root)
     worker_id = UUID(os.environ["VFX_FILES_WORKER_ID"]) if os.environ.get("VFX_FILES_WORKER_ID") else uuid4()
@@ -127,6 +144,7 @@ def build_runtime(app):
             "provision_task_folders": make_task_folder_handler(sessions, adapter_factory),
             "reconcile_drive_objects": make_drive_reconciliation_handler(sessions, adapter_factory),
             "sync_hierarchy": make_hierarchy_sync_handler(sessions, adapter_factory),
+            "revoke_drive_credential": make_drive_credential_revoke_handler(sessions, app.config, app.extensions),
         },
     )
 

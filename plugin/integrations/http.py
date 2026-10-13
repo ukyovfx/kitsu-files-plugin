@@ -1,6 +1,6 @@
 """Authenticated Zou HTTP handlers for the KitsuSync contract v1 config slice."""
 
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from flask import current_app, jsonify, request
 from flask.views import MethodView
@@ -272,7 +272,7 @@ def _provider_connection(connection_id, production_id):
 
     from zou.app import db
 
-    from ..models import StorageConnection
+    from ..models import DriveCredential, StorageConnection
 
     try:
         connection_uuid = UUID(str(connection_id))
@@ -286,7 +286,8 @@ def _provider_connection(connection_id, production_id):
     ).one_or_none()
     if row is None:
         raise ProviderContractError(404, "connection_not_found")
-    if not row.enabled:
+    credential = db.session.get(DriveCredential, connection_uuid)
+    if not row.enabled and (credential is None or credential.state != "active"):
         raise ProviderContractError(409, "connection_not_ready")
     return row
 
@@ -298,17 +299,179 @@ class DriveConnectionsResource(MethodView):
 
         from zou.app import db
 
-        from ..models import StorageConnection
+        from ..models import DriveCredential, StorageConnection
+        from .oauth import connection_status
 
         production_id = UUID(request.args["production_id"])
         rows = db.session.query(StorageConnection).filter_by(
             production_id=production_id
         ).order_by(StorageConnection.id).all()
         try:
-            connections = [connection_payload(row) for row in rows]
+            connections = [connection_status(row, db.session.get(DriveCredential, row.id)) for row in rows]
         except ProviderContractError as exc:
             return _provider_error(exc.code, exc.status, exc.field)
         return jsonify({"contract_version": "1.0", "connections": connections})
+
+
+class DriveAuthorizationResource(MethodView):
+    @service_scope("vfx.connections.authorize", production_source="body")
+    def post(self, service_identity=None):
+        from flask import current_app
+        from zou.app import db
+
+        from .oauth import OAuthOperationError, start_authorization
+
+        try:
+            body = _sync_json_body()
+            response, status = start_authorization(
+                db.session, payload=body, actor_id=service_identity.actor_id,
+                idempotency_key=request.headers.get("Idempotency-Key"),
+                settings=current_app.config, extensions=current_app.extensions,
+            )
+            return jsonify(response), status
+        except OAuthOperationError as exc:
+            return _error(exc.code, exc.status)
+
+
+class DriveConnectionStatusResource(MethodView):
+    @service_scope("vfx.connections.read", production_source="query")
+    def get(self, connection_id, service_identity=None):
+        from uuid import UUID
+        from zou.app import db
+        from ..models import DriveCredential, StorageConnection
+        from .oauth import connection_status
+
+        try:
+            parsed = UUID(str(connection_id))
+            if str(parsed) != str(connection_id):
+                raise ValueError
+        except (ValueError, TypeError, AttributeError):
+            return _provider_error("invalid_event", 400, "connection_id")
+        production_id = service_identity.production_id
+        connection = db.session.query(StorageConnection).filter_by(
+            id=parsed, production_id=production_id,
+        ).one_or_none()
+        if connection is None:
+            return _provider_error("connection_not_found", 404)
+        credential = db.session.get(DriveCredential, parsed)
+        return jsonify(connection_status(connection, credential))
+
+
+class DriveConnectionRevokeResource(MethodView):
+    @service_scope("vfx.connections.revoke", production_source="none")
+    def post(self, connection_id, service_identity=None):
+        from uuid import UUID, uuid4
+        from sqlalchemy import select
+        from zou.app import db
+        from ..models import DriveCredential, Job, KitsuSyncDesiredConfiguration, StorageConnection
+        from .oauth import OAuthOperationError, connection_status
+        from .sync import validate_operator_command
+
+        try:
+            body = _sync_json_body()
+            validate_operator_command(body)
+            parsed = UUID(str(connection_id))
+            if str(parsed) != str(connection_id):
+                raise ValueError
+            key = request.headers.get("Idempotency-Key", "")
+            if not 16 <= len(key) <= 128:
+                raise OAuthOperationError(400, "invalid_event")
+        except (ValueError, TypeError, AttributeError, ContractValidationError):
+            return _provider_error("invalid_event", 400)
+        except OAuthOperationError as exc:
+            return _provider_error(exc.code, exc.status)
+        production_id = service_identity.production_id
+        try:
+            with db.session.begin():
+                connection = db.session.scalar(select(StorageConnection).where(
+                    StorageConnection.id == parsed,
+                    StorageConnection.production_id == production_id,
+                ).with_for_update())
+                credential = db.session.scalar(select(DriveCredential).where(
+                    DriveCredential.connection_id == parsed,
+                    DriveCredential.production_id == production_id,
+                ).with_for_update())
+                if connection is None:
+                    raise OAuthOperationError(404, "connection_not_found")
+                if credential is None or credential.state == "revoked":
+                    return jsonify(connection_status(connection, credential)), 202
+                job_key = f"drive-revoke:{production_id}:{key}"
+                existing = db.session.scalar(select(Job).where(Job.idempotency_key == job_key).with_for_update())
+                payload = {
+                    "job_type": "revoke_drive_credential", "production_id": str(production_id),
+                    "actor_id": str(service_identity.actor_id), "connection_id": str(parsed),
+                }
+                if existing is not None:
+                    if existing.payload != payload:
+                        raise OAuthOperationError(409, "idempotency_conflict")
+                    return jsonify(connection_status(connection, credential)), 202
+                connection.enabled = False
+                credential.state = "revoking"
+                desired = db.session.get(KitsuSyncDesiredConfiguration, production_id)
+                if desired is not None:
+                    desired_body = dict(desired.desired_config)
+                    activation = dict(desired_body.get("activation", {}))
+                    activation.update({"enabled": False, "activated_at": None,
+                                       "notification_epoch": desired.notification_epoch + 1})
+                    desired_body["activation"] = activation
+                    desired.notification_epoch += 1
+                    desired.config_revision += 1
+                    desired.desired_config = desired_body
+                db.session.add(Job(
+                    id=uuid4(), job_type="revoke_drive_credential", idempotency_key=job_key,
+                    payload=payload, state="queued",
+                ))
+            return jsonify(connection_status(connection, credential)), 202
+        except OAuthOperationError as exc:
+            return _provider_error(exc.code, exc.status)
+
+
+class GoogleOAuthCallbackResource(MethodView):
+    """Fixed public callback; only the single-use state authorizes completion."""
+    def get(self):
+        from flask import current_app, redirect, make_response
+        from sqlalchemy import select
+        from sqlalchemy.orm import sessionmaker
+        from zou.app import db
+        from ..models import DriveAuthorizationIntent
+        from .oauth import OAuthOperationError, _oauth_settings, complete_authorization, validate_google_callback_query
+        from ..storage.worker_factory import RequestsDriveTransport
+        import hashlib
+
+        state = request.args.get("state", "")
+        code = None
+        oauth_error = None
+        authorization_id = None
+        try:
+            state, code, oauth_error = validate_google_callback_query(request.args)
+            if isinstance(state, str) and 32 <= len(state) <= 256:
+                row = db.session.scalar(select(DriveAuthorizationIntent).where(
+                    DriveAuthorizationIntent.state_sha256 == hashlib.sha256(state.encode("utf-8")).hexdigest(),
+                ))
+                authorization_id = str(row.id) if row is not None else None
+            if authorization_id is None:
+                raise OAuthOperationError(400, "authorization_invalid")
+            database = current_app.extensions["sqlalchemy"]
+            sessions = sessionmaker(bind=database.engine, expire_on_commit=False)
+            transport = current_app.extensions.get("vfx_files_oauth_transport") or RequestsDriveTransport(timeout=(10, 30))
+            location = complete_authorization(
+                sessions, state=state, code=code,
+                oauth_error=oauth_error, settings=current_app.config,
+                extensions=current_app.extensions, transport=transport,
+            )
+        except OAuthOperationError as exc:
+            try:
+                _client, _secret, _callback, return_uri = _oauth_settings(current_app.config)
+                from urllib.parse import urlencode
+                location = return_uri + ("&" if "?" in return_uri else "?") + urlencode({
+                    "authorization_id": authorization_id or "", "status": "failed", "error": exc.code,
+                })
+            except OAuthOperationError:
+                return _error(exc.code, exc.status)
+        response = make_response(redirect(location, code=303))
+        response.headers["Cache-Control"] = "no-store"
+        response.headers["Referrer-Policy"] = "no-referrer"
+        return response
 
 
 class DriveRootsResource(MethodView):
@@ -322,7 +485,7 @@ class DriveRootsResource(MethodView):
             connection = _provider_connection(connection_id, production_id)
             from ..resources import _storage_adapter
 
-            adapter = _storage_adapter(connection)
+            adapter = _storage_adapter(connection, allow_unconfigured=True)
             listing = adapter.list_root_candidates(page_token=page_token)
             if not listing.complete or listing.next_page_token is not None or len(listing.items) > 500:
                 raise ProviderContractError(503, "provider_unavailable")
@@ -349,6 +512,8 @@ class DriveRootsResource(MethodView):
 
     @service_scope("vfx.roots.verify", production_source="body")
     def post(self, connection_id, service_identity=None):
+        from zou.app import db
+        from .snapshots import run_snapshot_idempotent
         payload = request.get_json(silent=True)
         if request.mimetype != "application/json" or not isinstance(payload, dict):
             return _provider_error("invalid_event", 400, "body")
@@ -369,40 +534,89 @@ class DriveRootsResource(MethodView):
                 root_id = parse_google_drive_folder_url(payload["candidate_url"])
             if not isinstance(root_id, str) or not root_id or len(root_id) > 255:
                 raise ProviderContractError(400, "invalid_event", "root_id")
-            connection = _provider_connection(connection_id, payload.get("production_id"))
-            if payload.get("account_mode") != connection.account_mode:
-                raise ProviderContractError(403, "root_unverified")
-            requested_drive_id = payload.get("drive_id")
-            if connection.account_mode == "shared_drive" and requested_drive_id != connection.drive_id:
-                raise ProviderContractError(403, "root_unverified")
-            if connection.account_mode == "my_drive" and requested_drive_id not in (None, ""):
-                raise ProviderContractError(400, "invalid_event", "drive_id")
-            from ..resources import _storage_adapter
-            from ..storage.base import PermissionFailure
+            def verify_root():
+                from ..models import DriveCredential, StorageConnection
 
-            if connection.account_mode == "my_drive" and current_app.config.get("VFX_FILES_STORAGE_MODE") == "fake":
-                raise ProviderContractError(403, "root_unverified")
-            adapter = _storage_adapter(connection)
-            try:
-                capabilities = adapter.verify_root_candidate(root_id)
-            except PermissionFailure:
-                raise ProviderContractError(403, "drive_permission_denied") from None
-            if (
-                not capabilities.root_visible or capabilities.root_id != root_id
-                or (connection.account_mode == "shared_drive" and capabilities.drive_id != connection.drive_id)
-            ):
-                raise ProviderContractError(403, "drive_permission_denied")
-            result = root_verification_payload(
-                connection_id=connection.id,
-                account_mode=connection.account_mode,
-                root_id=root_id,
-                drive_id=capabilities.drive_id,
-                can_add_children=capabilities.can_add_children,
-                owner_subject=connection.owner_subject if connection.account_mode == "my_drive" else None,
+                connection = _provider_connection(connection_id, payload.get("production_id"))
+                if payload.get("account_mode") != connection.account_mode:
+                    raise ProviderContractError(403, "root_unverified")
+                requested_drive_id = payload.get("drive_id")
+                if connection.account_mode == "shared_drive" and (
+                    not isinstance(requested_drive_id, str) or not requested_drive_id
+                    or (connection.drive_id and requested_drive_id != connection.drive_id)
+                ):
+                    raise ProviderContractError(403, "root_unverified")
+                if connection.account_mode == "my_drive" and requested_drive_id not in (None, ""):
+                    raise ProviderContractError(400, "invalid_event", "drive_id")
+                from ..resources import _storage_adapter
+                from ..storage.base import PermissionFailure
+
+                if connection.account_mode == "my_drive" and current_app.config.get("VFX_FILES_STORAGE_MODE") == "fake":
+                    raise ProviderContractError(403, "root_unverified")
+                adapter_connection = connection
+                if connection.account_mode == "shared_drive" and not connection.drive_id:
+                    from types import SimpleNamespace
+                    adapter_connection = SimpleNamespace(**{
+                        column.name: getattr(connection, column.name)
+                        for column in connection.__table__.columns
+                    })
+                    adapter_connection.drive_id = requested_drive_id
+                adapter = _storage_adapter(adapter_connection, allow_unconfigured=True)
+                try:
+                    capabilities = adapter.verify_root_candidate(root_id)
+                except PermissionFailure:
+                    raise ProviderContractError(403, "drive_permission_denied") from None
+                if (
+                    not capabilities.root_visible or capabilities.root_id != root_id
+                    or (connection.account_mode == "shared_drive" and capabilities.drive_id != requested_drive_id)
+                ):
+                    raise ProviderContractError(403, "drive_permission_denied")
+                if connection.enabled and connection.allowed_root_id not in (root_id, f"__pending__:{connection.id}"):
+                    raise ProviderContractError(409, "root_unverified")
+                another_enabled = db.session.query(StorageConnection).filter(
+                    StorageConnection.production_id == connection.production_id,
+                    StorageConnection.enabled.is_(True),
+                    StorageConnection.id != connection.id,
+                ).first()
+                if another_enabled is not None:
+                    raise ProviderContractError(409, "connection_not_ready")
+                credential = db.session.get(DriveCredential, connection.id)
+                if current_app.config.get("VFX_FILES_STORAGE_MODE") == "google_drive" and (credential is None or credential.state != "active"):
+                    raise ProviderContractError(403, "root_unverified")
+                if connection.account_mode == "my_drive" and credential is not None and credential.account_subject != connection.owner_subject:
+                    raise ProviderContractError(403, "root_unverified")
+                if connection.account_mode == "shared_drive" and credential is not None and credential.drive_id not in (None, requested_drive_id):
+                    raise ProviderContractError(403, "root_unverified")
+                connection.allowed_root_id = root_id
+                connection.drive_id = capabilities.drive_id
+                connection.enabled = True
+                if credential is not None and connection.account_mode == "shared_drive":
+                    credential.drive_id = capabilities.drive_id
+                db.session.flush()
+                result = root_verification_payload(
+                    connection_id=connection.id,
+                    account_mode=connection.account_mode,
+                    root_id=root_id,
+                    drive_id=capabilities.drive_id,
+                    can_add_children=capabilities.can_add_children,
+                    owner_subject=connection.owner_subject if connection.account_mode == "my_drive" else None,
+                )
+                return result, 200, None
+
+            production_id = UUID(payload["production_id"])
+            connection_uuid = UUID(str(connection_id))
+            response_body, status, _etag = run_snapshot_idempotent(
+                db.session, production_id=production_id, actor_id=service_identity.actor_id,
+                idempotency_key=idempotency_key, operation=f"root.verify:{connection_uuid}",
+                request_body={"connection_id": str(connection_uuid), **payload}, apply=verify_root,
             )
-            return jsonify(result)
+            return jsonify(response_body), status
+        except SnapshotConflict:
+            return _provider_error("idempotency_conflict", 409)
         except ProviderContractError as exc:
             return _provider_error(exc.code, exc.status, exc.field)
+        except ContractValidationError:
+            return _provider_error("invalid_event", 400)
         except ValueError:
             return _provider_error("invalid_event", 400, "candidate_url")
         except Exception:

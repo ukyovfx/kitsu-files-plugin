@@ -274,6 +274,41 @@ def test_sync_preview_apply_status_retry_and_idempotency(sync_db):
         assert again == retried
 
 
+def test_sync_preview_is_read_only_and_allowed_before_activation(sync_db):
+    from uuid import UUID
+
+    from plugin.integrations.sync import SyncOperationError, apply_sync_preview, create_sync_preview
+
+    factory, Desired, *_ = sync_db
+    data = seed_sync_state(sync_db)
+    with factory.begin() as session:
+        desired = session.get(Desired, UUID(PRODUCTION))
+        desired.desired_config = dict(desired.desired_config)
+        desired.desired_config["activation"] = {
+            "enabled": False, "activated_at": None, "notification_epoch": 4,
+        }
+    preview, status, _ = create_sync_preview(
+        factory(), production_id=UUID(PRODUCTION), actor_id=UUID(ACTOR),
+        payload={
+            "contract_version": "1.0", "config_revision": 4,
+            "snapshot_id": str(data["snapshot_id"]),
+        },
+        idempotency_key="disabled-preview-key-001",
+    )
+    assert status == 200 and preview["state"] == "preview_ready"
+    with factory() as session:
+        with pytest.raises(SyncOperationError) as rejected:
+            apply_sync_preview(
+                session, production_id=UUID(PRODUCTION), actor_id=UUID(ACTOR),
+                payload={
+                    "contract_version": "1.0", "config_revision": 4,
+                    "preview_id": preview["preview_id"],
+                },
+                idempotency_key="disabled-apply-key-001",
+            )
+        assert rejected.value.code == "connection_not_ready"
+
+
 def test_reconcile_command_only_queues_for_ambiguous_job(sync_db):
     from uuid import UUID
 

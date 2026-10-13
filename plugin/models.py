@@ -44,6 +44,55 @@ class StorageConnection(db.Model):
     created_at = db.Column(DateTime(timezone=True), nullable=False, server_default=func.now())
 
 
+class DriveCredential(db.Model):
+    """Encrypted provider grant; plaintext credentials exist only in process memory."""
+    __tablename__ = "plugin_vfx_files_drive_credential"
+    connection_id = db.Column(UUIDType(binary=False), ForeignKey("plugin_vfx_files_storage_connection.id"), primary_key=True)
+    production_id = db.Column(UUIDType(binary=False), nullable=False, index=True)
+    account_mode = db.Column(String(24), nullable=False)
+    account_subject = db.Column(String(255), nullable=False)
+    owner_subject = db.Column(String(255))
+    drive_id = db.Column(String(255))
+    key_id = db.Column(String(64), nullable=False)
+    nonce = db.Column(db.LargeBinary(12), nullable=False)
+    ciphertext = db.Column(db.LargeBinary, nullable=True)
+    state = db.Column(String(24), nullable=False, default="active")
+    updated_at = db.Column(DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now())
+    __table_args__ = (
+        db.CheckConstraint("account_mode IN ('my_drive','shared_drive')", name="plugin_vfx_files_credential_account_mode_ck"),
+        db.CheckConstraint("state IN ('active','revoking','revoke_pending','revoked','reauth_required')", name="plugin_vfx_files_credential_state_ck"),
+        db.CheckConstraint("(account_mode = 'my_drive' AND owner_subject = account_subject AND drive_id IS NULL) OR (account_mode = 'shared_drive' AND owner_subject IS NULL)", name="plugin_vfx_files_credential_identity_ck"),
+    )
+
+
+class DriveAuthorizationIntent(db.Model):
+    """Single-use OAuth handoff bound to KitsuSync actor and Production."""
+    __tablename__ = "plugin_vfx_files_drive_authorization_intent"
+    id = db.Column(UUIDType(binary=False), primary_key=True, default=uuid4)
+    production_id = db.Column(UUIDType(binary=False), nullable=False, index=True)
+    actor_id = db.Column(UUIDType(binary=False), nullable=False)
+    connection_id = db.Column(UUIDType(binary=False), ForeignKey("plugin_vfx_files_storage_connection.id"), nullable=False)
+    account_mode = db.Column(String(24), nullable=False)
+    state_sha256 = db.Column(String(64), nullable=False, unique=True)
+    key_id = db.Column(String(64), nullable=False)
+    verifier_nonce = db.Column(db.LargeBinary(12), nullable=False)
+    verifier_ciphertext = db.Column(db.LargeBinary, nullable=False)
+    response_nonce = db.Column(db.LargeBinary(12), nullable=False)
+    response_ciphertext = db.Column(db.LargeBinary, nullable=False)
+    idempotency_key = db.Column(String(128), nullable=False)
+    request_sha256 = db.Column(String(64), nullable=False)
+    status = db.Column(String(24), nullable=False, default="pending")
+    expires_at = db.Column(DateTime(timezone=True), nullable=False)
+    consumed_at = db.Column(DateTime(timezone=True))
+    created_at = db.Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    __table_args__ = (
+        UniqueConstraint("production_id", "idempotency_key", name="plugin_vfx_files_drive_auth_idem_uc"),
+        db.CheckConstraint("account_mode IN ('my_drive','shared_drive')", name="plugin_vfx_files_drive_auth_mode_ck"),
+        db.CheckConstraint("status IN ('pending','processing','connected','failed','expired')", name="plugin_vfx_files_drive_auth_state_ck"),
+        Index("plugin_vfx_files_drive_auth_expiry_ix", "expires_at"),
+    )
+
+
 class FolderBinding(db.Model):
     __tablename__ = "plugin_vfx_files_folder_binding"
     id = db.Column(UUIDType(binary=False), primary_key=True, default=uuid4)

@@ -45,7 +45,10 @@ class GoogleDriveStorageAdapter:
         response = self._send(method, url, token, params=params, json=json, data=data, headers=headers)
         refresh = getattr(self.token_provider, "refresh_after_unauthorized", None)
         if response.status_code == 401 and refresh is not None:
-            token = refresh()
+            if getattr(self.token_provider, "refresh_after_unauthorized_accepts_token", False):
+                token = refresh(token)
+            else:
+                token = refresh()
             if not retry_unauthorized:
                 # Upload bodies are generators over durable staging streams. A
                 # second attempt here would replay an exhausted generator.

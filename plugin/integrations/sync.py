@@ -242,14 +242,14 @@ def _models():
     return FolderBinding, Job, KitsuSyncDesiredConfiguration, KitsuSyncHierarchySnapshot, KitsuSyncHierarchySnapshotPage, KitsuSyncSyncPreview, SharedTemplateConfiguration, StorageConnection
 
 
-def _require_current_config(session, production_id, config_revision):
+def _require_current_config(session, production_id, config_revision, *, require_active=True):
     _FolderBinding, _Job, Desired, _Snapshot, _Page, _Preview, _Template, Connection = _models()
     config = session.scalar(select(Desired).where(Desired.production_id == production_id).with_for_update())
     if config is None or config.config_revision != config_revision:
         raise SyncOperationError(409, "stale_config")
     activation = config.desired_config.get("activation", {})
     drive = config.desired_config.get("drive", {})
-    if not activation.get("enabled"):
+    if require_active and not activation.get("enabled"):
         raise SyncOperationError(409, "connection_not_ready")
     connection_id = _uuid(config.desired_config.get("connection_id"), "connection_id")
     connection = session.scalar(select(Connection).where(Connection.id == connection_id).with_for_update())
@@ -287,7 +287,12 @@ def create_sync_preview(session, *, production_id: UUID, actor_id: UUID, payload
     request_hash = hashlib.sha256(body_bytes).hexdigest()
     FolderBinding, _Job, Desired, Snapshot, _Page, Preview, Template, _Connection = _models()
     def operation():
-        config, connection, epoch = _require_current_config(session, production_id, payload["config_revision"])
+        # Preview is read-only and is part of configuration review; the
+        # contract permits it before activation. Apply and the Worker retain
+        # the default active/epoch/root fences.
+        config, connection, epoch = _require_current_config(
+            session, production_id, payload["config_revision"], require_active=False,
+        )
         selected_template_scopes(dict(config.desired_config))
         snapshot_id = _uuid(payload["snapshot_id"], "snapshot_id")
         snapshot = session.scalar(select(Snapshot).where(Snapshot.id == snapshot_id).with_for_update())
