@@ -1449,6 +1449,7 @@ class SharedTemplateActivation(MethodView):
     def post(self, production_id):
         _require_enabled()
         _assert_compatible()
+        from .folders.templates import TemplateConflict, TemplateDenied, set_configuration_enabled
         try:
             _require_mutation_origin()
             actor, scope = _production_provision_scope(production_id)
@@ -1471,7 +1472,6 @@ class SharedTemplateActivation(MethodView):
             from sqlalchemy.orm import sessionmaker
             db = current_app.extensions["sqlalchemy"]
             sessions = sessionmaker(bind=db.engine, expire_on_commit=False)
-            from .folders.templates import TemplateConflict, TemplateDenied, set_configuration_enabled
             from .models import SharedTemplateConfiguration
             existing = SharedTemplateConfiguration.query.filter_by(production_id=scope.production_id).one_or_none()
             row = set_configuration_enabled(
