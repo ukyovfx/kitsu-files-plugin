@@ -267,7 +267,7 @@ class SyncSnapshotCompleteResource(MethodView):
             return _error("invalid_event", 400)
 
 
-def _provider_connection(connection_id, production_id):
+def _provider_connection(connection_id, production_id, *, session=None):
     from uuid import UUID
 
     from zou.app import db
@@ -281,12 +281,13 @@ def _provider_connection(connection_id, production_id):
             raise ValueError("noncanonical UUID")
     except (ValueError, TypeError, AttributeError):
         raise ProviderContractError(400, "invalid_event", "connection_id") from None
-    row = db.session.query(StorageConnection).filter_by(
+    session = session or db.session
+    row = session.query(StorageConnection).filter_by(
         id=connection_uuid, production_id=production_uuid
     ).one_or_none()
     if row is None:
         raise ProviderContractError(404, "connection_not_found")
-    credential = db.session.get(DriveCredential, connection_uuid)
+    credential = session.get(DriveCredential, connection_uuid)
     if not row.enabled and (credential is None or credential.state != "active"):
         raise ProviderContractError(409, "connection_not_ready")
     return row
@@ -512,6 +513,7 @@ class DriveRootsResource(MethodView):
 
     @service_scope("vfx.roots.verify", production_source="body")
     def post(self, connection_id, service_identity=None):
+        from sqlalchemy.orm import sessionmaker
         from zou.app import db
         from .snapshots import run_snapshot_idempotent
         payload = request.get_json(silent=True)
@@ -534,10 +536,18 @@ class DriveRootsResource(MethodView):
                 root_id = parse_google_drive_folder_url(payload["candidate_url"])
             if not isinstance(root_id, str) or not root_id or len(root_id) > 255:
                 raise ProviderContractError(400, "invalid_event", "root_id")
+            # Zou may have already opened its request-scoped SQLAlchemy
+            # transaction while resolving request identity. Keep the root
+            # verification mutation and idempotency record in an independent
+            # transaction so this endpoint remains atomic and composable.
+            database = current_app.extensions["sqlalchemy"]
+            sessions = sessionmaker(bind=database.engine, expire_on_commit=False)
             def verify_root():
                 from ..models import DriveCredential, StorageConnection
 
-                connection = _provider_connection(connection_id, payload.get("production_id"))
+                connection = _provider_connection(
+                    connection_id, payload.get("production_id"), session=session,
+                )
                 if payload.get("account_mode") != connection.account_mode:
                     raise ProviderContractError(403, "root_unverified")
                 requested_drive_id = payload.get("drive_id")
@@ -573,14 +583,14 @@ class DriveRootsResource(MethodView):
                     raise ProviderContractError(403, "drive_permission_denied")
                 if connection.enabled and connection.allowed_root_id not in (root_id, f"__pending__:{connection.id}"):
                     raise ProviderContractError(409, "root_unverified")
-                another_enabled = db.session.query(StorageConnection).filter(
+                another_enabled = session.query(StorageConnection).filter(
                     StorageConnection.production_id == connection.production_id,
                     StorageConnection.enabled.is_(True),
                     StorageConnection.id != connection.id,
                 ).first()
                 if another_enabled is not None:
                     raise ProviderContractError(409, "connection_not_ready")
-                credential = db.session.get(DriveCredential, connection.id)
+                credential = session.get(DriveCredential, connection.id)
                 if current_app.config.get("VFX_FILES_STORAGE_MODE") == "google_drive" and (credential is None or credential.state != "active"):
                     raise ProviderContractError(403, "root_unverified")
                 if connection.account_mode == "my_drive" and credential is not None and credential.account_subject != connection.owner_subject:
@@ -592,7 +602,7 @@ class DriveRootsResource(MethodView):
                 connection.enabled = True
                 if credential is not None and connection.account_mode == "shared_drive":
                     credential.drive_id = capabilities.drive_id
-                db.session.flush()
+                session.flush()
                 result = root_verification_payload(
                     connection_id=connection.id,
                     account_mode=connection.account_mode,
@@ -605,11 +615,12 @@ class DriveRootsResource(MethodView):
 
             production_id = UUID(payload["production_id"])
             connection_uuid = UUID(str(connection_id))
-            response_body, status, _etag = run_snapshot_idempotent(
-                db.session, production_id=production_id, actor_id=service_identity.actor_id,
-                idempotency_key=idempotency_key, operation=f"root.verify:{connection_uuid}",
-                request_body={"connection_id": str(connection_uuid), **payload}, apply=verify_root,
-            )
+            with sessions() as session:
+                response_body, status, _etag = run_snapshot_idempotent(
+                    session, production_id=production_id, actor_id=service_identity.actor_id,
+                    idempotency_key=idempotency_key, operation=f"root.verify:{connection_uuid}",
+                    request_body={"connection_id": str(connection_uuid), **payload}, apply=verify_root,
+                )
             return jsonify(response_body), status
         except SnapshotConflict:
             return _provider_error("idempotency_conflict", 409)
