@@ -233,4 +233,4 @@ def test_event_key_file_reads_only_private_regular_file(tmp_path):
 
     key_file.chmod(0o644)
     with pytest.raises(RuntimeError, match="protected"):
-        load_event_delivery_config(env)\n
+        load_event_delivery_config(env)

@@ -47,4 +47,4 @@ def is_selected_storage_connection(session_factory, production_id, connection_id
     """Recheck the KitsuSync selection immediately before provider mutations."""
     with session_factory() as session:
         connection = selected_storage_connection(session, production_id)
-        return connection is not None and connection.id == connection_id\n
+        return connection is not None and connection.id == connection_id
