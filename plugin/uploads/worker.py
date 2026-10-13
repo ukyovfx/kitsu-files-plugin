@@ -65,6 +65,7 @@ def make_upload_handler(session_factory, staging, adapter_factory):
                 provider_id = job_adapter.reserve_id(f"upload:{upload.id}")
                 upload.provider_object_id = provider_id
             upload.state = "transferring"
+            production_id = connection.production_id
             parent_id = connection.allowed_root_id
             expected_size = upload.expected_size
             expected_sha256 = upload.expected_sha256
@@ -106,7 +107,7 @@ def make_upload_handler(session_factory, staging, adapter_factory):
             source.seek(0)
             from ..integrations.storage_authority import is_selected_storage_connection
 
-            if not is_selected_storage_connection(session_factory, upload.production_id, connection.id):
+            if not is_selected_storage_connection(session_factory, production_id, connection.id):
                 return JobResult("blocked_authorization", error_code="storage_selection_changed")
             try:
                 job_adapter.upload(source, provider_id, expected_size, expected_sha256, parent_id)
@@ -126,7 +127,7 @@ def make_upload_handler(session_factory, staging, adapter_factory):
             return JobResult("reconcile_required", error_code="provider_verification_ambiguous")
         if not verified:
             return JobResult("reconcile_required", error_code="provider_verification_failed")
-        if not is_selected_storage_connection(session_factory, upload.production_id, connection.id):
+        if not is_selected_storage_connection(session_factory, production_id, connection.id):
             return JobResult("blocked_authorization", error_code="storage_selection_changed")
         return JobResult("completed", True, provider_id, expected_size, expected_sha256)
 
