@@ -166,6 +166,14 @@ def _production_storage_connection(production_id):
     return connection
 
 
+def _reject_plugin_owned_storage_configuration(production_id):
+    """Prevent retired Files-page settings routes from competing with KitsuSync."""
+    from .models import KitsuSyncDesiredConfiguration
+
+    if KitsuSyncDesiredConfiguration.query.filter_by(production_id=production_id).one_or_none() is not None:
+        abort(409, description="Drive connection, root, template selection and activation are managed by KitsuSync.")
+
+
 def _template_tree_payload(tree):
     return {
         "folder_id": tree.provider_folder_id,
@@ -1317,6 +1325,7 @@ class SharedTemplateCandidates(MethodView):
         _assert_compatible()
         try:
             actor, scope = _production_provision_scope(production_id)
+            _reject_plugin_owned_storage_configuration(scope.production_id)
             connection = _production_storage_connection(scope.production_id)
             current_app.extensions["sqlalchemy"].session.remove()
             from .folders.templates import discover_candidates
@@ -1357,6 +1366,7 @@ class SharedTemplateConfigurationResource(MethodView):
         _assert_compatible()
         try:
             _actor, scope = _production_provision_scope(production_id)
+            _reject_plugin_owned_storage_configuration(scope.production_id)
             from .models import SharedTemplateConfiguration
             row = SharedTemplateConfiguration.query.filter_by(production_id=scope.production_id).one_or_none()
         except (NotFound, ValueError, TypeError):
@@ -1392,6 +1402,7 @@ class SharedTemplateConfigurationResource(MethodView):
         try:
             _require_mutation_origin()
             actor, scope = _production_provision_scope(production_id)
+            _reject_plugin_owned_storage_configuration(scope.production_id)
             payload = request.get_json(silent=False) or {}
             connection = _production_storage_connection(scope.production_id)
             current_app.extensions["sqlalchemy"].session.remove()
@@ -1441,6 +1452,7 @@ class SharedTemplateActivation(MethodView):
         try:
             _require_mutation_origin()
             actor, scope = _production_provision_scope(production_id)
+            _reject_plugin_owned_storage_configuration(scope.production_id)
             payload = request.get_json(silent=False) or {}
             expected_version = payload.get("expected_version")
             enabled = payload.get("enabled")
@@ -1493,19 +1505,81 @@ class TaskSharedFolders(MethodView):
             authorize(actor, Capability.READ, scope)
         except (PermissionDenied, NotFound):
             abort(403)
-        from .models import FolderBinding, SharedTemplateConfiguration
+        from .models import FolderBinding, KitsuSyncDesiredConfiguration, SharedTemplateConfiguration
         from zou.app.models.entity import Entity
         from zou.app.models.task import Task
         from zou.app.models.task_type import TaskType
 
-        config = SharedTemplateConfiguration.query.filter_by(production_id=scope.production_id).one_or_none()
-        if config is None:
-            return {"configured": False, "folders": []}
         task = Task.query.filter_by(id=scope.task_id, project_id=scope.production_id).one_or_none()
         entity = Entity.query.filter_by(id=task.entity_id).one_or_none() if task is not None else None
         task_type = TaskType.query.filter_by(id=task.task_type_id).one_or_none() if task is not None else None
         if task is None or entity is None or task_type is None or task_type.for_entity not in ("Shot", "Asset"):
             abort(404)
+
+        desired = KitsuSyncDesiredConfiguration.query.filter_by(production_id=scope.production_id).one_or_none()
+        if desired is not None:
+            # KitsuSync owns the selected connection, root, template selection
+            # and activation. The Files page may only read already-persisted
+            # Task bindings and must never derive a replacement tree locally.
+            connection = _production_storage_connection(scope.production_id)
+            task_scope_key = f"production:{scope.production_id}:task:{task.id}"
+            bindings = [
+                {
+                    "scope_key": row.canonical_scope_key,
+                    "provider_folder_id": row.provider_folder_id,
+                    "state": row.state,
+                    "parent_provider_id": row.parent_provider_id,
+                }
+                for row in FolderBinding.query.filter_by(
+                    storage_connection_id=connection.id,
+                    allowed_root_id=connection.allowed_root_id,
+                ).all()
+                if row.canonical_scope_key == task_scope_key
+                or row.canonical_scope_key.startswith(f"{task_scope_key}:template:")
+            ]
+            enabled = bool(((desired.desired_config or {}).get("activation") or {}).get("enabled"))
+            current_app.extensions["sqlalchemy"].session.remove()
+            adapter = _storage_adapter(connection)
+            folders = []
+            for binding in sorted(bindings, key=lambda row: row["scope_key"]):
+                state = binding["state"]
+                provider_folder_id = binding["provider_folder_id"]
+                folder_name = binding["scope_key"].rsplit(":", 1)[-1]
+                url = None
+                if state == "ready" and provider_folder_id:
+                    try:
+                        provider_object = adapter.get(provider_folder_id)
+                        if provider_object is None or provider_object.trashed:
+                            state = "missing"
+                        elif (
+                            provider_object.mime_type != "folder"
+                            or provider_object.parent_id != binding["parent_provider_id"]
+                            or (connection.drive_id and provider_object.drive_id != connection.drive_id)
+                        ):
+                            state = "inaccessible"
+                        else:
+                            adapter.assert_parent_within_root(provider_object.parent_id)
+                            folder_name = provider_object.name or folder_name
+                            url = f"https://drive.google.com/drive/folders/{provider_folder_id}"
+                    except Exception:
+                        state = "inaccessible"
+                folders.append({
+                    "scope_key": binding["scope_key"],
+                    "name": folder_name,
+                    "state": state,
+                    "provider_folder_id": provider_folder_id if url else None,
+                    "url": url,
+                })
+            return {
+                "configured": True,
+                "managed_by_kitsusync": True,
+                "enabled": enabled,
+                "folders": folders,
+            }
+
+        config = SharedTemplateConfiguration.query.filter_by(production_id=scope.production_id).one_or_none()
+        if config is None:
+            return {"configured": False, "managed_by_kitsusync": False, "folders": []}
         sequence_id = sequence_name = None
         if "sequence" in config.role_mappings:
             sequence = Entity.query.filter_by(id=entity.parent_id).one_or_none() if entity.parent_id else None
@@ -1581,6 +1655,7 @@ class TaskSharedFolders(MethodView):
             actor, scope = _production_provision_scope(production_id)
             task_scope = _resolve_scope(actor, str(scope.production_id), str(task_id))
             authorize(actor, Capability.PROVISION, task_scope)
+            _reject_plugin_owned_storage_configuration(scope.production_id)
             from sqlalchemy import select
             from sqlalchemy.orm import sessionmaker
             from .models import Job, SharedTemplateConfiguration, StorageConnection

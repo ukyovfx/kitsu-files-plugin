@@ -5,7 +5,7 @@ from uuid import UUID
 from sqlalchemy import select
 
 from ..jobs.queue import JobResult
-from ..models import FolderBinding, SharedTemplateConfiguration
+from ..models import FolderBinding, KitsuSyncDesiredConfiguration, SharedTemplateConfiguration
 from .provisioning import provision_task_folders
 from .service import FolderProvisioningError
 
@@ -22,6 +22,14 @@ def make_task_folder_handler(session_factory, adapter):
                 return JobResult("failed", error_code="invalid_template_version")
             scope = f"production:{production_id}:task:{task_id}"
             with session_factory() as session:
+                # A queued legacy Files-page request can outlive the removal of
+                # that configuration UI. Never let such a job override current
+                # KitsuSync authority or touch the provider.
+                managed = session.scalar(select(KitsuSyncDesiredConfiguration).where(
+                    KitsuSyncDesiredConfiguration.production_id == production_id,
+                ))
+                if managed is not None:
+                    return JobResult("blocked_authorization", error_code="kitsusync_configuration_authority")
                 configuration = session.scalar(select(SharedTemplateConfiguration).where(
                     SharedTemplateConfiguration.id == configuration_id,
                     SharedTemplateConfiguration.production_id == production_id,

@@ -74,9 +74,9 @@ Wait until `docker compose ... ps` reports PostgreSQL, Redis, egress guard and A
 python3 "$REPO/deploy/uat/tools/seed_linux.py" --project "$PROJECT" --env-file "$ENV_FILE" --compose "$COMPOSE"
 ```
 
-The wrapper requires every account email to use the `example.invalid` synthetic domain and refuses to overwrite `ACCOUNTS.txt`. Keep plugin feature and Worker flags disabled until the Manager has reviewed configuration. Never run the seeder against a non-loopback or non-disposable host.
+The wrapper requires every account email to use the `example.invalid` synthetic domain and refuses to overwrite `ACCOUNTS.txt`. Keep plugin feature and Worker flags disabled until the owner has reviewed the isolated KitsuSync desired configuration. Never run the seeder against a non-loopback or non-disposable host.
 
-After a Manager completes template setup and explicit activation, use the Files UI to create/reuse folders. Enable and start the separate Worker only for the test window. Verify API root, plugin health, Worker process, backend network isolation, and loopback-only port before Human UAT. Record the exact source SHA, candidate base digest, final app image ID, Compose config digest, cgroup readbacks, quota evidence, and sanitized readiness results.
+Drive connection/root/template selection and activation belong to KitsuSync; the Files UI is read-only for folder bindings. This UAT package does not deploy a KitsuSync service. The current Plugin sync worker also requires a Plugin-owned nested folder tree that KitsuSync v1 does not yet materialize, so folder-provisioning Human UAT is blocked until that integration contract/provider path is completed. Do not create the missing configuration through retired Files endpoints. Enable and start the separate Worker only for a test window with an authorized, synthetic KitsuSync configuration and a supported materialized template. Verify API root, plugin health, Worker process, backend network isolation, and loopback-only port before Human UAT. Record exact source/image identity, Compose config digest, cgroup readbacks, quota evidence, and sanitized readiness results.
 
 ### SSH access for the owner
 

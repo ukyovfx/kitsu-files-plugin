@@ -4,7 +4,6 @@ import HandoffPanel from './components/HandoffPanel.vue'
 import PublishList from './components/PublishList.vue'
 import PublishWorkflow from './components/PublishWorkflow.vue'
 import OutputPackagePanel from './components/OutputPackagePanel.vue'
-import SharedTemplateSetup from './components/SharedTemplateSetup.vue'
 import UploadPanel from './components/UploadPanel.vue'
 import { createRequestGeneration } from './taskContext.js'
 
@@ -17,8 +16,6 @@ const productionId = computed(() => props.context.productionId)
 const taskId = computed(() => props.context.taskId || null)
 const scopeKey = computed(() => `${productionId.value || ''}:${taskId.value || ''}`)
 const folderState = ref(null)
-const folderProvisionRequested = ref(false)
-const folderPollCount = ref(0)
 const requests = createRequestGeneration()
 const receivedHandoffs = computed(() => (overview.value?.handoffs || []).filter((item) => item.recipient_id === overview.value?.actor_id || (taskId.value && item.recipient_task_id === taskId.value)))
 let pollTimer
@@ -46,11 +43,6 @@ async function load() {
     if (taskId.value) {
       try {
         folderState.value = await props.api.getTaskSharedFolders(productionId.value, taskId.value)
-        if (folderProvisionRequested.value) {
-          folderPollCount.value += 1
-          if (folderState.value.folders?.length && folderState.value.folders.every((folder) => folder.state === 'ready')) folderProvisionRequested.value = false
-          else if (folderPollCount.value >= 40) folderProvisionRequested.value = false
-        }
       } catch (cause) {
         if (requests.isCurrent(requestId)) folderState.value = { error: cause.message || 'Task folders could not be loaded.' }
       }
@@ -59,21 +51,6 @@ async function load() {
     if (requests.isCurrent(requestId)) error.value = cause.message || 'Files could not be loaded.'
   } finally {
     if (requests.isCurrent(requestId)) loading.value = false
-  }
-}
-
-async function provisionFolders() {
-  if (!productionId.value || !taskId.value) return
-  const requestId = requests.begin()
-  error.value = ''
-  try {
-    folderState.value = { provisioning: true }
-    await props.api.provisionTaskFolders(productionId.value, taskId.value)
-    folderProvisionRequested.value = true
-    folderPollCount.value = 0
-    await load()
-  } catch (cause) {
-    if (requests.isCurrent(requestId)) error.value = cause.message || 'Task folders could not be queued.'
   }
 }
 
@@ -108,7 +85,7 @@ async function approve(publish) {
 onMounted(() => {
   load()
   pollTimer = window.setInterval(() => {
-    if (overview.value?.publishes.some((publish) => !['completed', 'failed', 'reconcile_required'].includes(publish.state)) || folderProvisionRequested.value) load()
+    if (overview.value?.publishes.some((publish) => !['completed', 'failed', 'reconcile_required'].includes(publish.state))) load()
   }, 3000)
 })
 onUnmounted(() => window.clearInterval(pollTimer))
@@ -137,15 +114,14 @@ onUnmounted(() => requests.invalidate())
         <article class="summary-card handoff-card"><span class="card-label">Open Handoffs</span><strong>{{ overview.handoffs.filter((item) => item.state === 'pending').length }}</strong><span>awaiting a response</span></article>
       </section>
       <section v-if="taskId" class="panel task-folders" aria-label="Task shared folders">
-        <div class="panel-heading"><div><p class="eyebrow">Kitsu Task context</p><h2>Shared folders</h2></div><button v-if="['admin', 'manager'].includes(overview.role)" class="button secondary" :disabled="folderState?.provisioning || folderProvisionRequested || !overview.upload_ready || !folderState?.enabled" @click="provisionFolders">{{ folderState?.provisioning || folderProvisionRequested ? 'Provisioning…' : 'Create or reconcile folders' }}</button></div>
+        <div class="panel-heading"><div><p class="eyebrow">Kitsu Task context</p><h2>Shared folders</h2></div></div>
         <p v-if="folderState?.error" class="upload-error" role="alert">{{ folderState.error }}</p>
         <p v-else-if="folderState?.folders?.length" class="folder-links"><a v-for="folder in folderState.folders" :key="folder.scope_key" :href="folder.url" target="_blank" rel="noopener noreferrer">Open {{ folder.name }}</a></p>
-        <p v-else class="muted">No verified Task folder bindings are ready yet. Folder names alone are never used to reconnect a binding.</p>
+        <p v-else class="muted">No verified Task folder bindings are ready yet. Drive connection, root, templates and synchronization are managed through KitsuSync.</p>
       </section>
       <UploadPanel :enabled="overview.upload_ready" :tasks="overview.tasks" :fixed-task-id="taskId" :api="api" @uploaded="load" />
       <OutputPackagePanel v-if="taskId" :task-id="taskId" :api="api" @changed="load" />
       <PublishWorkflow :production-id="productionId" :tasks="overview.tasks" :publishes="overview.publishes" :fixed-task-id="taskId" :api="api" @changed="load" />
-      <SharedTemplateSetup v-if="!overview.task_id" :production-id="productionId" :tasks="overview.tasks" :api="api" />
       <div class="content-grid">
         <PublishList :publishes="overview.publishes" :actor-id="overview.actor_id" :role="overview.role" :busy-id="busyId" @approve="approve" />
         <HandoffPanel :handoffs="receivedHandoffs" :busy-id="busyId" @respond="respond" />

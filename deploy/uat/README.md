@@ -32,12 +32,12 @@ Run from a clean, committed source worktree. `init.ps1` and `build.ps1` reject d
 .\deploy\uat\scripts\install-plugin.ps1 -Unit demo
 ```
 
-Then create the synthetic Manager / Artist A / Artist B / Supervisor, Production, Sequence, Shot, Task and FakeStorage bindings. Enable the Files feature, log in as the Manager, and complete the template and permission configuration in the Files page before starting the Worker:
+Then create the synthetic Manager / Artist A / Artist B / Supervisor, Production, Sequence, Shot, Task and FakeStorage bindings. Enable the Files feature and prepare a synthetic KitsuSync v1 integration service for Production connection/root/template selection and activation. This local package does not install or seed KitsuSync; do not configure Drive or folder templates from the Files page. The legacy Files mutation endpoints reject KitsuSync-managed Productions. Do not start the Worker until the KitsuSync configuration is active and the integration template-materialization prerequisite described below is resolved:
 
 ```powershell
 .\deploy\uat\scripts\seed.ps1 -Unit demo
 .\deploy\uat\scripts\activate.ps1 -Unit demo
-# Configure and review the template through the Kitsu Files page first.
+# Start only after the isolated KitsuSync integration handoff is complete.
 .\deploy\uat\scripts\start-worker.ps1 -Unit demo
 ```
 
@@ -78,14 +78,23 @@ Follow this screen path:
 
 1. In Kitsu, open **Productions** and select `VFX Files Installed E2E <suffix>`.
 2. Open the Production's **Assets** section and choose **VFX Files**. If the menu link is absent, use the authenticated fallback `/api/plugins/vfx_files/frontend/?production_id=<Production UUID>` on the same loopback origin. The ordinary `/` page is only the Kitsu home page.
-3. As Manager, expand **Folder template setup**. For this FakeStorage-only unit use `https://drive.google.com/drive/folders/synthetic-root-id`, select **Discover**, choose **Shared Production Template**, map Sequence to `{sequence}`, Shot to `{shot}`, and Task to `{task}`. Save the disabled configuration, review the hierarchy, then select **Activate provisioning**.
-4. Select the seeded Kitsu Task and use **Create or reuse**. Refresh bindings until folders show `ready` and **Open folder** links appear.
+3. The Files page is not a Drive configuration surface. Connection, root, template selection and activation must come from the isolated KitsuSync v1 service. The current local UAT bundle does not include that service, so folder provisioning cannot be completed from this bundle alone.
+4. Once KitsuSync is configured and a supported template has been materialized for the Plugin worker, select the seeded Kitsu Task. The Files page displays only persisted bindings verified against the selected connection/root; it offers no folder-creation mutation. Refresh after KitsuSync sync progress until verified **Open** links appear.
 5. Sign out and sign in as Artist A. In **Working Files**, choose the seeded Task and upload a small synthetic text file. Confirm `w001` is completed and Latest Working. Do not use Production media.
 6. Sign out and sign in as Artist B. Download Artist A's `w001`, then upload a distinct synthetic text file for the same Task. Confirm `w002` becomes Latest Working while `w001` remains listed and downloadable.
 7. Sign in as Artist A. In **Publish and hand off**, select the Task, a completed file from `w002`, and **Synthetic Main**; choose **Publish Working File**. Wait for the immutable Publish to complete and QC to show `passed`.
 8. Sign in as the separate Supervisor, refresh Files, and approve that exact Publish. Confirm Latest Approved and Latest Published identify the expected version. A publisher attempting to approve their own work must be rejected.
 9. As an authorized Task participant, create a Handoff for the completed Publish addressed to Artist B. Sign in as Artist B, open the Production's Files page, and use **Accept** (or **Needs Fix** with feedback if testing rejection).
 10. Refresh after each identity change. Confirm `w001`, `w002`, the Publish manifest and both pointers remain persisted. Worker restart and snapshot restore are separate operational checks; restore into a new disposable unit and keep its Worker stopped until the snapshot integrity review is complete.
+
+### KitsuSync integration handoff (synthetic service only)
+
+- The management base path is `/api/plugins/vfx_files/integrations/v1`; it uses the agreed KitsuSync service bearer/JWKS contract. KitsuSync remains the sole authority for connection, verified root, template selection and activation.
+- The API-side service verifier requires `VFX_FILES_KITSUSYNC_ISSUER` and `VFX_FILES_KITSUSYNC_AUDIENCE`; it fetches keys only from `<issuer>/.well-known/vfx-files-jwks.json` over HTTPS. Use the synthetic issuer/JWKS and scoped RS256 tokens for isolated tests. Never print or share signing keys or bearer tokens.
+- The Plugin-to-KitsuSync business-event receiver is a separate trust direction: configure an HTTPS endpoint ending at `/api/integrations/vfx-files/v1/events`, producer key ID `vfx-files-plugin`, and a synthetic HMAC key file readable only by the Worker. Never reuse the RS256 management bearer as the event key.
+- The Plugin API and Worker must use the same exact source revision/image. Readiness reports the installed schema epoch; the current code line targets epoch 13 after `vxf_0014`. The worker command in the packaged UAT image is `/opt/zou/env/bin/python -m vfx_files.worker_runtime --poll --idle-seconds 2`.
+- Keep the Plugin API on the isolated loopback ingress. The management service needs authenticated reachability to the Plugin API; the signed event receiver needs authenticated TLS reachability from the Worker. Do not bridge either path to Production, Staging, real Drive, or live Discord.
+- Current integration blocker: Sync Apply still requires a Plugin-owned `SharedTemplateConfiguration` folder tree, while the public KitsuSync selection carries catalog identity/revision and the contract does not define how arbitrary nested template trees are materialized. No Files UI or legacy route can create that tree for a KitsuSync-managed Production. Do not claim folder-sync Human UAT until the contract/provider mapping is implemented and integration-tested.
 
 For resource capture while performing the UI stages, run the read-only sampler from the repository root in a separate PowerShell window, once per stage:
 

@@ -32,43 +32,6 @@ export function createFilesApi(client) {
       return readJson(response)
     },
 
-    async getSharedTemplate(productionId) {
-      if (!productionId) throw new TypeError('A Production ID is required')
-      return readJson(await client.request('GET', `${ROOT}/productions/${encodeURIComponent(productionId)}/shared-template`))
-    },
-
-    async discoverSharedTemplates(productionId, rootUrl) {
-      if (!productionId || !rootUrl) throw new TypeError('A Production and Google Drive root URL are required')
-      const query = new URLSearchParams({ root_url: rootUrl })
-      return readJson(await client.request('GET', `${ROOT}/productions/${encodeURIComponent(productionId)}/shared-template/candidates?${query}`))
-    },
-
-    async saveSharedTemplate(productionId, configuration) {
-      if (!productionId) throw new TypeError('A Production ID is required')
-      return readJson(await mutation('POST', `${ROOT}/productions/${encodeURIComponent(productionId)}/shared-template`, {
-        headers: { 'Content-Type': 'application/json', 'Idempotency-Key': `template:${crypto.randomUUID()}` },
-        body: JSON.stringify(configuration)
-      }))
-    },
-
-    async setSharedTemplateEnabled(productionId, expectedVersion, enabled) {
-      if (!productionId || !Number.isInteger(expectedVersion) || typeof enabled !== 'boolean') {
-        throw new TypeError('Production, configuration version and enabled state are required')
-      }
-      return readJson(await mutation('POST', `${ROOT}/productions/${encodeURIComponent(productionId)}/shared-template/activate`, {
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ expected_version: expectedVersion, enabled })
-      }))
-    },
-
-    async provisionTaskFolders(productionId, taskId) {
-      if (!productionId || !taskId) throw new TypeError('A Production and Task are required')
-      return readJson(await mutation('POST', `${ROOT}/productions/${encodeURIComponent(productionId)}/tasks/${encodeURIComponent(taskId)}/shared-folders`, {
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({})
-      }))
-    },
-
     async getTaskSharedFolders(productionId, taskId) {
       if (!productionId || !taskId) throw new TypeError('A Production and Task are required')
       return readJson(await client.request('GET', `${ROOT}/productions/${encodeURIComponent(productionId)}/tasks/${encodeURIComponent(taskId)}/shared-folders`))
