@@ -282,7 +282,10 @@ def verify_service_bearer(
     scopes = claims["scope"].split(" ") if isinstance(claims["scope"], str) else []
     if not isinstance(claims["scope"], str) or not scopes or any(not scope for scope in scopes) or len(set(scopes)) != len(scopes) or not set(scopes) <= ALLOWED_SCOPES:
         raise ServiceAuthenticationError(401, "unauthorized_service")
-    if required_scope not in scopes or str(production_id) != str(requested_production_id):
+    if required_scope not in scopes or (
+        requested_production_id is not None
+        and str(production_id) != str(requested_production_id)
+    ):
         raise ServiceAuthenticationError(403, "invalid_scope" if required_scope not in scopes else "production_access_denied")
     if actor_header != claims.get("actor_id"):
         raise ServiceAuthenticationError(401, "unauthorized_service")
@@ -295,7 +298,7 @@ def verify_service_bearer(
     return ServiceIdentity(production_id, actor_id, claims["actor_role"], frozenset(scopes), subject, client_id)
 
 
-def authenticate_management_request(required_scope: str, requested_production_id: str) -> ServiceIdentity:
+def authenticate_management_request(required_scope: str, requested_production_id: str | None) -> ServiceIdentity:
     """Authenticate the current Flask request using deployment-owned settings."""
     from flask import current_app, request
 
@@ -327,16 +330,30 @@ def authenticate_management_request(required_scope: str, requested_production_id
     )
 
 
-def service_scope(required_scope: str):
-    """Flask view decorator for management operations with a Production path."""
+def service_scope(required_scope: str, *, production_source: str = "path"):
+    """Authenticate and bind management calls to their signed Production.
+
+    `production_source` is one of path, query, body, or none. The none form is
+    reserved for static service catalogs which expose no Production data.
+    """
     def decorate(view):
         @wraps(view)
         def wrapped(*args, **kwargs):
-            from flask import jsonify
+            from flask import jsonify, request
 
-            production_id = kwargs.get("production_id")
+            if production_source == "path":
+                requested_production_id = kwargs.get("production_id")
+            elif production_source == "query":
+                requested_production_id = request.args.get("production_id")
+            elif production_source == "body":
+                body = request.get_json(silent=True)
+                requested_production_id = body.get("production_id") if isinstance(body, dict) else None
+            elif production_source == "none":
+                requested_production_id = None
+            else:
+                raise ValueError("Unsupported service Production binding source")
             try:
-                identity = authenticate_management_request(required_scope, production_id)
+                identity = authenticate_management_request(required_scope, None)
             except ServiceAuthenticationError as exc:
                 response = jsonify({
                     "contract_version": "1.0",
@@ -345,6 +362,28 @@ def service_scope(required_scope: str):
                     "retryable": False,
                 })
                 return response, exc.status
+            if production_source != "none":
+                try:
+                    bound_production = UUID(str(requested_production_id))
+                    if str(bound_production) != str(requested_production_id):
+                        raise ValueError("noncanonical Production UUID")
+                except (ValueError, TypeError, AttributeError):
+                    response = jsonify({
+                        "contract_version": "1.0",
+                        "code": "invalid_event",
+                        "request_id": str(uuid4()),
+                        "retryable": False,
+                        "details": {"field": "production_id"},
+                    })
+                    return response, 400
+                if bound_production != identity.production_id:
+                    response = jsonify({
+                        "contract_version": "1.0",
+                        "code": "production_access_denied",
+                        "request_id": str(uuid4()),
+                        "retryable": False,
+                    })
+                    return response, 403
             kwargs["service_identity"] = identity
             return view(*args, **kwargs)
         return wrapped

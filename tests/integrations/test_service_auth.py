@@ -49,6 +49,7 @@ def service_token_factory():
 
 def _verify(token, jwk, **kwargs):
     fetches = []
+    requested_production_id = kwargs.pop("requested_production_id", "10000000-0000-4000-8000-000000000001")
 
     def fetch(url):
         fetches.append(url)
@@ -63,7 +64,7 @@ def _verify(token, jwk, **kwargs):
         subject="kitsusync-service",
         client_id="installation-1",
         required_scope="vfx.config.read",
-        requested_production_id="10000000-0000-4000-8000-000000000001",
+        requested_production_id=requested_production_id,
         jwks=cache,
         now=1_800_000_010,
         **kwargs,
@@ -77,6 +78,12 @@ def test_service_bearer_verifies_published_rs256_profile(service_token_factory):
     assert str(identity.production_id) == "10000000-0000-4000-8000-000000000001"
     assert "vfx.config.read" in identity.scopes
     assert fetches == ["https://sync.example.test/.well-known/vfx-files-jwks.json"]
+
+
+def test_service_bearer_can_authenticate_before_resource_binding(service_token_factory):
+    issue, jwk = service_token_factory
+    identity, _fetches = _verify(issue(), jwk, requested_production_id=None)
+    assert str(identity.production_id) == "10000000-0000-4000-8000-000000000001"
 
 
 @pytest.mark.parametrize("header", [

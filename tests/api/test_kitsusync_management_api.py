@@ -3,6 +3,7 @@
 import base64
 from concurrent.futures import ThreadPoolExecutor
 import json
+from pathlib import Path
 import time
 from uuid import uuid4
 
@@ -17,6 +18,7 @@ AUDIENCE = "https://files.example.test/api/plugins/vfx_files/integrations/v1"
 SUBJECT = "kitsusync-test-service"
 CLIENT_ID = "files-installation-test"
 BASE = "/plugins/vfx_files/integrations/v1"
+FIXTURE_DIR = Path(__file__).parents[1] / "fixtures" / "kitsusync_v1"
 
 
 def _b64(value):
@@ -274,3 +276,107 @@ def test_concurrent_updates_with_same_etag_have_one_winner(management_client):
     with ThreadPoolExecutor(max_workers=2) as executor:
         statuses = list(executor.map(update, (1, 2)))
     assert sorted(statuses) == [200, 409]
+
+
+def test_provider_reads_and_root_verification_are_authenticated_and_production_scoped(management_client):
+    from plugin.storage.fake import FakeStorage
+
+    client = management_client
+    adapter = FakeStorage(root_id="synthetic-root-id", drive_id="synthetic-drive-id")
+    client.vfx_app.extensions["vfx_files_storage_adapter_factory"] = lambda _connection: adapter
+    connections_url = f"{BASE}/drive-connections?production_id={client.vfx_production_id}"
+    missing_auth = client.get(connections_url)
+    assert missing_auth.status_code == 401
+    assert missing_auth.json["code"] == "unauthorized_service"
+
+    wrong_scope = client.get(
+        connections_url,
+        headers=client.vfx_management_headers("vfx.roots.read"),
+    )
+    assert wrong_scope.status_code == 403
+    assert wrong_scope.json["code"] == "invalid_scope"
+
+    other_production = client.get(
+        f"{BASE}/drive-connections?production_id={uuid4()}",
+        headers=client.vfx_management_headers("vfx.connections.read"),
+    )
+    assert other_production.status_code == 403
+    assert other_production.json["code"] == "production_access_denied"
+
+    listed = client.get(
+        connections_url,
+        headers=client.vfx_management_headers("vfx.connections.read"),
+    )
+    assert listed.status_code == 200
+    assert listed.json["contract_version"] == "1.0"
+    assert len(listed.json["connections"]) == 1
+    assert listed.json["connections"][0]["id"] == str(client.vfx_connection_id)
+    assert "credential_ref" not in listed.json["connections"][0]
+
+    roots_url = f"{BASE}/drive-connections/{client.vfx_connection_id}/roots?production_id={client.vfx_production_id}"
+    roots = client.get(roots_url, headers=client.vfx_management_headers("vfx.roots.read"))
+    assert roots.status_code == 200
+    assert roots.json["roots"] == [{
+        "id": "synthetic-root-id",
+        "name": "FakeStorage root",
+        "drive_id": "synthetic-drive-id",
+        "account_mode": "shared_drive",
+    }]
+
+    verification_url = f"{BASE}/drive-connections/{client.vfx_connection_id}/roots"
+    verification = client.post(
+        verification_url,
+        json={
+            "contract_version": "1.0",
+            "production_id": str(client.vfx_production_id),
+            "account_mode": "shared_drive",
+            "drive_id": "synthetic-drive-id",
+            "root_id": "synthetic-root-id",
+        },
+        headers={
+            **client.vfx_management_headers("vfx.roots.verify"),
+            "Idempotency-Key": "root-verify-synthetic-001",
+        },
+    )
+    assert verification.status_code == 200
+    assert verification.json["connection_id"] == str(client.vfx_connection_id)
+    assert verification.json["owner_subject"] is None
+    assert verification.json["capabilities"] == {"can_read": True, "can_add_children": True}
+    assert adapter.calls == []
+
+    forbidden_root = client.post(
+        verification_url,
+        json={
+            "contract_version": "1.0",
+            "production_id": str(client.vfx_production_id),
+            "account_mode": "shared_drive",
+            "drive_id": "synthetic-drive-id",
+            "root_id": "foreign-root-id",
+        },
+        headers={
+            **client.vfx_management_headers("vfx.roots.verify"),
+            "Idempotency-Key": "root-verify-foreign-001",
+        },
+    )
+    assert forbidden_root.status_code == 403
+    assert forbidden_root.json["code"] == "drive_permission_denied"
+    assert adapter.calls == []
+
+
+def test_provider_template_catalog_matches_v1_and_is_scope_authorized(management_client):
+    client = management_client
+    url = f"{BASE}/templates?scope=shot"
+    response = client.get(url, headers=client.vfx_management_headers("vfx.templates.read"))
+    assert response.status_code == 200
+    expected = json.loads((FIXTURE_DIR / "templates_shot.json").read_text(encoding="utf-8"))
+    assert response.json == expected
+
+    unauthorized = client.get(url, headers=client.vfx_management_headers("vfx.connections.read"))
+    assert unauthorized.status_code == 403
+
+    invalid_scope = client.get(
+        f"{BASE}/templates?scope=department",
+        headers=client.vfx_management_headers("vfx.templates.read"),
+    )
+    assert invalid_scope.status_code == 400
+    assert invalid_scope.json["code"] == "invalid_event"

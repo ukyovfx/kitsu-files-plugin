@@ -85,6 +85,79 @@ def test_my_drive_email_or_drive_permission_id_cannot_substitute_for_oidc_subjec
         adapter.capabilities("root-1")
 
 
+def test_my_drive_root_candidates_require_verified_owner_and_are_bounded_to_top_level():
+    transport = FakeTransport([
+        Response(200, {"sub": "google-oidc-subject-owner"}),
+        Response(200, {"files": [{
+            "id": "folder-1", "name": "Show Root", "mimeType": FOLDER_MIME,
+            "parents": ["root"], "trashed": False,
+        }]}),
+    ])
+    adapter = drive(transport, "my_drive")
+
+    listing = adapter.list_root_candidates()
+
+    assert listing.complete is True
+    assert [(item.object_id, item.name) for item in listing.items] == [("folder-1", "Show Root")]
+    params = transport.calls[1][2]["params"]
+    assert params["q"] == "'root' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false"
+    assert "pageSize" in params and "nextPageToken" in params["fields"]
+
+
+def test_my_drive_root_listing_stops_before_drive_query_when_owner_subject_differs():
+    transport = FakeTransport([Response(200, {"sub": "different-subject"})])
+    adapter = drive(transport, "my_drive")
+
+    with pytest.raises(PermissionFailure):
+        adapter.list_root_candidates()
+    assert len(transport.calls) == 1
+
+
+def test_shared_drive_root_candidates_are_limited_to_configured_drive():
+    transport = FakeTransport([Response(200, {"files": [{
+        "id": "folder-1", "name": "Shared Root", "mimeType": FOLDER_MIME,
+        "parents": ["drive-1"], "driveId": "drive-1",
+    }]})])
+    adapter = drive(transport)
+
+    listing = adapter.list_root_candidates()
+
+    assert [item.object_id for item in listing.items] == ["folder-1"]
+    params = transport.calls[0][2]["params"]
+    assert params["driveId"] == "drive-1"
+    assert params["corpora"] == "drive"
+
+
+def test_my_drive_candidate_verification_does_not_change_the_configured_root():
+    transport = FakeTransport([
+        Response(200, {"sub": "google-oidc-subject-owner"}),
+        Response(200, {
+            "id": "candidate-root", "name": "Candidate", "mimeType": FOLDER_MIME,
+            "parents": ["parent-1"], "capabilities": {"canAddChildren": True},
+        }),
+    ])
+    adapter = drive(transport, "my_drive")
+
+    capabilities = adapter.verify_root_candidate("candidate-root")
+
+    assert capabilities.root_id == "candidate-root"
+    assert capabilities.root_visible is True
+    assert adapter.config.allowed_root_id == "root-1"
+    assert adapter._root_verified is False
+
+
+def test_candidate_verification_rejects_shared_drive_root_mismatch():
+    adapter = drive(FakeTransport([
+        Response(200, {
+            "id": "candidate-root", "mimeType": FOLDER_MIME,
+            "driveId": "another-drive", "capabilities": {"canAddChildren": True},
+        }),
+    ]))
+
+    with pytest.raises(PermissionFailure):
+        adapter.verify_root_candidate("candidate-root")
+
+
 def test_drive_404_is_ambiguous_not_proof_of_absence():
     transport = FakeTransport([
         Response(200, {"id": "root-1", "mimeType": FOLDER_MIME, "driveId": "drive-1", "capabilities": {"canAddChildren": True}}),
@@ -94,16 +167,6 @@ def test_drive_404_is_ambiguous_not_proof_of_absence():
     adapter.capabilities("root-1")
     with pytest.raises(AmbiguousOutcome):
         adapter.get("unknown-object")
-
-
-def test_drive_missing_size_is_unknown_not_a_zero_byte_file():
-    transport = FakeTransport([
-        Response(200, {"id": "root-1", "mimeType": FOLDER_MIME, "driveId": "drive-1", "capabilities": {"canAddChildren": True}}),
-        Response(200, {"id": "object-1", "parents": ["root-1"], "mimeType": "application/octet-stream"}),
-    ])
-    adapter = drive(transport)
-    adapter.capabilities("root-1")
-    assert adapter.get("object-1").size is None
 
 
 def test_drive_missing_size_is_unknown_not_a_zero_byte_file():

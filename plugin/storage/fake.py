@@ -12,6 +12,7 @@ from .base import (
     AlreadyExists,
     AmbiguousOutcome,
     Listing,
+    PermissionFailure,
     StorageCapabilities,
     StorageObject,
 )
@@ -21,7 +22,7 @@ class FakeStorage:
     def __init__(self, root_id="fake-root", drive_id=None):
         self.root_id = root_id
         self.drive_id = drive_id
-        self.objects = {root_id: StorageObject(root_id, None, None, None, drive_id, "folder")}
+        self.objects = {root_id: StorageObject(root_id, None, None, None, drive_id, "folder", name="FakeStorage root")}
         self.reservations = {}
         self._bytes = {}
         self.lock = Lock()
@@ -89,6 +90,19 @@ class FakeStorage:
         if root_id != self.root_id:
             raise PermissionError("Configured root does not match adapter root")
         return StorageCapabilities(self.can_add_children, self.root_id, self.drive_id, self.drive_id is not None, True, self.root_ancestors)
+
+    def list_root_candidates(self, page_token=None):
+        if page_token:
+            return Listing((), complete=False, next_page_token=page_token)
+        root = self.objects.get(self.root_id)
+        if root is None or root.trashed or root.mime_type != "folder":
+            raise PermissionFailure("FakeStorage root is unavailable")
+        return Listing((root,), complete=True)
+
+    def verify_root_candidate(self, root_id):
+        if root_id != self.root_id:
+            raise PermissionFailure("FakeStorage cannot verify a root outside its synthetic boundary")
+        return self.capabilities(root_id)
 
     def list_children(self, parent_id, page_token=None):
         items = tuple(obj for obj in self.objects.values() if obj.parent_id == parent_id)

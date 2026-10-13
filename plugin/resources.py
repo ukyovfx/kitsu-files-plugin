@@ -1770,10 +1770,20 @@ class CsrfToken(MethodView):
         return {"csrf_token": issue_csrf_token(secret_key, actor_id), "expires_in": 900}
 
 
-from .integrations.http import ActivationResource, DeactivationResource, DesiredConfigurationResource
+from .integrations.http import (
+    ActivationResource,
+    DeactivationResource,
+    DesiredConfigurationResource,
+    DriveConnectionsResource,
+    DriveRootsResource,
+    TemplatesResource,
+)
 
 
 routes = [
+    ("/integrations/v1/drive-connections", DriveConnectionsResource),
+    ("/integrations/v1/drive-connections/<connection_id>/roots", DriveRootsResource),
+    ("/integrations/v1/templates", TemplatesResource),
     ("/integrations/v1/productions/<production_id>/desired-config", DesiredConfigurationResource),
     ("/integrations/v1/productions/<production_id>/activation", ActivationResource),
     ("/integrations/v1/productions/<production_id>/deactivation", DeactivationResource),

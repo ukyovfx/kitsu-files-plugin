@@ -1,0 +1,13 @@
+{
+  "contract_version": "1.0",
+  "templates": [
+    {
+      "id": "vfx-files.shot.default",
+      "revision": 1,
+      "scope": "shot",
+      "label": "Shot folder",
+      "pattern": "{shot}",
+      "available_tokens": ["shot"]
+    }
+  ]
+}
