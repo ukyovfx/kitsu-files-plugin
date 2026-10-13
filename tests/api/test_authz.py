@@ -16,7 +16,7 @@ from plugin.authz import (
     resolve_request_scope,
     verify_csrf_token,
 )
-
+from plugin.compat import HOST_ZOU_VERSION, SCHEMA_EPOCH, WORKER_BUILD
 
 PRODUCTION = UUID("00000000-0000-4000-8000-000000000001")
 TASK = UUID("00000000-0000-4000-8000-000000000002")
@@ -96,7 +96,7 @@ def test_worker_rejects_schema_epoch_mismatch():
         assert_compatible_host("1.0.94", 3, "2")
 
 
-def test_worker_accepts_only_vxf_0011_build_pair():
-    assert_compatible_host("1.0.94", 10, "10")
+def test_worker_accepts_only_current_schema_and_build_pair():
+    assert_compatible_host(HOST_ZOU_VERSION, SCHEMA_EPOCH, WORKER_BUILD)
     with pytest.raises(RuntimeError):
-        assert_compatible_host("1.0.94", 7, "7")
+        assert_compatible_host(HOST_ZOU_VERSION, SCHEMA_EPOCH - 1, WORKER_BUILD)

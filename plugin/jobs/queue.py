@@ -43,6 +43,7 @@ class PostgresJobQueue:
             now = session.scalar(select(func.now())) if now_from_db else func.now()
             eligible = or_(
                 Job.state == "queued",
+                (Job.state == "retry") & (Job.available_at <= func.now()),
                 (Job.state == "leased") & (Job.lease_expires_at < func.now()),
             )
             job = session.scalar(
@@ -75,7 +76,7 @@ class PostgresJobQueue:
                     Job.lease_generation == generation,
                     Job.lease_expires_at > func.now(),
                 )
-                .values(lease_expires_at=func.now() + timedelta(seconds=self.lease_seconds))
+                .values(lease_expires_at=func.now() + timedelta(seconds=self.lease_seconds), updated_at=func.now())
             )
             return result.rowcount == 1
 
@@ -97,6 +98,7 @@ class PostgresJobQueue:
                 "lease_owner": None,
                 "lease_expires_at": None,
                 "last_error_code": result.error_code,
+                "updated_at": func.now(),
             }
             if result.state == "retry":
                 update_values["available_at"] = func.now() + timedelta(seconds=result.retry_after_seconds or 30)
@@ -156,7 +158,9 @@ class PostgresJobQueue:
                             working_file.state = "completed"
                             if working_revision is None:
                                 raise ValueError("Working revision reservation is unavailable")
-                            from ..working_files.service import complete_working_revision_in_session
+                            from ..working_files.service import (
+                                complete_working_revision_in_session,
+                            )
 
                             complete_working_revision_in_session(session, working_revision)
                     elif result.state == "reconcile_required":
@@ -185,7 +189,7 @@ class PostgresJobQueue:
         with self.session_factory.begin() as session:
             result = session.execute(
                 update(Job)
-                .where(Job.state.in_(("queued", "leased")), Job.attempts >= Job.max_attempts, or_(Job.state == "queued", Job.lease_expires_at < func.now()))
-                .values(state="failed", lease_owner=None, lease_expires_at=None, last_error_code="retry_limit")
+                .where(Job.state.in_(("queued", "retry", "leased")), Job.attempts >= Job.max_attempts, or_(Job.state.in_(("queued", "retry")), Job.lease_expires_at < func.now()))
+                .values(state="failed", lease_owner=None, lease_expires_at=None, last_error_code="retry_limit", updated_at=func.now())
             )
             return result.rowcount

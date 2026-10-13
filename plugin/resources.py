@@ -1780,6 +1780,11 @@ from .integrations.http import (
     SyncSnapshotStartResource,
     SyncSnapshotPageResource,
     SyncSnapshotCompleteResource,
+    SyncPreviewResource,
+    SyncApplyResource,
+    SyncJobResource,
+    SyncJobRetryResource,
+    SyncJobReconcileResource,
 )
 
 
@@ -1793,6 +1798,11 @@ routes = [
     ("/integrations/v1/productions/<production_id>/sync-snapshots", SyncSnapshotStartResource),
     ("/integrations/v1/sync-snapshots/<snapshot_id>/pages/<int:page_index>", SyncSnapshotPageResource),
     ("/integrations/v1/sync-snapshots/<snapshot_id>/complete", SyncSnapshotCompleteResource),
+    ("/integrations/v1/productions/<production_id>/sync-previews", SyncPreviewResource),
+    ("/integrations/v1/productions/<production_id>/sync-jobs", SyncApplyResource),
+    ("/integrations/v1/sync-jobs/<job_id>", SyncJobResource),
+    ("/integrations/v1/sync-jobs/<job_id>/retry", SyncJobRetryResource),
+    ("/integrations/v1/sync-jobs/<job_id>/reconcile", SyncJobReconcileResource),
     ("/health", Health),
     ("/csrf-token", CsrfToken),
     ("/overview", ProductionOverview),

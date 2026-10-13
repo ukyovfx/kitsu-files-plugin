@@ -65,9 +65,10 @@ def run_snapshot_idempotent(session, *, production_id: UUID, actor_id: UUID, ide
     _Desired, _Snapshot, _Page, Idempotency = _get_models()
     request_sha256 = hashlib.sha256(canonical_json({"operation": operation, "body": request_body})).hexdigest()
     with session.begin():
-        session.execute(text("SELECT pg_advisory_xact_lock(hashtextextended(:lock_key, 0))"), {
-            "lock_key": f"vfx-files-snapshot:{production_id}:{idempotency_key}"
-        })
+        if session.get_bind().dialect.name == "postgresql":
+            session.execute(text("SELECT pg_advisory_xact_lock(hashtextextended(:lock_key, 0))"), {
+                "lock_key": f"vfx-files-snapshot:{production_id}:{idempotency_key}"
+            })
         prior = session.scalar(select(Idempotency).where(
             Idempotency.production_id == production_id,
             Idempotency.idempotency_key == idempotency_key,
@@ -119,13 +120,11 @@ def start_snapshot(
         if expected != actual:
             raise SnapshotConflict("Snapshot ID is already bound to different content")
         return existing
-    same_content = session.scalar(select(Snapshot).where(
-        Snapshot.production_id == production_id,
-        Snapshot.config_revision == config_revision,
-        Snapshot.hierarchy_sha256 == snapshot_sha256,
-    ).with_for_update())
-    if same_content is not None:
-        raise SnapshotConflict("Snapshot content is already bound to another snapshot ID")
+    # Snapshot identity is the caller-supplied immutable snapshot UUID. A
+    # repeated read-only Preview may legitimately produce identical hierarchy
+    # bytes under a new snapshot ID (for example, a fresh KitsuSync source ETag).
+    # Idempotency-Key still makes retries of the same upload exact; the digest
+    # is content evidence, not a global uniqueness key.
     row = Snapshot(
         id=snapshot_id,
         production_id=production_id,

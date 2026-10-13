@@ -2,8 +2,8 @@
 
 HOST_KITSU_VERSION = "1.0.70"
 HOST_ZOU_VERSION = "1.0.94"
-SCHEMA_EPOCH = 10
-WORKER_BUILD = "10"
+SCHEMA_EPOCH = 11
+WORKER_BUILD = "11"
 
 
 def assert_runtime_host() -> None:
@@ -18,9 +18,11 @@ def assert_runtime_host() -> None:
 def current_actor_role(project_id):
     """Resolve the authenticated Zou identity's current Production role by UUID."""
     from uuid import UUID
+
     from flask_jwt_extended import get_jwt_identity
     from zou.app.models.person import Person
     from zou.app.models.project import ProjectPersonLink
+
     from .authz import PermissionDenied
 
     try:
@@ -45,9 +47,8 @@ def current_actor_role(project_id):
 
 def authorize_task_mutation(actor, task_id, capability):
     """Use current Zou membership/assignment rows for each task mutation."""
-    from zou.app.models.task import Task
     from zou.app.models.project import ProjectPersonLink
-    from zou.app.models.task import TaskPersonLink
+    from zou.app.models.task import Task, TaskPersonLink
 
     task = Task.query.filter_by(id=task_id).one_or_none()
     if task is None:
@@ -64,9 +65,8 @@ def authorize_task_mutation(actor, task_id, capability):
 
 def authorize_task_read(actor, task_id):
     """Require current Production membership or explicit Task assignment."""
-    from zou.app.models.task import Task
     from zou.app.models.project import ProjectPersonLink
-    from zou.app.models.task import TaskPersonLink
+    from zou.app.models.task import Task, TaskPersonLink
 
     task = Task.query.filter_by(id=task_id).one_or_none()
     if task is None:

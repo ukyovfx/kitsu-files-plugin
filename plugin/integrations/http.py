@@ -27,6 +27,47 @@ from .v1 import (
 )
 
 
+def _sync_response(operation):
+    try:
+        body, status, etag = operation()
+    except SnapshotAccessError as exc:
+        return _error(exc.code, exc.status)
+    except SnapshotConflict:
+        return _error("idempotency_conflict", 409)
+    except ContractValidationError:
+        return _error("invalid_event", 400)
+    except Exception as exc:
+        from .sync import SyncOperationError
+        if isinstance(exc, SyncOperationError):
+            return _error(exc.code, exc.status)
+        raise
+    response = jsonify(body)
+    response.status_code = status
+    if etag:
+        response.headers["ETag"] = etag
+    return response
+
+
+def _sync_json_body():
+    if request.mimetype != "application/json" or request.content_length is None or request.content_length > 64 * 1024:
+        raise ContractValidationError("Sync request must be bounded JSON")
+    body = request.get_json(silent=True)
+    if not isinstance(body, dict):
+        raise ContractValidationError("Sync request body is invalid")
+    return body
+
+
+def _sync_uuid(value, name):
+    from uuid import UUID
+    try:
+        parsed = UUID(str(value))
+        if str(parsed) != str(value):
+            raise ValueError
+        return parsed
+    except (ValueError, TypeError, AttributeError):
+        raise ContractValidationError(f"{name} must be a canonical UUID") from None
+
+
 def _error(code: str, status: int, details: dict | None = None):
     body = {
         "contract_version": "1.0",
@@ -454,3 +495,89 @@ class DeactivationResource(MethodView):
             return body, status, etag
 
         return _respond(deactivate)
+
+
+class SyncPreviewResource(MethodView):
+    @service_scope("vfx.sync.preview")
+    def post(self, production_id, service_identity=None):
+        from zou.app import db
+
+        from .sync import create_sync_preview
+        try:
+            body = _sync_json_body()
+            production_uuid = _sync_uuid(production_id, "production_id")
+        except ContractValidationError:
+            return _error("invalid_event", 400)
+        return _sync_response(lambda: create_sync_preview(
+            db.session, production_id=production_uuid, actor_id=service_identity.actor_id,
+            payload=body, idempotency_key=request.headers.get("Idempotency-Key"),
+        ))
+
+
+class SyncApplyResource(MethodView):
+    @service_scope("vfx.sync.apply")
+    def post(self, production_id, service_identity=None):
+        from zou.app import db
+
+        from .sync import apply_sync_preview
+        try:
+            body = _sync_json_body()
+            production_uuid = _sync_uuid(production_id, "production_id")
+        except ContractValidationError:
+            return _error("invalid_event", 400)
+        return _sync_response(lambda: apply_sync_preview(
+            db.session, production_id=production_uuid, actor_id=service_identity.actor_id,
+            payload=body, idempotency_key=request.headers.get("Idempotency-Key"),
+        ))
+
+
+class SyncJobResource(MethodView):
+    @service_scope("vfx.sync.read", production_source="none")
+    def get(self, job_id, service_identity=None):
+        from zou.app import db
+
+        from .sync import get_sync_job
+        try:
+            parsed = _sync_uuid(job_id, "job_id")
+        except ContractValidationError:
+            return _error("invalid_event", 400)
+        return _sync_response(lambda: (get_sync_job(
+            db.session, job_id=parsed, production_id=service_identity.production_id,
+            actor_id=service_identity.actor_id,
+        ), 200, None))
+
+
+class SyncJobRetryResource(MethodView):
+    @service_scope("vfx.sync.retry", production_source="none")
+    def post(self, job_id, service_identity=None):
+        from zou.app import db
+
+        from .sync import enqueue_sync_job_command, validate_operator_command
+        try:
+            parsed, body = _sync_uuid(job_id, "job_id"), _sync_json_body()
+            validate_operator_command(body)
+        except ContractValidationError:
+            return _error("invalid_event", 400)
+        return _sync_response(lambda: enqueue_sync_job_command(
+            db.session, job_id=parsed, production_id=service_identity.production_id,
+            actor_id=service_identity.actor_id, command=body,
+            idempotency_key=request.headers.get("Idempotency-Key"), operation="retry",
+        ))
+
+
+class SyncJobReconcileResource(MethodView):
+    @service_scope("vfx.sync.reconcile", production_source="none")
+    def post(self, job_id, service_identity=None):
+        from zou.app import db
+
+        from .sync import enqueue_sync_job_command, validate_operator_command
+        try:
+            parsed, body = _sync_uuid(job_id, "job_id"), _sync_json_body()
+            validate_operator_command(body)
+        except ContractValidationError:
+            return _error("invalid_event", 400)
+        return _sync_response(lambda: enqueue_sync_job_command(
+            db.session, job_id=parsed, production_id=service_identity.production_id,
+            actor_id=service_identity.actor_id, command=body,
+            idempotency_key=request.headers.get("Idempotency-Key"), operation="reconcile",
+        ))

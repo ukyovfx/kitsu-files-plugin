@@ -25,7 +25,7 @@ def _authorize_job(payload):
     from zou.app.models.project import ProjectPersonLink
     from zou.app.models.task import Task, TaskPersonLink
 
-    if payload.get("job_type") == "reconcile_drive_objects":
+    if payload.get("job_type") in ("reconcile_drive_objects", "sync_hierarchy"):
         from zou.app.models.project import Project
 
         try:
@@ -93,14 +93,15 @@ def build_runtime(app):
     from zou.app import db
 
     from .compat import SCHEMA_EPOCH, WORKER_BUILD
-    from .jobs.queue import PostgresJobQueue
-    from .storage.worker_factory import make_worker_storage_adapter_factory
     from .folders.worker import make_task_folder_handler
+    from .integrations.worker import make_hierarchy_sync_handler
+    from .jobs.queue import PostgresJobQueue
+    from .packages.worker import make_output_package_handler
+    from .publishes.worker import make_publish_handler
+    from .storage.reconciliation import make_drive_reconciliation_handler
+    from .storage.worker_factory import make_worker_storage_adapter_factory
     from .uploads.staging import FileSystemStaging
     from .uploads.worker import make_upload_handler
-    from .publishes.worker import make_publish_handler
-    from .packages.worker import make_output_package_handler
-    from .storage.reconciliation import make_drive_reconciliation_handler
     from .worker.leases import WorkerContext
     from .worker.main import WorkerRuntime
 
@@ -125,6 +126,7 @@ def build_runtime(app):
             "verify_output_package": make_output_package_handler(sessions, adapter_factory),
             "provision_task_folders": make_task_folder_handler(sessions, adapter_factory),
             "reconcile_drive_objects": make_drive_reconciliation_handler(sessions, adapter_factory),
+            "sync_hierarchy": make_hierarchy_sync_handler(sessions, adapter_factory),
         },
     )
 

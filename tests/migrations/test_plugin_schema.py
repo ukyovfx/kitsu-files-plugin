@@ -11,6 +11,7 @@ OUTPUT_PACKAGE_QC_MIGRATION = ROOT / "plugin/migrations/versions/0008_output_pac
 KITSUSYNC_DELIVERY_MIGRATION = ROOT / "plugin/migrations/versions/0009_kitsusync_contract_and_package_deliveries.py"
 DRIVE_OBSERVATION_MIGRATION = ROOT / "plugin/migrations/versions/0010_drive_reconciliation_observations.py"
 KITSUSYNC_IDEMPOTENCY_MIGRATION = ROOT / "plugin/migrations/versions/0011_kitsusync_management_idempotency.py"
+KITSUSYNC_SYNC_MIGRATION = ROOT / "plugin/migrations/versions/0012_kitsusync_hierarchy_sync.py"
 
 
 def test_plugin_tables_are_namespaced_and_nullable_folder_identity_is_avoided():
@@ -159,3 +160,16 @@ def test_kitsusync_management_idempotency_migration_is_additive_and_refuses_data
     assert 'UniqueConstraint("production_id", "idempotency_key"' in source
     assert "restore a consistent pre-migration snapshot instead of downgrading" in source
     assert "schema_epoch = 10" in source and "schema_epoch = 9" in source
+
+
+def test_kitsusync_hierarchy_sync_migration_allows_repeated_content_and_preserves_evidence():
+    source = KITSUSYNC_SYNC_MIGRATION.read_text()
+    assert 'revision = "vxf_0012"' in source
+    assert 'down_revision = "vxf_0011"' in source
+    assert 'op.drop_constraint(' in source
+    assert 'op.create_table(\n        "plugin_vfx_files_kitsusync_sync_preview"' in source
+    assert 'sa.Column("updated_at", sa.DateTime(timezone=True), nullable=True)' in source
+    assert 'SELECT EXISTS (SELECT 1 FROM plugin_vfx_files_job)' in source
+    assert "GROUP BY production_id, config_revision, hierarchy_sha256 HAVING count(*) > 1" in source
+    assert "restore a consistent pre-migration snapshot instead of downgrading" in source
+    assert "schema_epoch = 11" in source and "schema_epoch = 10" in source

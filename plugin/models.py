@@ -2,10 +2,21 @@
 
 from uuid import uuid4
 
-from sqlalchemy import BigInteger, Boolean, DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint, func, text
+from sqlalchemy import (
+    BigInteger,
+    Boolean,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
+    text,
+)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy_utils import UUIDType
-
 from zou.app import db
 
 
@@ -19,7 +30,7 @@ class PluginState(db.Model):
 class StorageConnection(db.Model):
     __tablename__ = "plugin_vfx_files_storage_connection"
     id = db.Column(UUIDType(binary=False), primary_key=True, default=uuid4)
-    production_id = db.Column(UUIDType(binary=False), nullable=False, index=True)
+    production_id = db.Column(UUIDType(binary=False), nullable=False)
     provider = db.Column(String(32), nullable=False)
     account_mode = db.Column(String(24), nullable=False)
     owner_subject = db.Column(String(255))
@@ -175,6 +186,7 @@ class Job(db.Model):
     lease_expires_at = db.Column(DateTime(timezone=True))
     last_error_code = db.Column(String(64))
     created_at = db.Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at = db.Column(DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now())
 
 
 class OutputFamilyMapping(db.Model):
@@ -411,7 +423,27 @@ class KitsuSyncHierarchySnapshot(db.Model):
     state = db.Column(String(24), nullable=False, default="uploading")
     created_at = db.Column(DateTime(timezone=True), nullable=False, server_default=func.now())
     expires_at = db.Column(DateTime(timezone=True), nullable=False)
-    __table_args__ = (UniqueConstraint("production_id", "config_revision", "hierarchy_sha256", name="plugin_vfx_files_kitsusync_snapshot_revision_sha_uc"),)
+
+
+class KitsuSyncSyncPreview(db.Model):
+    """Short-lived immutable read-only hierarchy diff bound to one snapshot/root/config epoch."""
+    __tablename__ = "plugin_vfx_files_kitsusync_sync_preview"
+    id = db.Column(UUIDType(binary=False), primary_key=True, default=uuid4)
+    production_id = db.Column(UUIDType(binary=False), nullable=False)
+    snapshot_id = db.Column(UUIDType(binary=False), ForeignKey("plugin_vfx_files_kitsusync_snapshot.id"), nullable=False)
+    template_configuration_id = db.Column(UUIDType(binary=False), ForeignKey("plugin_vfx_files_shared_template.id"), nullable=False)
+    template_version = db.Column(Integer, nullable=False)
+    config_revision = db.Column(Integer, nullable=False)
+    activation_epoch = db.Column(Integer, nullable=False)
+    storage_connection_id = db.Column(UUIDType(binary=False), ForeignKey("plugin_vfx_files_storage_connection.id"), nullable=False)
+    root_id = db.Column(String(255), nullable=False)
+    summary = db.Column(JSONB, nullable=False)
+    changes = db.Column(JSONB, nullable=False)
+    state = db.Column(String(24), nullable=False, default="preview_ready")
+    expires_at = db.Column(DateTime(timezone=True), nullable=False)
+    created_by = db.Column(UUIDType(binary=False), nullable=False)
+    created_at = db.Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    __table_args__ = (Index("plugin_vfx_files_ks_preview_scope_ix", "production_id", "expires_at"),)
 
 
 class KitsuSyncHierarchySnapshotPage(db.Model):

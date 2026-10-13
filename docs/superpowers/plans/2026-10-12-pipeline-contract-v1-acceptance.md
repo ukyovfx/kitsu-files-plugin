@@ -63,6 +63,27 @@ This section records the narrow implementation added on `codex/confirmed-ux-driv
 
 | Provider connection/root/template API slice | PARTIAL | Exact v1 GET connection list, GET root candidates, GET template catalog, and POST read-only root verification handlers are registered. Responses omit credential references, email/owner labels, and unverified My Drive subjects. Google adapter root enumeration verifies the configured OIDC subject or fixed Shared Drive ID; candidate verification is read-only and does not change the Worker allowed root. FakeStorage exposes only its synthetic root. Local unit tests pass; pinned HTTP/PostgreSQL coverage exists but is skipped without Zou. |
 
+## Contract-v1 hierarchy synchronization checkpoint (2026-10-13)
+
+This section supersedes the earlier `Folder sync preview/apply/retry/reconcile` and management endpoint rows for the current implementation branch. Contract source remains KitsuSync PR #239 HEAD `c1746776a69b0afd9ef542abad466e49e0d1c068`; KitsuSync was read-only.
+
+| Gate | Status | Current evidence / limitation |
+|---|---|---|
+| Immutable snapshot identity | PASS (SQLite service test) | Same Production/config revision/content digest is accepted under distinct immutable snapshot UUIDs; reusing one UUID with different content conflicts. PostgreSQL migration/runtime application remains NOT TESTED. |
+| Authenticated hierarchy management routes | PARTIAL | Exact Preview, Apply, GET status, Retry and Reconcile routes use the existing RS256/JWKS service-bearer verifier and exact contract scopes. Flask verifies a valid signed Preview request is bound to Production/actor and forwards the request/idempotency key; missing and wrong scopes fail closed. Handler-to-PostgreSQL execution is NOT TESTED. |
+| Preview and explicit Apply | PASS (SQLite service tests) | Preview persists a capped 500-row read-only plan and does not queue a Job. Apply requires a current unexpired preview, config revision, activation epoch, root/connection and template version, then persists one durable `sync_hierarchy` Job; replay returns the original result and conflicting key reuse fails. |
+| Template/scope resolution | PARTIAL | Contract catalog IDs/revisions are checked against the Plugin's current v1 catalog; selected scopes, sync policy, stable UUID bindings and parent closure constrain the plan. Non-empty template overrides fail closed because v1 does not define how they compose with the Plugin-owned nested folder tree. Production/Asset/Sequence template selection is not independently materialized; the current provisioner creates supported Shot/Asset/Task paths when selected Tasks require them. |
+| Durable Worker, fencing and FakeStorage | PARTIAL | Synthetic SQLite service + FakeStorage tests drive Apply through the registered sync handler, existing folder reservation/provisioning primitives, progress persistence and lease/config/root/permission fences. A separate real Worker process, Zou model validation and PostgreSQL execution are NOT TESTED. |
+| Retry / Reconcile | PARTIAL | Retry accepts only failed jobs; Reconcile accepts only `reconcile_required`; each creates a separately idempotent durable job, preserves the original and is bounded to three operator retries. Ambiguous folder operations re-enter existing reservation/readback reconciliation. PostgreSQL concurrent-request and crash recovery behavior are NOT TESTED. |
+| Worker host/build compatibility | PASS (unit regression) | Updated the compatibility gate to use the shared `HOST_ZOU_VERSION`, `SCHEMA_EPOCH`, and `WORKER_BUILD` constants. This fixes seven pre-existing unit failures caused by migration `vxf_0012` advancing the epoch/build while the gate remained hard-coded to 10. |
+| Available targeted suites | PASS / SKIP | Isolated local run: `122 passed, 7 skipped` across integrations, migrations (source assertions), folders, jobs, publishes and authz. Focused sync/contract/HTTP/migration/authz run: `49 passed`. Ruff, compileall and diff checks also pass after formatting the touched imports. Skips are retained and are not claims of host execution. |
+| Pinned Kitsu/Zou/PostgreSQL + separate Worker E2E | BLOCKED | One Docker readiness probe found the existing Docker Desktop Linux engine pipe unavailable. Per instruction, it was not retried and no replacement host was built. Local Python lacks the pinned Zou runtime; `vxf_0012`, PostgreSQL HTTP, Working/Publish/QC/Approval regressions and installed-page E2E were not run. |
+| Production / real Google Drive / KitsuSync writes | NOT TESTED | No Production access, Google OAuth/Drive operation, live KitsuSync request or external mutation was performed. |
+
+### Remaining interoperability limit
+
+KitsuSync v1 permits template `overrides`, but the shared contract does not state how those values map to Plugin-owned nested template nodes. This implementation rejects non-empty overrides instead of silently ignoring them. The Plugin's current local SharedTemplateConfiguration remains the folder-tree authority; only selected default catalog IDs/revisions and scopes are resolved. A real KitsuSync-to-Plugin sync rehearsal must validate catalog selection, parent scope behavior, and database/worker execution before this is accepted for UAT.
+
 ## Provider-side integration checkpoint (2026-10-13)
 
 - Exact KitsuSync v1 contract: `c1746776a69b0afd9ef542abad466e49e0d1c068` (PR #239, Draft); official base route is `/api/plugins/vfx_files/integrations/v1`.

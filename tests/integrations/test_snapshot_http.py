@@ -8,6 +8,11 @@ from cryptography.hazmat.primitives.asymmetric import padding, rsa
 from flask import Flask
 
 from plugin.integrations.http import (
+    SyncApplyResource,
+    SyncJobReconcileResource,
+    SyncJobResource,
+    SyncJobRetryResource,
+    SyncPreviewResource,
     SyncSnapshotCompleteResource,
     SyncSnapshotPageResource,
     SyncSnapshotStartResource,
@@ -47,6 +52,11 @@ def _client():
     view(SyncSnapshotStartResource, "productions/<production_id>/sync-snapshots")
     view(SyncSnapshotPageResource, "sync-snapshots/<snapshot_id>/pages/<int:page_index>")
     view(SyncSnapshotCompleteResource, "sync-snapshots/<snapshot_id>/complete")
+    view(SyncPreviewResource, "productions/<production_id>/sync-previews")
+    view(SyncApplyResource, "productions/<production_id>/sync-jobs")
+    view(SyncJobResource, "sync-jobs/<job_id>")
+    view(SyncJobRetryResource, "sync-jobs/<job_id>/retry")
+    view(SyncJobReconcileResource, "sync-jobs/<job_id>/reconcile")
 
     def token(scopes, production_id=PRODUCTION_ID):
         now = int(time.time())
@@ -98,3 +108,73 @@ def test_snapshot_handler_registry_uses_contract_routes_and_scope():
     assert registered["/integrations/v1/productions/<production_id>/sync-snapshots"] is SyncSnapshotStartResource
     assert registered["/integrations/v1/sync-snapshots/<snapshot_id>/pages/<int:page_index>"] is SyncSnapshotPageResource
     assert registered["/integrations/v1/sync-snapshots/<snapshot_id>/complete"] is SyncSnapshotCompleteResource
+    assert registered["/integrations/v1/productions/<production_id>/sync-previews"] is SyncPreviewResource
+    assert registered["/integrations/v1/productions/<production_id>/sync-jobs"] is SyncApplyResource
+    assert registered["/integrations/v1/sync-jobs/<job_id>"] is SyncJobResource
+    assert registered["/integrations/v1/sync-jobs/<job_id>/retry"] is SyncJobRetryResource
+    assert registered["/integrations/v1/sync-jobs/<job_id>/reconcile"] is SyncJobReconcileResource
+
+
+def test_sync_management_routes_require_their_exact_signed_scopes():
+    client = _client()
+    base = "/plugins/vfx_files/integrations/v1"
+    requests = [
+        ("post", f"{base}/productions/{PRODUCTION_ID}/sync-previews", "vfx.sync.apply"),
+        ("post", f"{base}/productions/{PRODUCTION_ID}/sync-jobs", "vfx.sync.preview"),
+        ("get", f"{base}/sync-jobs/30000000-0000-4000-8000-000000000001", "vfx.sync.retry"),
+        ("post", f"{base}/sync-jobs/30000000-0000-4000-8000-000000000001/retry", "vfx.sync.read"),
+        ("post", f"{base}/sync-jobs/30000000-0000-4000-8000-000000000001/reconcile", "vfx.sync.retry"),
+    ]
+    for method, url, wrong_scope in requests:
+        response = getattr(client, method)(url, json={} if method == "post" else None, headers={
+            "Authorization": f"Bearer {client.snapshot_token(wrong_scope)}",
+            "X-KitsuSync-Actor-ID": ACTOR_ID,
+        })
+        assert response.status_code == 403
+        assert response.json["code"] == "invalid_scope"
+
+
+def test_sync_preview_http_handler_binds_valid_identity_and_forwards_idempotency(monkeypatch):
+    import sys
+    from types import ModuleType, SimpleNamespace
+
+    from plugin.integrations import sync
+
+    zou = ModuleType("zou")
+    zou_app = ModuleType("zou.app")
+    fake_session = object()
+    zou_app.db = SimpleNamespace(session=fake_session)
+    monkeypatch.setitem(sys.modules, "zou", zou)
+    monkeypatch.setitem(sys.modules, "zou.app", zou_app)
+    observed = {}
+
+    def preview(session, *, production_id, actor_id, payload, idempotency_key):
+        observed.update(
+            production_id=str(production_id), actor_id=str(actor_id), payload=payload,
+            idempotency_key=idempotency_key, session=session,
+        )
+        return ({
+            "contract_version": "1.0", "preview_id": "30000000-0000-4000-8000-000000000001",
+            "production_id": str(production_id), "config_revision": 7, "root_id": "synthetic-root",
+            "state": "preview_ready", "summary": {"existing": 1, "create": 0, "link": 0, "excluded": 0, "warnings": 0},
+            "changes": [], "expires_at": "2026-10-13T00:15:00Z",
+        }, 200, None)
+
+    monkeypatch.setattr(sync, "create_sync_preview", preview)
+    client = _client()
+    response = client.post(
+        f"/plugins/vfx_files/integrations/v1/productions/{PRODUCTION_ID}/sync-previews",
+        json={"contract_version": "1.0", "config_revision": 7, "snapshot_id": "30000000-0000-4000-8000-000000000002"},
+        headers={
+            "Authorization": f"Bearer {client.snapshot_token('vfx.sync.preview')}",
+            "X-KitsuSync-Actor-ID": ACTOR_ID,
+            "Idempotency-Key": "sync-preview-http-key-01",
+        },
+    )
+    assert response.status_code == 200
+    assert response.json["state"] == "preview_ready"
+    assert observed == {
+        "production_id": PRODUCTION_ID, "actor_id": ACTOR_ID,
+        "payload": {"contract_version": "1.0", "config_revision": 7, "snapshot_id": "30000000-0000-4000-8000-000000000002"},
+        "idempotency_key": "sync-preview-http-key-01", "session": fake_session,
+    }

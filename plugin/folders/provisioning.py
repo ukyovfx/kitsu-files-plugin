@@ -136,16 +136,17 @@ def provision_task_folders(
     task_id: UUID,
     configuration_id: UUID,
     configuration_version: int,
+    before_external=None,
 ):
     """Validate current Production/task/template bindings, then ensure the path."""
     from sqlalchemy import select
-
-    from ..models import SharedTemplateConfiguration, StorageConnection
-    from ..storage.base import resolve_storage_adapter
     from zou.app.models.entity import Entity
     from zou.app.models.entity_type import EntityType
     from zou.app.models.task import Task
     from zou.app.models.task_type import TaskType
+
+    from ..models import SharedTemplateConfiguration, StorageConnection
+    from ..storage.base import resolve_storage_adapter
 
     with session_factory() as session:
         config = session.scalar(
@@ -219,6 +220,8 @@ def provision_task_folders(
                 or current_connection.allowed_root_id != production_root_id
             ):
                 raise FolderProvisioningError("Template or storage configuration changed while provisioning")
+        if before_external is not None and not before_external():
+            raise FolderProvisioningError("Sync authorization, activation or lease fence changed")
         result = provision_folder(
             job_adapter,
             store,
