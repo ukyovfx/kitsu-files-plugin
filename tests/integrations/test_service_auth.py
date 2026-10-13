@@ -116,7 +116,7 @@ def test_service_bearer_fails_closed_on_lifetime_scope_production_and_actor(serv
             jwks=cache, now=1_800_000_010,
         )
     assert error.value.status == status
-    assert str(error.value) in {"invalid_service_token", "forbidden"}
+    assert str(error.value) in {"unauthorized_service", "production_access_denied", "invalid_scope"}
 
 
 @pytest.mark.parametrize("scope", ["vfx.config.read vfx.unknown", "vfx.config.read vfx.config.read", "vfx.config.read  vfx.config.write"])

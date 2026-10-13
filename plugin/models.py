@@ -378,6 +378,26 @@ class KitsuSyncDesiredConfiguration(db.Model):
     updated_at = db.Column(DateTime(timezone=True), nullable=False, server_default=func.now())
 
 
+class KitsuSyncManagementIdempotency(db.Model):
+    """Durable replay result for authenticated management mutations."""
+    __tablename__ = "plugin_vfx_files_kitsusync_management_idempotency"
+    id = db.Column(UUIDType(binary=False), primary_key=True, default=uuid4)
+    production_id = db.Column(UUIDType(binary=False), nullable=False)
+    actor_id = db.Column(UUIDType(binary=False), nullable=False)
+    idempotency_key = db.Column(String(128), nullable=False)
+    operation = db.Column(String(64), nullable=False)
+    request_sha256 = db.Column(String(64), nullable=False)
+    response_status = db.Column(Integer, nullable=False)
+    response_etag = db.Column(String(32))
+    response_body = db.Column(JSONB, nullable=False)
+    created_at = db.Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    __table_args__ = (
+        UniqueConstraint("production_id", "idempotency_key", name="plugin_vfx_files_ks_mgmt_idem_scope_uc"),
+        Index("plugin_vfx_files_ks_mgmt_idem_created_ix", "created_at"),
+        db.CheckConstraint("response_status BETWEEN 200 AND 299", name="plugin_vfx_files_ks_mgmt_idem_status_ck"),
+    )
+
+
 class KitsuSyncHierarchySnapshot(db.Model):
     """Bounded, KitsuSync-supplied hierarchy snapshot for one desired revision."""
     __tablename__ = "plugin_vfx_files_kitsusync_snapshot"

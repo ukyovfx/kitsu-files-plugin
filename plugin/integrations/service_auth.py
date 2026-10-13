@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from functools import wraps
 from urllib.parse import urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
@@ -275,23 +275,23 @@ def verify_service_bearer(
     except ServiceAuthenticationError:
         raise
     except Exception:
-        raise ServiceAuthenticationError(401, "invalid_service_token") from None
+        raise ServiceAuthenticationError(401, "unauthorized_service") from None
 
     if claims["actor_role"] != "production_admin":
-        raise ServiceAuthenticationError(403, "forbidden")
+        raise ServiceAuthenticationError(403, "production_access_denied")
     scopes = claims["scope"].split(" ") if isinstance(claims["scope"], str) else []
     if not isinstance(claims["scope"], str) or not scopes or any(not scope for scope in scopes) or len(set(scopes)) != len(scopes) or not set(scopes) <= ALLOWED_SCOPES:
-        raise ServiceAuthenticationError(401, "invalid_service_token")
+        raise ServiceAuthenticationError(401, "unauthorized_service")
     if required_scope not in scopes or str(production_id) != str(requested_production_id):
-        raise ServiceAuthenticationError(403, "forbidden")
+        raise ServiceAuthenticationError(403, "invalid_scope" if required_scope not in scopes else "production_access_denied")
     if actor_header != claims.get("actor_id"):
-        raise ServiceAuthenticationError(401, "invalid_service_token")
+        raise ServiceAuthenticationError(401, "unauthorized_service")
     try:
         header_actor = UUID(actor_header or "")
     except (ValueError, TypeError, AttributeError):
-        raise ServiceAuthenticationError(401, "invalid_service_token") from None
+        raise ServiceAuthenticationError(401, "unauthorized_service") from None
     if header_actor != actor_id:
-        raise ServiceAuthenticationError(401, "invalid_service_token")
+        raise ServiceAuthenticationError(401, "unauthorized_service")
     return ServiceIdentity(production_id, actor_id, claims["actor_role"], frozenset(scopes), subject, client_id)
 
 
@@ -305,14 +305,14 @@ def authenticate_management_request(required_scope: str, requested_production_id
     subject = settings.get("VFX_FILES_KITSUSYNC_SUBJECT")
     client_id = settings.get("VFX_FILES_KITSUSYNC_CLIENT_ID")
     if not all(isinstance(value, str) and value for value in (issuer, audience, subject, client_id)):
-        raise ServiceAuthenticationError(401, "service_auth_not_configured")
+        raise ServiceAuthenticationError(401, "unauthorized_service")
     cache_key = "vfx_files_kitsusync_jwks_cache"
     cache = current_app.extensions.get(cache_key)
     if cache is None:
         try:
             cache = JWKSCache(issuer)
         except ValueError:
-            raise ServiceAuthenticationError(401, "service_auth_not_configured") from None
+            raise ServiceAuthenticationError(401, "unauthorized_service") from None
         current_app.extensions[cache_key] = cache
     return verify_service_bearer(
         request.headers.get("Authorization"),
@@ -338,7 +338,12 @@ def service_scope(required_scope: str):
             try:
                 identity = authenticate_management_request(required_scope, production_id)
             except ServiceAuthenticationError as exc:
-                response = jsonify({"contract_version": "1.0", "error": {"code": exc.code}})
+                response = jsonify({
+                    "contract_version": "1.0",
+                    "code": exc.code,
+                    "request_id": str(uuid4()),
+                    "retryable": False,
+                })
                 return response, exc.status
             kwargs["service_identity"] = identity
             return view(*args, **kwargs)

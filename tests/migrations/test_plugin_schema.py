@@ -10,6 +10,7 @@ TASK_OUTPUT_MIGRATION = ROOT / "plugin/migrations/versions/0007_task_outputs_and
 OUTPUT_PACKAGE_QC_MIGRATION = ROOT / "plugin/migrations/versions/0008_output_package_qc.py"
 KITSUSYNC_DELIVERY_MIGRATION = ROOT / "plugin/migrations/versions/0009_kitsusync_contract_and_package_deliveries.py"
 DRIVE_OBSERVATION_MIGRATION = ROOT / "plugin/migrations/versions/0010_drive_reconciliation_observations.py"
+KITSUSYNC_IDEMPOTENCY_MIGRATION = ROOT / "plugin/migrations/versions/0011_kitsusync_management_idempotency.py"
 
 
 def test_plugin_tables_are_namespaced_and_nullable_folder_identity_is_avoided():
@@ -148,3 +149,13 @@ def test_drive_observation_migration_is_additive_and_refuses_data_loss():
         assert state in source
     assert "restore a consistent pre-migration snapshot instead of downgrading" in source
     assert "schema_epoch = 9" in source and "schema_epoch = 8" in source
+
+
+def test_kitsusync_management_idempotency_migration_is_additive_and_refuses_data_loss():
+    source = KITSUSYNC_IDEMPOTENCY_MIGRATION.read_text()
+    assert 'revision = "vxf_0011"' in source
+    assert 'down_revision = "vxf_0010"' in source
+    assert 'op.create_table(\n        "plugin_vfx_files_kitsusync_management_idempotency"' in source
+    assert 'UniqueConstraint("production_id", "idempotency_key"' in source
+    assert "restore a consistent pre-migration snapshot instead of downgrading" in source
+    assert "schema_epoch = 10" in source and "schema_epoch = 9" in source
