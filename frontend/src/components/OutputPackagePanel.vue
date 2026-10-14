@@ -1,8 +1,9 @@
 <script setup>
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 
-const props = defineProps({ taskId: { type: String, required: true }, api: { type: Object, required: true } })
+const props = defineProps({ taskId: { type: String, default: null }, tasks: { type: Array, default: () => [] }, fixedTaskId: { type: String, default: null }, api: { type: Object, required: true } })
 const emit = defineEmits(['changed'])
+const selectedTaskId = ref(props.fixedTaskId || props.taskId || '')
 const requestGeneration = ref(0)
 const loading = ref(false)
 const submitting = ref(false)
@@ -23,6 +24,8 @@ const frameEnd = ref('')
 const colorSpace = ref('')
 const expandedPackage = ref('')
 const packageFiles = ref({})
+const workingRevisions = ref({ revisions: [], latest_working_id: null })
+const sourceWorkingRevisionId = ref('')
 const driveCheckedAt = ref('')
 const driveSyncStatus = ref('not checked')
 let pollTimer
@@ -39,7 +42,13 @@ const packageTypes = [
 ]
 const sequencePackage = computed(() => ['low-res-sequence', 'lighting-aov', 'final-exr', 'final-dpx'].includes(packageType.value))
 const selectedFiles = computed(() => objects.value.filter((item) => selectedIds.value.includes(item.id)))
-const taskScope = computed(() => props.taskId)
+const taskScope = computed(() => props.fixedTaskId || selectedTaskId.value)
+
+function taskLabel(task) {
+  const entity = task.entity_name || task.entity_id || 'Entity'
+  const type = task.task_type_name || task.task_type_id || 'Task'
+  return `${entity} · ${type} · ${task.name || task.id}`
+}
 
 async function loadObjects(parentId = currentParent.value, token = null, append = false, requestId = requestGeneration.value) {
   const result = await props.api.listTaskStorageObjects(taskScope.value, parentId, token)
@@ -53,7 +62,15 @@ async function loadObjects(parentId = currentParent.value, token = null, append 
 }
 
 async function refresh(requestId = ++requestGeneration.value) {
-  if (!taskScope.value) return
+  if (!taskScope.value) {
+    loading.value = false
+    error.value = ''
+    packages.value = []
+    objects.value = []
+    workingRevisions.value = { revisions: [], latest_working_id: null }
+    sourceWorkingRevisionId.value = ''
+    return
+  }
   loading.value = true
   error.value = ''
   driveCheckedAt.value = ''
@@ -63,13 +80,16 @@ async function refresh(requestId = ++requestGeneration.value) {
   packageFiles.value = {}
   expandedPackage.value = ''
   try {
-    const [packageOptions, currentPackages] = await Promise.all([
+    const [packageOptions, currentPackages, currentWorking] = await Promise.all([
       props.api.getTaskOutputPackageOptions(taskScope.value),
-      props.api.listTaskOutputPackages(taskScope.value)
+      props.api.listTaskOutputPackages(taskScope.value),
+      props.api.listTaskWorkingRevisions(taskScope.value)
     ])
     if (requestId !== requestGeneration.value || packageOptions.task_id !== taskScope.value) return
     options.value = packageOptions
     packages.value = currentPackages
+    workingRevisions.value = currentWorking
+    sourceWorkingRevisionId.value = currentWorking.latest_working_id || ''
     currentParent.value = packageOptions.storage_root_id
     if (!outputTypeId.value || !packageOptions.output_types.some((item) => item.id === outputTypeId.value)) {
       outputTypeId.value = packageOptions.output_types[0]?.id || ''
@@ -116,6 +136,7 @@ async function registerPackage() {
     const descriptor = {
       output_type_id: outputTypeId.value,
       package_type: packageType.value,
+      source_working_revision_id: sourceWorkingRevisionId.value || null,
       color_space: colorSpace.value || null,
       files: selectedFiles.value.map((item) => ({
         provider_object_id: item.id,
@@ -166,6 +187,8 @@ async function morePackageFiles(item) {
 }
 
 watch(taskScope, () => refresh())
+watch(() => props.fixedTaskId, (value) => { selectedTaskId.value = value || props.taskId || '' })
+watch(() => props.taskId, (value) => { if (!props.fixedTaskId) selectedTaskId.value = value || '' })
 onMounted(() => {
   refresh()
   pollTimer = window.setInterval(() => {
@@ -193,10 +216,17 @@ onUnmounted(() => {
       <div><p class="eyebrow">Task deliverables</p><h2>Output Packages</h2></div>
       <button class="button secondary" :disabled="loading" @click="refresh()">Refresh</button>
     </div>
+    <label v-if="!fixedTaskId" class="workflow-field">Task
+      <select v-model="selectedTaskId" class="task-select" aria-label="Output Package Task">
+        <option value="">Choose Task</option>
+        <option v-for="task in tasks" :key="task.id" :value="task.id">{{ taskLabel(task) }}</option>
+      </select>
+    </label>
+    <p v-if="!taskScope" class="muted">Choose a Kitsu Task to browse authorized files and register Output Packages.</p>
     <p v-if="error" class="upload-error" role="alert">{{ error }}</p>
     <p v-if="loading" class="muted" role="status">Loading authorized Drive objects and package history…</p>
-    <p v-if="driveCheckedAt" class="muted" role="status">Drive sync: {{ driveSyncStatus }} · last checked {{ new Date(driveCheckedAt).toLocaleString() }}. This check covers the currently opened folder listing.</p>
-    <template v-if="!loading">
+    <p v-if="taskScope && driveCheckedAt" class="muted" role="status">Drive sync: {{ driveSyncStatus }} · last checked {{ new Date(driveCheckedAt).toLocaleString() }}. This check covers the currently opened folder listing.</p>
+    <template v-if="taskScope && !loading">
       <div class="package-register">
         <label>Output Type
           <select v-model="outputTypeId" aria-label="Output Type">
@@ -206,6 +236,12 @@ onUnmounted(() => {
         <label>Package kind
           <select v-model="packageType" aria-label="Package kind">
             <option v-for="[value, label] in packageTypes" :key="value" :value="value">{{ label }}</option>
+          </select>
+        </label>
+        <label>Source Working Revision
+          <select v-model="sourceWorkingRevisionId" aria-label="Source Working Revision">
+            <option value="">No Working Revision</option>
+            <option v-for="revision in workingRevisions.revisions.filter((item) => item.state === 'completed')" :key="revision.id" :value="revision.id">{{ revision.version_label }} · {{ revision.created_by }}</option>
           </select>
         </label>
         <label v-if="sequencePackage">Frame start<input v-model="frameStart" type="number" step="1" aria-label="Frame start"></label>

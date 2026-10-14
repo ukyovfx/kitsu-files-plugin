@@ -445,6 +445,14 @@ class TaskOutputPackages(MethodView):
                 if (source is None or source.task_id != parsed_task_id or source.production_id != scope.production_id
                         or source.state != "completed"):
                     abort(400, description="Source Working revision must be completed in the same Task and Production")
+                from .models import WorkingRevisionFile
+                source_object_ids = {
+                    row.provider_object_id for row in WorkingRevisionFile.query.filter_by(
+                        revision_id=source.id, state="completed",
+                    ).all() if row.provider_object_id
+                }
+                if any(item["source_provider_object_id"] not in source_object_ids for item in normalized):
+                    abort(400, description="Every Output Package source file must belong to the selected Working revision")
             # Validate before opening the reservation transaction; the service repeats canonical encoding.
             canonical_package_manifest(
                 output_type_id=str(output_type_id), package_type=package_type, files=normalized,
@@ -767,7 +775,9 @@ class ProductionOverview(MethodView):
             abort(403)
         from sqlalchemy import or_
         from .models import Handoff, Job, OutputFamilyMapping, Publish, PublishPointer, UploadSession
+        from zou.app.models.entity import Entity
         from zou.app.models.task import Task
+        from zou.app.models.task_type import TaskType
 
         if scope.task_id is not None:
             task_rows = [Task.query.filter_by(id=scope.task_id).one()]
@@ -776,9 +786,25 @@ class ProductionOverview(MethodView):
             task_rows = Task.query.filter_by(project_id=scope.production_id).order_by(Task.id).limit(1001).all()
             tasks_truncated = len(task_rows) > 1000
             task_rows = task_rows[:1000]
+        from .compat import authorize_task_read
+        if scope.task_id is not None:
+            if not authorize_task_read(actor, scope.task_id):
+                abort(403)
+        else:
+            task_rows = [row for row in task_rows if authorize_task_read(actor, row.id)]
         task_ids = [row.id for row in task_rows]
         if not task_ids:
             return {"production_id": str(scope.production_id), "task_id": str(scope.task_id) if scope.task_id else None, "actor_id": str(actor.actor_id), "role": actor.project_role, "tasks": [], "tasks_truncated": False, "upload_ready": False, "files": [], "publishes": [], "handoffs": []}
+        entity_names = {
+            row.id: row.name for row in Entity.query.filter(
+                Entity.id.in_({task.entity_id for task in task_rows})
+            ).all()
+        }
+        task_type_names = {
+            row.id: row.name for row in TaskType.query.filter(
+                TaskType.id.in_({task.task_type_id for task in task_rows})
+            ).all()
+        }
         publishes = Publish.query.filter(Publish.task_id.in_(task_ids)).order_by(Publish.created_at.desc()).limit(200).all()
         jobs = Job.query.filter_by(job_type="publish_artifact").order_by(Job.created_at.desc()).limit(500).all()
         publish_jobs = {str(job.payload.get("publish_id")): job for job in jobs if job.payload.get("publish_id")}
@@ -825,7 +851,11 @@ class ProductionOverview(MethodView):
             "task_id": str(scope.task_id) if scope.task_id else None,
             "actor_id": str(actor.actor_id),
             "role": actor.project_role,
-            "tasks": [{"id": str(row.id), "entity_id": str(row.entity_id), "task_type_id": str(row.task_type_id)} for row in task_rows],
+            "tasks": [{
+                "id": str(row.id), "name": row.name,
+                "entity_id": str(row.entity_id), "entity_name": entity_names.get(row.entity_id),
+                "task_type_id": str(row.task_type_id), "task_type_name": task_type_names.get(row.task_type_id),
+            } for row in task_rows],
             "tasks_truncated": tasks_truncated,
             "upload_ready": upload_ready,
             "files": [{

@@ -1,35 +1,32 @@
-# Kitsu Task Files Integration Acceptance — Current Branch
+# Kitsu Files Pipeline Acceptance — PR #12
 
-Base: PR #4 branch at `16ef67d4b23028e1c3b4c6bf52a39f2238d3e81e`.
+Provider: Files Plugin PR #12, source base `707abf640ff3434e97f42d10c15ea6270df6ef7f` (current working tree contains uncommitted changes; they are not part of that SHA yet).
+
+Consumer contract: KitsuSync PR #239 at `c63de68159a37a7d61da1c31f1991c0aa8df0990`.
 
 | Gate | Status | Evidence / limitation |
 |---|---|---|
-| Task context parsing from official-plugin iframe query | PASS | Vitest verifies Production/Task/Entity/Task Type context strings; they remain untrusted hints. |
-| Task-scoped overview API call | PASS | Vitest verifies `task_id` reaches the existing overview route. Server ownership authorization is existing code and requires pinned-host regression to re-prove. |
-| Automatic fixed Task on Working/Publish panels | PASS | Vue implementation removes Task chooser in Task context and resets context-specific state. |
-| Stale asynchronous response fencing | PASS | Monotonic request-generation tests plus panel local request fences. Actual dynamic Kitsu Task panel switch NOT TESTED. |
-| Actual official Kitsu Task detail extension host | BLOCKED | Kitsu 1.0.70 `TaskInfo.vue` has no active Task extension slot. Proposal is documented; no Kitsu source change or installed patched Kitsu build is included. |
-| Task folder binding display/create from Files context | NOT TESTED | Plugin uses existing Task shared-folder endpoints; Task-scoped API/worker integration not run against fresh host after changes. |
-| Asset folder template role | PASS | Fake hierarchy and plan unit tests verify stable Asset UUID identity and nested Task folders. Zou/FakeStorage worker route integration NOT TESTED. |
-| Nested Working/Publish/Output template descendants | PASS | Planning helper now preserves all descendants below configured Task role using template folder IDs. Provider side effects NOT TESTED. |
-| Department/task recipient guard predicates | PASS | Unit tests cover project, entity, Task Type Department, current memberships and designated person constraints. |
-| Department Handoff API/migration/concurrent response | NOT TESTED | Additive migration and API path exist; no PostgreSQL migration rehearsal or pinned Zou membership revocation/race test run in this branch. |
-| Output Package manifest validation | PASS | Local pure tests cover stable object IDs, SHA/size metadata, explicit frame ranges, duplicate frames and gap reporting. |
-| Output Package Task API and Files UI | NOT TESTED | Task-scoped reservation/list/options/page/download routes and an immutable package panel are implemented, but no installed pinned-host browser run has exercised them. |
-| Output Package worker copy and provider readback | NOT TESTED | A fenced `verify_output_package` handler copies to reserved immutable IDs, reads back SHA-256 and records QC; the only real Zou/PostgreSQL integration test is skipped locally because pinned `zou` is unavailable. |
-| Output Package migration vxf_0008 | NOT TESTED | Static migration checks pass; PostgreSQL upgrade/re-upgrade and populated-data rehearsal have not run. Downgrade refuses when package rows exist; supported recovery is snapshot restore. |
-| Output Package QC and latest pointer | PARTIAL | QC evidence and a separate Latest Working pointer are persisted by the package worker. Native Zou OutputFile revision creation, package Publish/Approval and Latest Published/Approved/Final Delivery advancement are not implemented in this slice. |
-| Package multi-Task delivery / handoff | NOT TESTED | Existing Working Publish handoffs remain separate; an Output Package cannot yet be delivered to multiple recipient Tasks. |
-| KitsuSync event delivery contract | BLOCKED | No versioned public API contract is available. A Protocol plus in-memory FakeConnectionProvider/FakeEventOutbox is contract-only and is not durable or connected to package delivery. No KitsuSync files changed. |
-| KitsuSync or live Google Drive / Production | NOT TESTED | Prohibited for this task; no external connection attempted. |
-| Frontend Vitest | PASS | Current branch: 18 tests across 3 files. |
-| Python focused tests | PASS / SKIP | Current focused run: 38 passed, 1 skipped. The skip is the host-only package API/worker integration test because local Python lacks the pinned Zou runtime. |
-| Full local pytest collection | BLOCKED | `pytest -q` cannot collect three existing SQLAlchemy-dependent suites because the local Python environment lacks SQLAlchemy; 12 other host-only modules skip. Run them inside the pinned disposable host. |
-| Python syntax compilation | PASS | Current branch: `.venv\\Scripts\\python.exe -m compileall -q plugin tests`. |
-| Frontend production build | PASS | Current branch Vite production build; generated packaged frontend assets are included. |
-| Frontend production dependency audit | PASS | `npm audit --omit=dev`: zero reported vulnerabilities. This does not audit Python host dependencies. |
-| Full pinned-host API/PostgreSQL/Worker/installed-page E2E | NOT TESTED | Existing PR #4/#8 evidence predates this package code and cannot prove this integrated slice. |
+| KitsuSync template selection → deterministic Plugin materialization | PARTIAL | Existing Plugin code resolves the published catalog selection, validates scope/overrides, binds the verified root as the Production root, persists the derived execution snapshot with the desired config revision, and fences Preview/Apply/Worker. Current-state source inspection only in this pass; Docker-backed regression could not run. `future_only` and `adopt_existing` remain fail-closed. |
+| Snapshot → Preview → Apply → separate Worker → FakeStorage | REUSED PASS / NOT RE-RUN | Existing PR #11 evidence is retained; it was not redesigned or repeated in this pass. No new integrated run was possible because the Docker Desktop Linux Engine became unavailable. |
+| Output Package HTTP 400 / valid Output Type | BLOCKED | The Package request requires a real Kitsu Output Type. The revised host integration test now obtains an ID from `output-package-options`, checks an invalid ID returns the explicit 400, and submits a valid Working-backed request. The test was not run on this working-tree delta because the pinned host/runner was unavailable. |
+| Working revision → Output Package provenance | BLOCKED | The API now verifies every selected source object belongs to the selected completed Working revision. A regression case rejects an unrelated but valid FakeStorage object. The PostgreSQL test was not executed on this delta. |
+| Output Package worker copy, manifest, QC, readback, reload and download | BLOCKED | A pinned-host test composes Working upload, separate Worker processes, package registration, verification/QC, provider copy, persisted metadata and verified download. It requires the disposable Zou/PostgreSQL test runner; not run on this delta. |
+| Upload provider filename preservation | PARTIAL | The upload worker now passes the reserved `file_name` to the StorageAdapter; the earlier pinned-host regression run showed the copied object as `unnamed` before that fix and passed after it. That prior result predates the current source-validation addition and is not a fresh run for this working tree. |
+| Production-wide Output Package Task chooser and Working source selection | PASS (fixture browser only) | Playwright drives the UI, selects a Task and prior Working revision, registers one image-sequence package and asserts the complete request. The fixture does not prove live API/PostgreSQL/Worker behavior. |
+| Working upload retry and Handoff response UI | PASS (fixture browser only) | Two Playwright tests cover deterministic upload-part retry and Needs Fix feedback / Accepted refresh persistence. |
+| Production overview task metadata and Task authorization | NOT TESTED | Overview now provides entity, Task Type and Task display labels, and filters Task choices through current Task read authorization. A new pinned-host regression covers assigned versus unassigned Tasks and the task-scoped 403; it could not run because Docker was unavailable. |
+| Output Package `file_delivery.*` producer/API/UI | NOT IMPLEMENTED | KitsuSync v1 accepts these events, but the current Plugin does not have a wired authenticated Output Package delivery API or canonical producer. The untracked service prototype is not integrated or included in the packaged runtime. No synthetic receiver result is claimed. |
+| Existing Working / Publish / QC / Approval / Handoff regressions | NOT RE-RUN | Previous accepted evidence remains unchanged; this pass did not complete a fresh installed-page run. |
+| Native Kitsu Task detail extension | BLOCKED | Kitsu 1.0.70 has no TaskInfo extension slot. The Production Files page remains the current UI; no core patch is claimed installed. |
+| Frontend Vitest | PASS | `npm test`: 20 passed across 3 files. |
+| Frontend browser fixtures | PASS | `npx playwright test browser-tests/files-workflows.pw.js --workers=1`: 3 passed. These are fixture-backed UI tests, not integrated E2E. |
+| Frontend production build | PASS | `npm run build` completed; packaged `plugin/frontend/dist` output was regenerated. |
+| Installed-page Kitsu login → API → PostgreSQL → Worker E2E | BLOCKED / NOT TESTED | Docker reported that the Docker Desktop Linux Engine was unavailable. No current-source image was built, no seeder was run, and no installed-page workflow is claimed. |
+| GitHub Actions | BLOCKED (runner startup) | PR #12 check runs fail within 2–6 seconds and every job reports `steps: []`; no code step executed. This is runner/infrastructure failure evidence, not a code result. |
+| Python syntax compilation | PASS | `python -m compileall -q plugin tests/packages/test_output_package_host_integration.py` completed successfully. |
+| Diff whitespace check | PASS | `git diff --check` passed after normalizing the generated HTML line endings. |
+| Real Google Drive, Production, Discord | NOT TESTED | No real Drive/Production access or Discord delivery was attempted. |
 
-## Current feature boundary
+## Current evidence boundary
 
-This stacked branch adds Task-scoped Output Package registration, bounded file listing/download routes, immutable provider-copy/readback worker logic, sequence QC evidence, separate package pointer state, and a Task-context frontend panel. It remains an incomplete feature slice: no native Zou OutputFile reconciliation, Publish/Approval linkage, package recipient handoffs, full Kitsu folder reconciliation, official Kitsu TaskInfo hook, pinned-host E2E, PostgreSQL migration rehearsal, real Google Drive verification, or live KitsuSync delivery is proven here.
+The current changes include the pinned host regression test and API/Worker fixes, but the production package workflow has not been rerun after those changes. Fixture-browser success, syntax compilation, and a frontend build do not substitute for the required PostgreSQL → API → separate Worker → FakeStorage proof. The Docker runtime must be restored before that gate can be closed.
