@@ -24,6 +24,12 @@ const frameEnd = ref('')
 const colorSpace = ref('')
 const expandedPackage = ref('')
 const packageFiles = ref({})
+const taskDeliveries = ref([])
+const deliveryTargets = ref({})
+const selectedDeliveryTargets = ref({})
+const deliveryFeedback = ref({})
+const deliveryFiles = ref({})
+const deliveryBusy = ref('')
 const workingRevisions = ref({ revisions: [], latest_working_id: null })
 const sourceWorkingRevisionId = ref('')
 const driveCheckedAt = ref('')
@@ -67,6 +73,9 @@ async function refresh(requestId = ++requestGeneration.value) {
     error.value = ''
     packages.value = []
     objects.value = []
+    taskDeliveries.value = []
+    deliveryTargets.value = {}
+    deliveryFiles.value = {}
     workingRevisions.value = { revisions: [], latest_working_id: null }
     sourceWorkingRevisionId.value = ''
     return
@@ -78,17 +87,22 @@ async function refresh(requestId = ++requestGeneration.value) {
   selectedIds.value = []
   folders.value = []
   packageFiles.value = {}
+  taskDeliveries.value = []
+  deliveryTargets.value = {}
+  deliveryFiles.value = {}
   expandedPackage.value = ''
   try {
-    const [packageOptions, currentPackages, currentWorking] = await Promise.all([
+    const [packageOptions, currentPackages, currentWorking, currentDeliveries] = await Promise.all([
       props.api.getTaskOutputPackageOptions(taskScope.value),
       props.api.listTaskOutputPackages(taskScope.value),
-      props.api.listTaskWorkingRevisions(taskScope.value)
+      props.api.listTaskWorkingRevisions(taskScope.value),
+      props.api.listTaskPackageDeliveries(taskScope.value)
     ])
     if (requestId !== requestGeneration.value || packageOptions.task_id !== taskScope.value) return
     options.value = packageOptions
     packages.value = currentPackages
     workingRevisions.value = currentWorking
+    taskDeliveries.value = currentDeliveries.deliveries || []
     sourceWorkingRevisionId.value = currentWorking.latest_working_id || ''
     currentParent.value = packageOptions.storage_root_id
     if (!outputTypeId.value || !packageOptions.output_types.some((item) => item.id === outputTypeId.value)) {
@@ -186,6 +200,76 @@ async function morePackageFiles(item) {
   }
 }
 
+async function loadDeliveryTargets(item) {
+  try {
+    const result = await props.api.listOutputPackageDeliveryTargets(item.id)
+    deliveryTargets.value = { ...deliveryTargets.value, [item.id]: result.targets || [] }
+    if (!selectedDeliveryTargets.value[item.id] && result.targets?.length) {
+      selectedDeliveryTargets.value = {
+        ...selectedDeliveryTargets.value,
+        [item.id]: `${result.targets[0].task_id}:${result.targets[0].task_type_id}`
+      }
+    }
+  } catch (cause) {
+    error.value = cause.message || 'Delivery targets could not be loaded.'
+  }
+}
+
+function recipientLabel(target) {
+  const team = target.department_name || 'Task Type team'
+  return `${team} · ${target.task_type_name} · ${target.task_name}`
+}
+
+async function sendPackage(item) {
+  const selected = selectedDeliveryTargets.value[item.id]
+  const target = (deliveryTargets.value[item.id] || []).find((row) => `${row.task_id}:${row.task_type_id}` === selected)
+  if (!target) return
+  deliveryBusy.value = item.id
+  error.value = ''
+  try {
+    const idempotencyKey = `package-delivery:${item.id}:${target.task_id}:${target.task_type_id}`
+    await props.api.createOutputPackageDelivery(
+      item.id, target.task_id, target.task_type_id, idempotencyKey
+    )
+    await refresh()
+  } catch (cause) {
+    error.value = cause.message || 'Output Package delivery failed.'
+  } finally {
+    deliveryBusy.value = ''
+  }
+}
+
+async function respondToDelivery(delivery, status) {
+  const feedback = deliveryFeedback.value[delivery.id] || ''
+  if (status === 'needs_fix' && !feedback.trim()) {
+    error.value = 'Add feedback before requesting fixes.'
+    return
+  }
+  deliveryBusy.value = delivery.id
+  error.value = ''
+  try {
+    const idempotencyKey = `package-delivery-response:${delivery.id}:${delivery.revision}:${status}`
+    await props.api.respondToOutputPackageDelivery(
+      delivery.id, status, status === 'needs_fix' ? feedback : null,
+      idempotencyKey
+    )
+    await refresh()
+  } catch (cause) {
+    error.value = cause.message || 'Delivery response could not be saved.'
+  } finally {
+    deliveryBusy.value = ''
+  }
+}
+
+async function loadDeliveryFiles(delivery) {
+  try {
+    const result = await props.api.listOutputPackageFiles(delivery.package_id)
+    deliveryFiles.value = { ...deliveryFiles.value, [delivery.id]: result.files || [] }
+  } catch (cause) {
+    error.value = cause.message || 'Delivered files could not be loaded.'
+  }
+}
+
 watch(taskScope, () => refresh())
 watch(() => props.fixedTaskId, (value) => { selectedTaskId.value = value || props.taskId || '' })
 watch(() => props.taskId, (value) => { if (!props.fixedTaskId) selectedTaskId.value = value || '' })
@@ -270,6 +354,18 @@ onUnmounted(() => {
           <span>{{ item.state }} · QC {{ item.qc_state }}</span>
           <span class="muted">{{ item.file_count }} files · {{ item.manifest_sha256 }}</span>
           <pre v-if="item.qc_report?.missing_frames?.length" class="upload-error">Missing frames: {{ item.qc_report.missing_frames.join(', ') }}</pre>
+          <div v-if="item.state === 'completed' && item.qc_state === 'passed'" class="delivery-compose">
+            <button class="button secondary" :disabled="deliveryBusy === item.id" @click="loadDeliveryTargets(item)">Choose delivery recipient</button>
+            <template v-if="deliveryTargets[item.id]">
+              <label>Team / Department / Task
+                <select v-model="selectedDeliveryTargets[item.id]" :aria-label="`Delivery recipient for ${item.id}`">
+                  <option v-for="target in deliveryTargets[item.id]" :key="`${target.task_id}:${target.task_type_id}`" :value="`${target.task_id}:${target.task_type_id}`">{{ recipientLabel(target) }}</option>
+                </select>
+              </label>
+              <p v-if="!deliveryTargets[item.id].length" class="muted">No eligible receiving Task Type exists for this Production entity.</p>
+              <button class="button primary" :disabled="deliveryBusy === item.id || !deliveryTargets[item.id].length" @click="sendPackage(item)">{{ deliveryBusy === item.id ? 'Sending…' : 'Send immutable package version' }}</button>
+            </template>
+          </div>
           <div v-if="expandedPackage === item.id" class="package-files">
             <div v-for="file in packageFiles[item.id]?.files || []" :key="file.id" class="storage-object-row">
               <span>{{ file.frame_number ?? file.file_name }} · {{ file.byte_count }} bytes · {{ file.sha256 }}</span>
@@ -280,6 +376,28 @@ onUnmounted(() => {
         </article>
         <p v-if="!packages.length" class="muted">No Output Packages are registered for this Task.</p>
       </div>
+      <section class="delivery-history" aria-label="Recipient deliveries">
+        <h3>Recipient deliveries</h3>
+        <article v-for="delivery in taskDeliveries" :key="delivery.id" class="delivery-row">
+          <strong>{{ delivery.direction === 'incoming' ? 'Incoming' : 'Sent' }} · {{ delivery.package_type }} v{{ String(delivery.package_version).padStart(3, '0') }}</strong>
+          <span>{{ delivery.recipient_task_type_name }} · {{ delivery.state }} · revision {{ delivery.revision }}</span>
+          <p v-if="delivery.feedback" role="status">Needs Fix feedback: {{ delivery.feedback }}</p>
+          <button class="button secondary" @click="loadDeliveryFiles(delivery)">View / download delivered files</button>
+            <div v-for="file in deliveryFiles[delivery.id] || []" :key="file.id" class="storage-object-row">
+            <span>{{ file.file_name }}<template v-if="file.frame_number !== null && file.frame_number !== undefined"> · frame {{ file.frame_number }}</template> · {{ file.byte_count }} bytes · {{ file.sha256 }}</span>
+            <a v-if="file.download_url" :href="api.outputPackageDownloadUrl(file.id)">Download verified file</a>
+          </div>
+          <label v-if="delivery.direction === 'incoming' && delivery.can_respond">Needs Fix feedback
+            <textarea v-model="deliveryFeedback[delivery.id]" maxlength="2000" :aria-label="`Needs Fix feedback ${delivery.id}`"></textarea>
+          </label>
+          <div v-if="delivery.direction === 'incoming' && delivery.can_respond" class="delivery-actions">
+            <button class="button secondary" :disabled="deliveryBusy === delivery.id" @click="respondToDelivery(delivery, 'needs_fix')">Needs Fix</button>
+            <button class="button primary" :disabled="deliveryBusy === delivery.id" @click="respondToDelivery(delivery, 'accepted')">Accept</button>
+          </div>
+          <ol class="delivery-events"><li v-for="(event, index) in delivery.history" :key="`${delivery.id}:${index}`">{{ event.event_type }}<template v-if="event.feedback"> · {{ event.feedback }}</template></li></ol>
+        </article>
+        <p v-if="!taskDeliveries.length" class="muted">No incoming or outgoing Output Package deliveries for this Task.</p>
+      </section>
     </template>
   </section>
 </template>

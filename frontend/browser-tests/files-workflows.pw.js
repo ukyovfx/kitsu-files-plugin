@@ -108,6 +108,10 @@ test('Needs Fix requires feedback and Accepted persists after the page reloads',
 
 test('Production Files page keeps configuration in KitsuSync and creates a Task-scoped Output Package from a selected Working revision', async ({ page }) => {
   let submitted = null
+  let deliveryRequest = null
+  let deliveries = []
+  let packages = []
+  let incomingState = 'available'
   const sourceRevision = '88888888-8888-4888-8888-888888888888'
   await page.route('**/api/plugins/vfx_files/**', async (route) => {
     const request = route.request()
@@ -118,9 +122,43 @@ test('Production Files page keeps configuration in KitsuSync and creates a Task-
     if (url.pathname.endsWith(`/tasks/${taskId}/output-packages`)) {
       if (request.method() === 'POST') {
         submitted = JSON.parse(request.postData())
+        packages = [{
+          id: 'package-1', task_id: taskId, version: 1, package_type: 'final-exr',
+          state: 'completed', qc_state: 'passed', file_count: 1, manifest_sha256: 'a'.repeat(64),
+          qc_report: null
+        }]
         return json(route, { id: 'package-1', version: 1, state: 'queued' }, 202)
       }
-      return json(route, [])
+      return json(route, packages)
+    }
+    if (url.pathname.endsWith(`/tasks/${taskId}/output-package-deliveries`)) return json(route, { task_id: taskId, deliveries })
+    if (url.pathname.endsWith('/output-packages/package-1/files')) return json(route, { package_id: 'package-1', files: [{ id: 'package-file-1', file_name: 'plate.1001.exr', frame_number: 1001, byte_count: 3, sha256: 'a'.repeat(64), download_url: '/download' }], next_offset: null })
+    if (url.pathname.endsWith('/delivery-targets')) return json(route, { package_id: 'package-1', targets: [
+      { task_id: 'fx-task', task_name: 'fx', task_type_id: 'fx-type', task_type_name: 'FX', department_id: 'fx-dept', department_name: 'Effects' },
+      { task_id: 'layout-task', task_name: 'layout', task_type_id: 'layout-type', task_type_name: 'Layout', department_id: 'layout-dept', department_name: 'Layout' }
+    ] })
+    if (url.pathname.endsWith('/deliveries') && request.method() === 'POST') {
+      deliveryRequest = JSON.parse(request.postData())
+      deliveries = [{
+        id: 'delivery-1', direction: 'outgoing', package_id: 'package-1', package_version: 1,
+        package_type: 'final-exr', recipient_task_id: deliveryRequest.recipient_task_id,
+        recipient_task_type_id: deliveryRequest.recipient_task_type_id,
+        recipient_task_type_name: 'FX', revision: 1, state: 'available', can_respond: false,
+        history: [{ event_type: 'delivered' }]
+      }, {
+        id: 'incoming-delivery-1', direction: 'incoming', package_id: 'package-1', package_version: 1,
+        package_type: 'final-exr', recipient_task_id: taskId, recipient_task_type_id: 'comp',
+        recipient_task_type_name: 'Compositing', revision: 1, state: incomingState, can_respond: incomingState === 'available',
+        history: [{ event_type: incomingState === 'accepted' ? 'accepted' : 'delivered' }]
+      }]
+      return json(route, { id: 'delivery-1', state: 'available', revision: 1 }, 201)
+    }
+    if (url.pathname.endsWith('/output-package-deliveries/incoming-delivery-1/respond')) {
+      incomingState = JSON.parse(request.postData()).status
+      deliveries = deliveries.map((item) => item.id === 'incoming-delivery-1' ? {
+        ...item, state: incomingState, can_respond: false, history: [{ event_type: 'delivered' }, { event_type: incomingState }]
+      } : item)
+      return json(route, { id: 'incoming-delivery-1', state: incomingState, revision: 1 })
     }
     if (url.pathname.endsWith(`/tasks/${taskId}/working-revisions`)) return json(route, { task_id: taskId, latest_working_id: 'working-2', revisions: [
       { id: sourceRevision, version_label: 'w001', state: 'completed', created_by: 'artist-a' },
@@ -150,4 +188,24 @@ test('Production Files page keeps configuration in KitsuSync and creates a Task-
     frame_end: 1001,
     files: [{ provider_object_id: 'drive-object-1', frame_number: 1001 }]
   })
+  await expect(page.getByRole('article').filter({ hasText: 'final-exr v001' })).toBeVisible()
+  await page.getByRole('button', { name: 'Choose delivery recipient' }).click()
+  const recipientSelect = page.getByRole('combobox', { name: /Delivery recipient for/ })
+  await expect(recipientSelect).toBeVisible()
+  await expect(recipientSelect.locator('option')).toHaveCount(2)
+  await expect(recipientSelect.locator('option').filter({ hasText: 'Effects · FX · fx' })).toHaveCount(1)
+  await recipientSelect.selectOption('fx-task:fx-type')
+  await page.getByRole('button', { name: 'Send immutable package version' }).click()
+  await expect.poll(() => deliveryRequest).toEqual({ recipient_task_id: 'fx-task', recipient_task_type_id: 'fx-type' })
+  await expect(page.getByText('Sent · final-exr v001')).toBeVisible()
+  await expect(page.getByText('FX · available · revision 1')).toBeVisible()
+  const incoming = page.locator('.delivery-row').filter({ hasText: 'Incoming · final-exr v001' })
+  await expect(incoming).toBeVisible()
+  await incoming.getByRole('button', { name: 'View / download delivered files' }).click()
+  await expect(incoming.getByText(/plate\.1001\.exr/)).toBeVisible()
+  await expect(incoming.getByRole('link', { name: 'Download verified file' })).toHaveAttribute(
+    'href', '/api/plugins/vfx_files/output-package-files/package-file-1/download'
+  )
+  await incoming.getByRole('button', { name: 'Accept' }).click()
+  await expect(incoming).toContainText('accepted')
 })

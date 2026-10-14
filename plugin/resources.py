@@ -13,6 +13,7 @@ from werkzeug.exceptions import ServiceUnavailable
 
 from .authz import Actor, Capability, NotFound, PermissionDenied, assert_compatible_host, authorize, issue_csrf_token, resolve_request_scope, verify_csrf_token
 from .compat import HOST_ZOU_VERSION, SCHEMA_EPOCH, WORKER_BUILD, assert_runtime_host, current_actor_role
+from .packages.delivery_service import PackageDeliveryConflict, PackageDeliveryDenied
 
 
 def _setting(name, default=None):
@@ -62,6 +63,19 @@ def _require_mutation_origin(allowed_mimetypes=("application/json",)):
     except (ValueError, TypeError, AttributeError):
         raise PermissionDenied("Invalid authenticated identity") from None
     verify_csrf_token(current_app.config.get("SECRET_KEY", ""), actor_id, request.headers.get("X-VFX-Files-CSRF"))
+
+
+def _output_package_read_task_id(actor, package):
+    """Resolve an authorized source or recipient Task as the request context."""
+    from .compat import authorize_task_read
+    from .models import OutputPackageDelivery
+
+    if authorize_task_read(actor, package.task_id):
+        return package.task_id
+    deliveries = OutputPackageDelivery.query.filter_by(
+        production_id=package.production_id, package_id=package.id,
+    ).all()
+    return next((row.recipient_task_id for row in deliveries if authorize_task_read(actor, row.recipient_task_id)), None)
 
 
 def _require_enabled():
@@ -565,6 +579,260 @@ class TaskStorageObjects(MethodView):
         }
 
 
+class OutputPackageDeliveryTargets(MethodView):
+    @jwt_required()
+    def get(self, package_id):
+        _require_enabled()
+        _assert_compatible()
+        try:
+            package_uuid = UUID(str(package_id))
+            from .models import OutputPackage
+            from zou.app.models.department import Department
+            from zou.app.models.project import ProjectTaskTypeLink
+            from zou.app.models.task import Task
+            from zou.app.models.task_type import TaskType
+            package = OutputPackage.query.filter_by(id=package_uuid).one_or_none()
+            if package is None:
+                abort(404)
+            actor = _request_actor(str(package.production_id))
+            scope = _resolve_scope(actor, str(package.production_id), str(package.task_id))
+            authorize(actor, Capability.HANDOFF, scope)
+            from .compat import authorize_task_mutation
+            if not authorize_task_mutation(actor, package.task_id, "handoff"):
+                abort(403)
+            source_task = Task.query.filter_by(id=package.task_id).one_or_none()
+            if source_task is None or package.state != "completed" or package.qc_state != "passed":
+                abort(409)
+            target_tasks = Task.query.filter_by(
+                project_id=package.production_id, entity_id=package.entity_id,
+            ).order_by(Task.task_type_id, Task.name, Task.id).limit(501).all()
+            if len(target_tasks) > 500:
+                abort(409, description="Too many recipient Tasks; narrow the Production Task Types")
+            result = []
+            for target in target_tasks:
+                if target.id == source_task.id:
+                    continue
+                task_type = TaskType.query.filter_by(id=target.task_type_id).one_or_none()
+                if task_type is None or ProjectTaskTypeLink.query.filter_by(
+                    project_id=package.production_id, task_type_id=task_type.id,
+                ).one_or_none() is None:
+                    continue
+                department = Department.query.filter_by(id=task_type.department_id).one_or_none() if task_type.department_id else None
+                if department is None:
+                    continue
+                result.append({
+                    "task_id": str(target.id), "task_name": target.name,
+                    "task_type_id": str(task_type.id), "task_type_name": task_type.name,
+                    "department_id": str(department.id) if department else None,
+                    "department_name": department.name if department else None,
+                })
+            return {"package_id": str(package.id), "source_task_id": str(source_task.id), "targets": result}
+        except (PermissionDenied, NotFound):
+            abort(403)
+        except (ValueError, TypeError):
+            abort(404)
+
+
+class TaskPackageDeliveries(MethodView):
+    @jwt_required()
+    def get(self, task_id):
+        _require_enabled()
+        _assert_compatible()
+        try:
+            task_uuid = UUID(str(task_id))
+            from .models import OutputPackage, OutputPackageDelivery, OutputPackageDeliveryEvent
+            from zou.app.models.task import Task
+            task = Task.query.filter_by(id=task_uuid).one_or_none()
+            if task is None:
+                abort(404)
+            actor = _request_actor(str(task.project_id))
+            scope = _resolve_scope(actor, str(task.project_id), str(task.id))
+            authorize(actor, Capability.READ, scope)
+            from .compat import authorize_task_read
+            if not authorize_task_read(actor, task.id):
+                abort(403)
+        except (PermissionDenied, NotFound):
+            abort(403)
+        except (ValueError, TypeError):
+            abort(404)
+
+        rows = OutputPackageDelivery.query.filter_by(
+            production_id=task.project_id,
+            recipient_task_id=task.id,
+        ).order_by(OutputPackageDelivery.updated_at.desc(), OutputPackageDelivery.id.desc()).limit(200).all()
+        outgoing_packages = OutputPackage.query.filter_by(
+            production_id=task.project_id, task_id=task.id,
+        ).order_by(OutputPackage.created_at.desc()).limit(200).all()
+        outgoing_ids = {row.id for row in outgoing_packages}
+        outgoing_rows = OutputPackageDelivery.query.filter(
+            OutputPackageDelivery.package_id.in_(outgoing_ids),
+        ).order_by(OutputPackageDelivery.updated_at.desc(), OutputPackageDelivery.id.desc()).limit(200).all() if outgoing_ids else []
+        deliveries = {row.id: row for row in rows + outgoing_rows}
+        events = OutputPackageDeliveryEvent.query.filter(
+            OutputPackageDeliveryEvent.delivery_id.in_(deliveries),
+        ).order_by(OutputPackageDeliveryEvent.created_at, OutputPackageDeliveryEvent.id).all() if deliveries else []
+        from zou.app.models.task import Task as ZouTask
+        from zou.app.models.task_type import TaskType
+        output = []
+        for delivery in deliveries.values():
+            package = OutputPackage.query.filter_by(id=delivery.package_id).one_or_none()
+            if package is None or package.production_id != task.project_id:
+                continue
+            source_task = ZouTask.query.filter_by(id=package.task_id).one_or_none()
+            source_type = TaskType.query.filter_by(id=source_task.task_type_id).one_or_none() if source_task else None
+            recipient_type = TaskType.query.filter_by(id=delivery.recipient_task_type_id).one_or_none()
+            output.append({
+                "id": str(delivery.id), "direction": "incoming" if delivery.recipient_task_id == task.id else "outgoing",
+                "package_id": str(package.id), "package_version": package.version,
+                "package_type": package.package_type, "manifest_sha256": package.manifest_sha256,
+                "source_task_id": str(package.task_id), "source_task_type_name": source_type.name if source_type else None,
+                "recipient_task_id": str(delivery.recipient_task_id),
+                "recipient_task_type_id": str(delivery.recipient_task_type_id),
+                "recipient_task_type_name": recipient_type.name if recipient_type else None,
+                "revision": delivery.delivery_revision, "state": delivery.state,
+                "feedback": delivery.feedback if delivery.recipient_task_id == task.id else None,
+                "can_respond": delivery.recipient_task_id == task.id and delivery.state in {"available", "delivered", "in_review", "revised"},
+                "history": [{
+                    "event_type": event.event_type, "feedback": event.feedback,
+                    "created_at": event.created_at.isoformat() if event.created_at else None,
+                } for event in events if event.delivery_id == delivery.id],
+                "files_url": f"/api/plugins/vfx_files/output-packages/{package.id}/files?limit=100&offset=0",
+            })
+        return {"task_id": str(task.id), "deliveries": output}
+
+
+class OutputPackageDeliveryCreate(MethodView):
+    @jwt_required()
+    def post(self, package_id):
+        _require_enabled()
+        _assert_compatible()
+        try:
+            _require_mutation_origin()
+            package_uuid = UUID(str(package_id))
+            from .models import OutputPackage
+            package = OutputPackage.query.filter_by(id=package_uuid).one_or_none()
+            if package is None:
+                abort(404)
+            actor = _request_actor(str(package.production_id))
+            scope = _resolve_scope(actor, str(package.production_id), str(package.task_id))
+            authorize(actor, Capability.HANDOFF, scope)
+            from .compat import authorize_task_mutation
+            if not authorize_task_mutation(actor, package.task_id, "handoff"):
+                abort(403)
+            payload = request.get_json(silent=False) or {}
+            if set(payload) != {"recipient_task_id", "recipient_task_type_id"}:
+                abort(400)
+            recipient_task_id = UUID(str(payload["recipient_task_id"]))
+            recipient_task_type_id = UUID(str(payload["recipient_task_type_id"]))
+            key = request.headers.get("Idempotency-Key", "").strip()
+            if not key or len(key) > 255:
+                abort(400)
+            from sqlalchemy.orm import sessionmaker
+            db_ext = current_app.extensions["sqlalchemy"]
+            sessions = sessionmaker(bind=db_ext.engine, expire_on_commit=False)
+            from .packages.delivery_service import create_package_delivery
+            result = create_package_delivery(
+                sessions, package_id=package_uuid,
+                recipient_task_id=recipient_task_id,
+                recipient_task_type_id=recipient_task_type_id,
+                sender_id=actor.actor_id, idempotency_key=key,
+            )
+        except (PermissionDenied, NotFound):
+            abort(403)
+        except (ValueError, TypeError) as error:
+            abort(400, description=str(error))
+        except PackageDeliveryDenied as error:
+            abort(403, description=str(error))
+        except PackageDeliveryConflict as error:
+            abort(409, description=str(error))
+        return _package_delivery_response(result), 201 if not result.replayed else 200
+
+
+class OutputPackageDeliveryResponse(MethodView):
+    @jwt_required()
+    def post(self, delivery_id):
+        _require_enabled()
+        _assert_compatible()
+        try:
+            _require_mutation_origin()
+            delivery_uuid = UUID(str(delivery_id))
+            from .models import OutputPackage, OutputPackageDelivery
+            from zou.app.models.task import Task, TaskPersonLink
+            from zou.app.models.person import DepartmentLink, Person
+            from zou.app.models.task_type import TaskType
+            delivery = OutputPackageDelivery.query.filter_by(id=delivery_uuid).one_or_none()
+            package = OutputPackage.query.filter_by(id=delivery.package_id).one_or_none() if delivery else None
+            recipient = Task.query.filter_by(id=delivery.recipient_task_id).one_or_none() if delivery else None
+            if (
+                delivery is None or package is None or recipient is None
+                or package.production_id != delivery.production_id
+                or package.entity_id != recipient.entity_id
+                or package.task_id == recipient.id
+                or recipient.task_type_id != delivery.recipient_task_type_id
+            ):
+                abort(404)
+            actor_id = UUID(str(get_jwt_identity()))
+            actor = _request_actor(str(delivery.production_id))
+            scope = _resolve_scope(actor, str(delivery.production_id), str(recipient.id))
+            authorize(actor, Capability.HANDOFF, scope)
+            from .compat import authorize_task_mutation
+            if not authorize_task_mutation(actor, recipient.id, "handoff"):
+                abort(403)
+            from zou.app.models.project import ProjectPersonLink, ProjectTaskTypeLink
+            person = current_app.extensions["sqlalchemy"].session.get(Person, actor_id)
+            task_type = TaskType.query.filter_by(id=recipient.task_type_id).one_or_none()
+            if person is None or not getattr(person, "active", True) or task_type is None:
+                abort(403)
+            if ProjectTaskTypeLink.query.filter_by(
+                project_id=recipient.project_id, task_type_id=recipient.task_type_id,
+            ).one_or_none() is None:
+                abort(403)
+            # Recipient actions require current assignment and department
+            # membership. Production admins/managers still need the exact Task
+            # authorization checked above and cannot cross Productions.
+            if actor.project_role not in {"admin", "manager"} and (
+                TaskPersonLink.query.filter_by(task_id=recipient.id, person_id=actor_id).one_or_none() is None
+                or task_type.department_id is None
+                or DepartmentLink.query.filter_by(department_id=task_type.department_id, person_id=actor_id).one_or_none() is None
+                or ProjectPersonLink.query.filter_by(project_id=delivery.production_id, person_id=actor_id).one_or_none() is None
+            ):
+                abort(403)
+            payload = request.get_json(silent=False) or {}
+            if set(payload) - {"status", "feedback"} or payload.get("status") not in {"accepted", "needs_fix"}:
+                abort(400)
+            key = request.headers.get("Idempotency-Key", "").strip()
+            if not key or len(key) > 255:
+                abort(400)
+            from sqlalchemy.orm import sessionmaker
+            db_ext = current_app.extensions["sqlalchemy"]
+            sessions = sessionmaker(bind=db_ext.engine, expire_on_commit=False)
+            from .packages.delivery_service import respond_to_package_delivery
+            result = respond_to_package_delivery(
+                sessions, delivery_id=delivery_uuid, actor_id=actor_id,
+                target=payload["status"], feedback=payload.get("feedback"),
+                idempotency_key=key,
+            )
+        except (PermissionDenied, NotFound):
+            abort(403)
+        except (ValueError, TypeError) as error:
+            abort(400, description=str(error))
+        except PackageDeliveryDenied as error:
+            abort(403, description=str(error))
+        except PackageDeliveryConflict as error:
+            abort(409, description=str(error))
+        return _package_delivery_response(result), 200
+
+
+def _package_delivery_response(result):
+    return {
+        "id": str(result.id), "package_id": str(result.package_id),
+        "production_id": str(result.production_id),
+        "recipient_task_id": str(result.recipient_task_id),
+        "recipient_task_type_id": str(result.recipient_task_type_id),
+        "revision": result.revision, "state": result.state, "replayed": result.replayed,
+    }
+
+
 class OutputPackageFiles(MethodView):
     @jwt_required()
     def get(self, package_id):
@@ -577,11 +845,11 @@ class OutputPackageFiles(MethodView):
             if package is None:
                 abort(404)
             actor = _request_actor(str(package.production_id))
-            scope = _resolve_scope(actor, str(package.production_id), str(package.task_id))
-            authorize(actor, Capability.READ, scope)
-            from .compat import authorize_task_read
-            if not authorize_task_read(actor, package.task_id):
+            authorized_task_id = _output_package_read_task_id(actor, package)
+            if authorized_task_id is None:
                 abort(403)
+            scope = _resolve_scope(actor, str(package.production_id), str(authorized_task_id))
+            authorize(actor, Capability.READ, scope)
             limit = int(request.args.get("limit", 200))
             offset = int(request.args.get("offset", 0))
             if not 1 <= limit <= 500 or not 0 <= offset <= 10000000:
@@ -622,11 +890,11 @@ class OutputPackageFileDownload(MethodView):
             if package is None or file_row is None or package.state != "completed":
                 abort(404)
             actor = _request_actor(str(package.production_id))
-            scope = _resolve_scope(actor, str(package.production_id), str(package.task_id))
-            authorize(actor, Capability.READ, scope)
-            from .compat import authorize_task_read
-            if not authorize_task_read(actor, package.task_id):
+            authorized_task_id = _output_package_read_task_id(actor, package)
+            if authorized_task_id is None:
                 abort(403)
+            scope = _resolve_scope(actor, str(package.production_id), str(authorized_task_id))
+            authorize(actor, Capability.READ, scope)
             connection = _production_storage_connection(package.production_id)
             adapter = _storage_adapter(connection)
             capabilities = adapter.capabilities(connection.allowed_root_id)
@@ -1950,7 +2218,11 @@ routes = [
     ("/productions/<production_id>/output-families/<family_id>/activate", OutputFamilyActivation),
     ("/tasks/<task_id>/output-packages", TaskOutputPackages),
     ("/tasks/<task_id>/output-package-options", TaskOutputPackageOptions),
+    ("/tasks/<task_id>/output-package-deliveries", TaskPackageDeliveries),
     ("/tasks/<task_id>/storage-objects", TaskStorageObjects),
+    ("/output-packages/<package_id>/delivery-targets", OutputPackageDeliveryTargets),
+    ("/output-packages/<package_id>/deliveries", OutputPackageDeliveryCreate),
+    ("/output-package-deliveries/<delivery_id>/respond", OutputPackageDeliveryResponse),
     ("/output-packages/<package_id>/files", OutputPackageFiles),
     ("/output-package-files/<package_file_id>/download", OutputPackageFileDownload),
     ("/tasks/<task_id>/publishes", TaskPublishes),

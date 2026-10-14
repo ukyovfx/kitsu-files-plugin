@@ -38,13 +38,13 @@ def test_task_api_to_worker_creates_immutable_package_copy_and_verified_download
     authenticated_plugin_client, synthetic_upload_task, zou_db_factory, monkeypatch, tmp_path,
 ):
     from sqlalchemy import select
-    from plugin.models import KitsuSyncDesiredConfiguration, KitsuSyncEventOutbox, OutputPackage, OutputPackageFile, OutputPackagePointer
+    from plugin.models import KitsuSyncDesiredConfiguration, KitsuSyncEventOutbox, OutputPackage, OutputPackageDelivery, OutputPackageDeliveryEvent, OutputPackageFile, OutputPackagePointer
     from plugin.models import WorkingRevision
     from plugin.storage.fake import PersistentFakeStorage
     from zou.app.models.output_type import OutputType
 
     app = authenticated_plugin_client.vfx_app
-    production_id, _entity_type_id, _task_type_id, entity_id, task_id, connection_id, _actor_id = synthetic_upload_task
+    production_id, entity_type_id, _task_type_id, entity_id, task_id, connection_id, actor_id = synthetic_upload_task
     fake_state = tmp_path / "fake-storage.json"
     storage = PersistentFakeStorage(fake_state, root_id="synthetic-root-id", drive_id="synthetic-drive-id")
     monkeypatch.setenv("VFX_FILES_ENABLED", "true")
@@ -231,3 +231,210 @@ def test_task_api_to_worker_creates_immutable_package_copy_and_verified_download
     download = client.get(f"/plugins/vfx_files/output-package-files/{package_file_id}/download")
     assert download.status_code == 200
     assert download.data == content
+
+    # Production Files recipient selection, immutable response history and
+    # contract-v1 delivery outbox are exercised through the actual Plugin API.
+    from zou.app.models.department import Department
+    from zou.app.models.entity import Entity
+    from zou.app.models.person import DepartmentLink, Person
+    from zou.app.models.project import Project, ProjectPersonLink, ProjectTaskTypeLink
+    from zou.app.models.task import Task, TaskPersonLink
+    from zou.app.models.task_type import TaskType
+    from zou.app.services.persons_service import create_access_token_for_raw_person
+    with zou_db_factory.begin() as session:
+        recipient_person = Person(
+            first_name="Synthetic", last_name=f"FX Artist {uuid4().hex[:8]}",
+            email=f"fx-artist-{uuid4().hex}@example.invalid", role="user", active=True,
+        )
+        department = Department(name=f"VFX Effects {uuid4().hex[:8]}")
+        session.add_all([recipient_person, department])
+        session.flush()
+        recipient_type = TaskType(
+            name=f"VFX FX {uuid4().hex[:8]}", for_entity="Shot",
+            department_id=department.id,
+        )
+        session.add(recipient_type)
+        session.flush()
+        session.add(ProjectTaskTypeLink(project_id=production_id, task_type_id=recipient_type.id))
+        recipient_task = Task(
+            name="fx", project_id=production_id, task_type_id=recipient_type.id,
+            entity_id=entity_id,
+        )
+        session.add_all([
+            recipient_task,
+            ProjectPersonLink(project_id=production_id, person_id=recipient_person.id, role="user"),
+            TaskPersonLink(task_id=recipient_task.id, person_id=recipient_person.id),
+            DepartmentLink(department_id=department.id, person_id=recipient_person.id),
+        ])
+        session.flush()
+        recipient_task_id = recipient_task.id
+        recipient_type_id = recipient_type.id
+        token = create_access_token_for_raw_person(recipient_person)
+        other_production = Project(name=f"VFX Other Production {uuid4()}", team=[session.get(Person, actor_id)])
+        session.add(other_production)
+        session.flush()
+        other_production_id = other_production.id
+        other_entity = Entity(
+            name=f"OTHER{uuid4().hex[:8]}", project_id=other_production.id,
+            entity_type_id=entity_type_id,
+        )
+        session.add(other_entity)
+        session.flush()
+        cross_production_task = Task(
+            name="fx", project_id=other_production.id,
+            task_type_id=recipient_type_id, entity_id=other_entity.id,
+        )
+        session.add(cross_production_task)
+        session.flush()
+        cross_production_task_id = cross_production_task.id
+
+    recipient_client = app.test_client()
+    recipient_client.set_cookie(app.config.get("JWT_ACCESS_COOKIE_NAME", "access_token_cookie"), token)
+    recipient_headers = {
+        "Origin": origin,
+        "X-VFX-Files-CSRF": recipient_client.get("/plugins/vfx_files/csrf-token").json["csrf_token"],
+    }
+
+    package_id = reservation["id"]
+    targets = client.get(f"/plugins/vfx_files/output-packages/{package_id}/delivery-targets")
+    assert targets.status_code == 200, targets.get_data(as_text=True)
+    selected_target = next(item for item in targets.json["targets"] if item["task_id"] == str(recipient_task_id))
+    assert selected_target["task_type_id"] == str(recipient_type_id)
+    assert selected_target["department_name"].startswith("VFX Effects ")
+
+    def send(package, key):
+        return client.post(
+            f"/plugins/vfx_files/output-packages/{package}/deliveries",
+            json={"recipient_task_id": str(recipient_task_id), "recipient_task_type_id": str(recipient_type_id)},
+            headers={**headers, "Idempotency-Key": key},
+        )
+
+    delivery_key = f"delivery:{uuid4()}"
+    created = send(package_id, delivery_key)
+    assert created.status_code == 201, created.get_data(as_text=True)
+    delivery_id = created.json["id"]
+    replayed = send(package_id, delivery_key)
+    assert replayed.status_code == 200, replayed.get_data(as_text=True)
+    assert replayed.json["id"] == delivery_id
+    key_conflict = client.post(
+        f"/plugins/vfx_files/output-packages/{package_id}/deliveries",
+        json={"recipient_task_id": str(cross_production_task_id), "recipient_task_type_id": str(recipient_type_id)},
+        headers={**headers, "Idempotency-Key": delivery_key},
+    )
+    assert key_conflict.status_code == 409
+    cross_production = client.post(
+        f"/plugins/vfx_files/output-packages/{package_id}/deliveries",
+        json={"recipient_task_id": str(cross_production_task_id), "recipient_task_type_id": str(recipient_type_id)},
+        headers={**headers, "Idempotency-Key": f"cross-production:{uuid4()}"},
+    )
+    assert cross_production.status_code == 403
+
+    incoming = recipient_client.get(f"/plugins/vfx_files/tasks/{recipient_task_id}/output-package-deliveries")
+    assert incoming.status_code == 200, incoming.get_data(as_text=True)
+    assert any(row["id"] == delivery_id and row["direction"] == "incoming" for row in incoming.json["deliveries"])
+    recipient_files = recipient_client.get(f"/plugins/vfx_files/output-packages/{package_id}/files?limit=10&offset=0")
+    assert recipient_files.status_code == 200, recipient_files.get_data(as_text=True)
+    recipient_download = recipient_client.get(
+        f"/plugins/vfx_files/output-package-files/{package_file_id}/download"
+    )
+    assert recipient_download.status_code == 200
+    assert recipient_download.data == content
+
+    def respond(status, key, feedback=None):
+        payload = {"status": status}
+        if feedback is not None:
+            payload["feedback"] = feedback
+        return recipient_client.post(
+            f"/plugins/vfx_files/output-package-deliveries/{delivery_id}/respond",
+            json=payload, headers={**recipient_headers, "Idempotency-Key": key},
+        )
+
+    invalid_feedback = recipient_client.post(
+        f"/plugins/vfx_files/output-package-deliveries/{delivery_id}/respond",
+        json={"status": "needs_fix", "feedback": {"unexpected": "object"}},
+        headers={**recipient_headers, "Idempotency-Key": f"invalid-feedback:{uuid4()}"},
+    )
+    assert invalid_feedback.status_code == 400
+    needs_fix = respond("needs_fix", f"response:{uuid4()}", "Missing plate edge fix")
+    assert needs_fix.status_code == 200, needs_fix.get_data(as_text=True)
+    assert needs_fix.json["state"] == "needs_fix"
+
+    # Register a new immutable Package version from the same Working revision,
+    # then re-deliver it on the same stable recipient delivery identity.
+    version_two = client.post(
+        f"/plugins/vfx_files/tasks/{task_id}/output-packages",
+        json={
+            "output_type_id": selected_output_type_id, "package_type": "final-exr",
+            "frame_start": 1001, "frame_end": 1001,
+            "source_working_revision_id": working_revision["id"],
+            "files": [{"provider_object_id": working_file["provider_object_id"], "frame_number": 1001, "file_format": "exr", "color_space": "ACEScg"}],
+        },
+        headers={**headers, "Idempotency-Key": f"output-package:{uuid4()}"},
+    )
+    assert version_two.status_code == 202, version_two.get_data(as_text=True)
+    _run_worker_until_ready(lambda: client.get(
+        f"/plugins/vfx_files/tasks/{task_id}/output-packages?limit=10&offset=0"
+    ).json[0]["state"] == "completed")
+    revised = send(version_two.json["id"], f"delivery-revision:{uuid4()}")
+    assert revised.status_code == 200, revised.get_data(as_text=True)
+    assert revised.json["id"] == delivery_id
+    assert revised.json["revision"] == 2
+    assert revised.json["state"] == "revised"
+    accepted = respond("accepted", f"response:{uuid4()}")
+    assert accepted.status_code == 200, accepted.get_data(as_text=True)
+    assert accepted.json["state"] == "accepted"
+
+    with zou_db_factory.begin() as session:
+        delivery = session.get(OutputPackageDelivery, UUID(delivery_id))
+        history = session.scalars(select(OutputPackageDeliveryEvent).where(
+            OutputPackageDeliveryEvent.delivery_id == delivery.id,
+        ).order_by(OutputPackageDeliveryEvent.created_at, OutputPackageDeliveryEvent.id)).all()
+        assert [row.event_type for row in history] == ["delivered", "needs_fix", "revised", "accepted"]
+        events = session.scalars(select(KitsuSyncEventOutbox).where(
+            KitsuSyncEventOutbox.production_id == production_id,
+            KitsuSyncEventOutbox.event_type.like("file_delivery.%"),
+        )).all()
+        assert {row.event_type for row in events} == {
+            "file_delivery.created", "file_delivery.needs_fix",
+            "file_delivery.revised", "file_delivery.accepted",
+        }
+        for event in events:
+            assert event.storage_connection_id == connection_id
+            assert event.payload["source"]["id"] == str(task_id)
+            assert event.payload["source"]["id"] != event.payload["source"]["task_type_id"]
+            assert event.payload["delivery"]["id"] == delivery_id
+            assert event.payload["activation_epoch"] == 1
+            assert "Missing plate edge fix" not in str(event.payload)
+
+    # The destination is a real assigned Artist in its Department; an
+    # unassigned user from the same Production cannot read the delivery.
+    with app.app_context():
+        from zou.app.models.person import Person
+        outsider = Person(
+            first_name="Synthetic", last_name=f"Outsider {uuid4().hex[:8]}",
+            email=f"outsider-{uuid4().hex}@example.invalid", role="user", active=True,
+        )
+        with zou_db_factory.begin() as session:
+            session.add(outsider)
+            session.flush()
+            session.add(ProjectPersonLink(project_id=production_id, person_id=outsider.id, role="user"))
+            session.flush()
+            outsider_token = create_access_token_for_raw_person(outsider)
+    outsider_client = app.test_client()
+    outsider_client.set_cookie(app.config.get("JWT_ACCESS_COOKIE_NAME", "access_token_cookie"), outsider_token)
+    assert outsider_client.get(
+        f"/plugins/vfx_files/output-packages/{version_two.json['id']}/files?limit=10&offset=0"
+    ).status_code == 403
+    with zou_db_factory.begin() as session:
+        session.execute(ProjectPersonLink.__table__.delete().where(
+            ProjectPersonLink.project_id == production_id,
+            ProjectPersonLink.person_id == outsider.id,
+        ))
+        session.delete(session.get(Person, outsider.id))
+        session.execute(Task.__table__.delete().where(Task.id == cross_production_task_id))
+        session.execute(Entity.__table__.delete().where(Entity.id == other_entity.id))
+        other_project = session.get(Project, other_production_id)
+        if other_project is not None:
+            other_project.team.clear()
+            session.flush()
+            session.delete(other_project)
