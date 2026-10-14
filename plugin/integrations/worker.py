@@ -146,12 +146,13 @@ def make_hierarchy_sync_handler(session_factory, adapter):
         session.close()
 
         tasks_to_provision = []
+        total = len(task_bindings)
+        completed = sum(1 for _obj, binding in task_bindings if binding is not None and binding.state == "ready")
         for obj, binding in task_bindings:
             if binding is None or binding.state != "ready":
                 tasks_to_provision.append(obj)
 
-        total = len(tasks_to_provision)
-        for index, obj in enumerate(tasks_to_provision):
+        for obj in tasks_to_provision:
             if not _authorized_manager(actor_id, production_id):
                 return JobResult("blocked_authorization", error_code="permission_revoked")
             if not _snapshot_task_matches_kitsu(obj, production_id):
@@ -167,7 +168,7 @@ def make_hierarchy_sync_handler(session_factory, adapter):
             inspect_session.close()
             current_task = next((task for task, _binding in current_tasks if task["id"] == obj["id"]), None)
             if current_task is None:
-                continue
+                return JobResult("reconcile_required", error_code="sync_task_binding_scope_changed")
             try:
                 provision_task_folders(
                     session_factory, adapter, production_id=production_id,
@@ -195,10 +196,39 @@ def make_hierarchy_sync_handler(session_factory, adapter):
                 if job is None:
                     return JobResult("retry", error_code="sync_lease_lost_after_provision")
                 current_payload = dict(job.payload)
-                current_payload["progress"] = {"completed": index + 1, "total": total}
+                completed += 1
+                current_payload["progress"] = {"completed": completed, "total": total}
                 job.payload = current_payload
                 flag_modified(job, "payload")
                 job.updated_at = func.now()
+
+        # A retry can find every binding already ready after a prior attempt
+        # completed provider work but lost its progress write. Re-read the
+        # immutable plan and persist a final, authoritative completion count
+        # before the queue marks the job completed.
+        final = current_plan()
+        if final[2] == "lease_lost":
+            return JobResult("retry", error_code="sync_lease_lost")
+        if final[2]:
+            return JobResult("blocked_authorization", error_code="sync_configuration_changed")
+        final_session, final_task_bindings, _ = final
+        final_session.close()
+        if any(binding is None or binding.state != "ready" for _obj, binding in final_task_bindings):
+            return JobResult("reconcile_required", error_code="sync_task_binding_incomplete")
+        with session_factory.begin() as session:
+            job = session.scalar(select(Job).where(
+                Job.id == leased_job.job_id, Job.state == "leased",
+                Job.lease_owner == leased_job.worker_id,
+                Job.lease_generation == leased_job.generation,
+                Job.lease_expires_at > func.now(),
+            ).with_for_update())
+            if job is None:
+                return JobResult("retry", error_code="sync_lease_lost_before_completion")
+            current_payload = dict(job.payload)
+            current_payload["progress"] = {"completed": len(final_task_bindings), "total": len(final_task_bindings)}
+            job.payload = current_payload
+            flag_modified(job, "payload")
+            job.updated_at = func.now()
         return JobResult("completed")
 
     return handle
