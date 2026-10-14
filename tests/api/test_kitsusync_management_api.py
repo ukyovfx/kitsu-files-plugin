@@ -400,3 +400,40 @@ def test_provider_template_catalog_matches_v1_and_is_scope_authorized(management
     )
     assert invalid_scope.status_code == 400
     assert invalid_scope.json["code"] == "invalid_event"
+
+
+def test_fake_shared_drive_root_verification_preserves_drive_identity(management_client, tmp_path, monkeypatch):
+    from vfx_files.storage.fake import PersistentFakeStorage
+
+    client = management_client
+    app = client.vfx_app
+    state_path = tmp_path / "fake-storage.json"
+    PersistentFakeStorage(state_path, root_id="synthetic-root-id", drive_id="synthetic-drive-id")
+    monkeypatch.setitem(app.config, "VFX_FILES_STORAGE_MODE", "fake")
+    monkeypatch.setitem(app.config, "VFX_FILES_FAKE_STORAGE_ROOT", str(state_path))
+    monkeypatch.setitem(app.config, "VFX_FILES_FAKE_ROOT_ID", "synthetic-root-id")
+    monkeypatch.setitem(app.config, "VFX_FILES_FAKE_DRIVE_ID", "synthetic-drive-id")
+    monkeypatch.delitem(app.extensions, "vfx_files_storage_adapter_factory", raising=False)
+
+    roots_url = f"{BASE}/drive-connections/{client.vfx_connection_id}/roots?production_id={client.vfx_production_id}"
+    roots = client.get(roots_url, headers=client.vfx_management_headers("vfx.roots.read"))
+    assert roots.status_code == 200
+    assert roots.json["roots"][0]["drive_id"] == "synthetic-drive-id"
+
+    verified = client.post(
+        f"{BASE}/drive-connections/{client.vfx_connection_id}/roots",
+        json={
+            "contract_version": "1.0",
+            "production_id": str(client.vfx_production_id),
+            "account_mode": "shared_drive",
+            "drive_id": "synthetic-drive-id",
+            "root_id": "synthetic-root-id",
+        },
+        headers={
+            **client.vfx_management_headers("vfx.roots.verify"),
+            "Idempotency-Key": "fake-shared-root-verify-001",
+        },
+    )
+    assert verified.status_code == 200, verified.get_data(as_text=True)
+    assert verified.json["drive_id"] == "synthetic-drive-id"
+    assert verified.json["capabilities"] == {"can_read": True, "can_add_children": True}

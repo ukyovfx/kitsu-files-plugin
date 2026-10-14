@@ -122,7 +122,11 @@ def _storage_adapter(connection, *, allow_unconfigured=False):
         fake_root = _setting("VFX_FILES_FAKE_STORAGE_ROOT")
         if not fake_root:
             raise ServiceUnavailable("FakeStorage is not configured")
-        return PersistentFakeStorage(fake_root, root_id=_setting("VFX_FILES_FAKE_ROOT_ID", connection.allowed_root_id))
+        return PersistentFakeStorage(
+            fake_root,
+            root_id=_setting("VFX_FILES_FAKE_ROOT_ID", connection.allowed_root_id),
+            drive_id=_setting("VFX_FILES_FAKE_DRIVE_ID", connection.drive_id),
+        )
     if storage_mode == "google_drive":
         if not connection.enabled and not allow_unconfigured:
             raise ServiceUnavailable("Google Drive storage connection is unavailable")
