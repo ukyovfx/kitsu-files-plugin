@@ -7,7 +7,12 @@
       "scope": "shot",
       "label": "Shot folder",
       "pattern": "{shot}",
-      "available_tokens": ["shot"]
+      "available_tokens": ["shot"],
+      "materialization": {
+        "schema_revision": 1,
+        "root_binding": "verified_root_is_production_root",
+        "available_overrides": ["shot.folder"]
+      }
     }
   ]
 }

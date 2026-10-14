@@ -170,7 +170,7 @@ def seed_sync_state(sync_db):
             {"scope": "shot", "template_id": "vfx-files.shot.default", "revision": 1, "overrides": {}},
             {"scope": "task", "template_id": "vfx-files.task.default", "revision": 1, "overrides": {}},
         ]},
-        "sync_policy": {"mode": "new_production", "scope": {"episodes": True, "sequences": True, "shots": True, "assets": True, "tasks": True}, "notify_new_deliveries": False},
+        "sync_policy": {"mode": "new_production", "scope": {"episodes": False, "sequences": False, "shots": True, "assets": False, "tasks": True}, "notify_new_deliveries": False},
         "activation": {"enabled": True, "activated_at": "2026-10-13T00:00:00Z", "notification_epoch": 3},
     }
     with factory.begin() as session:
@@ -710,3 +710,33 @@ def test_unsupported_mode_cannot_activate_but_can_be_deactivated(sync_db, monkey
         assert status == 200 and etag == '"5"'
         assert response["activation"]["enabled"] is False
         assert response["activation"]["notification_epoch"] == 4
+
+
+def test_root_only_setup_cannot_be_activated(sync_db, monkeypatch):
+    from uuid import UUID
+
+    from plugin.integrations import configuration
+
+    factory, Desired, *_ = sync_db
+    seed_sync_state(sync_db)
+    monkeypatch.setattr(configuration, "_lock_production", lambda *_: None)
+    with factory.begin() as session:
+        row = session.get(Desired, UUID(PRODUCTION))
+        body = dict(row.desired_config)
+        body["activation"] = {"enabled": False, "activated_at": None, "notification_epoch": 3}
+        body["sync_policy"] = dict(body["sync_policy"], scope={
+            "episodes": False, "sequences": False, "shots": False, "assets": False, "tasks": False,
+        })
+        body["template_selection"] = {"selections": [{
+            "scope": "production", "template_id": "vfx-files.production.default", "revision": 1, "overrides": {},
+        }]}
+        row.desired_config = body
+
+    with factory() as session:
+        with pytest.raises(configuration.ConfigurationError) as rejected:
+            configuration.set_activation(
+                session, production_id=UUID(PRODUCTION), actor_id=UUID(ACTOR), enabled=True,
+                payload={"contract_version": "1.0"},
+                idempotency_key="synthetic-empty-scope-activation", if_match='"4"',
+            )
+    assert (rejected.value.status, rejected.value.code) == (409, "invalid_event")

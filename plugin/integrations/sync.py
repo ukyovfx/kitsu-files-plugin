@@ -132,31 +132,17 @@ def _template_supports(obj, objects_by_id, role_mappings, selected_scopes=None):
 
 def selected_template_scopes(desired):
     selections = desired.get("template_selection", {}).get("selections", [])
-    if not isinstance(selections, list) or not selections:
-        raise SyncOperationError(409, "invalid_event")
-    scopes = set()
-    from .providers import templates_payload
-
-    for item in selections:
-        if not isinstance(item, dict) or not isinstance(item.get("scope"), str) or item.get("scope") in scopes:
-            raise SyncOperationError(409, "invalid_event")
-        scope = item["scope"]
-        try:
-            template = templates_payload(scope)["templates"][0]
-        except Exception:
-            raise SyncOperationError(409, "invalid_event") from None
-        if item.get("template_id") != template["id"]:
-            raise SyncOperationError(409, "invalid_event")
-        if item.get("revision") != template["revision"]:
-            raise SyncOperationError(409, "stale_config")
-        # The v1 contract carries override values, but does not define how
-        # those values compose with the Plugin's administrator-owned nested
-        # folder tree. Refuse to silently discard them until the contract
-        # defines that mapping.
-        if item.get("overrides"):
-            raise SyncOperationError(409, "invalid_event")
-        scopes.add(scope)
-    return scopes
+    try:
+        from .template_materialization import validate_sync_template_scope
+        policy = desired.get("sync_policy", {})
+        validate_sync_template_scope(
+            selections, policy.get("scope", {}), allow_empty=False,
+        )
+    except ValueError as exc:
+        if "revision" in str(exc):
+            raise SyncOperationError(409, "stale_config") from None
+        raise SyncOperationError(409, "invalid_event") from None
+    return {item["scope"] for item in selections}
 
 
 def _binding_scope(production_id, obj):

@@ -86,6 +86,11 @@ def validate_desired_config(payload: object) -> dict:
         overrides = item["overrides"]
         if not isinstance(overrides, dict) or any(not isinstance(k, str) or not isinstance(v, str) or len(v) > 240 for k, v in overrides.items()):
             _fail(400, "invalid_event", field="template_selection.overrides")
+    try:
+        from .template_materialization import materialize_template_selection
+        materialize_template_selection(selections)
+    except (TypeError, ValueError):
+        _fail(400, "invalid_event", field="template_selection")
 
     policy = payload["sync_policy"]
     if not isinstance(policy, dict) or set(policy) != {"mode", "scope", "notify_new_deliveries"}:
@@ -108,6 +113,11 @@ def validate_desired_config(payload: object) -> dict:
                 _fail(400, "invalid_event", field=f"sync_policy.scope.{name}")
             for value in values:
                 _uuid(value, f"sync_policy.scope.{name}")
+    try:
+        from .template_materialization import validate_sync_template_scope
+        validate_sync_template_scope(selections, scope, allow_empty=True)
+    except (TypeError, ValueError):
+        _fail(400, "invalid_event", field="sync_policy.scope")
     return payload
 
 
@@ -177,6 +187,48 @@ def _check_connection(session, production_id, connection_id, drive):
     else:
         if not connection.drive_id or connection.drive_id != drive.get("drive_id") or drive.get("owner_subject") is not None:
             _fail(403, "production_access_denied")
+
+
+def _persist_execution_template(session, *, production_id, actor_id, desired, config_revision, enabled):
+    """Persist the Plugin-owned execution snapshot in the config transaction.
+
+    KitsuSync remains the desired-state authority. The SharedTemplate row is a
+    fenced execution snapshot consumed by the existing Preview/Worker path.
+    """
+    from ..models import SharedTemplateConfiguration
+    from .template_materialization import ROOT_BINDING, TREE_ROOT_ID, materialize_template_selection
+
+    drive = desired["drive"]
+    tree, role_mappings, root_binding = materialize_template_selection(
+        desired["template_selection"]["selections"]
+    )
+    if root_binding != ROOT_BINDING:
+        _fail(409, "root_unverified")
+    row = session.scalar(select(SharedTemplateConfiguration).where(
+        SharedTemplateConfiguration.production_id == production_id
+    ).with_for_update())
+    values = {
+        "storage_connection_id": UUID(desired["connection_id"]),
+        "allowed_root_id": drive["root_id"],
+        "template_folder_id": TREE_ROOT_ID,
+        "template_tree": tree,
+        "role_mappings": role_mappings,
+        "version": config_revision,
+        "enabled": bool(enabled),
+        "updated_by": actor_id,
+    }
+    if row is None:
+        row = SharedTemplateConfiguration(
+            production_id=production_id,
+            created_at=datetime.now(timezone.utc),
+            **values,
+        )
+        session.add(row)
+    else:
+        for name, value in values.items():
+            setattr(row, name, value)
+    session.flush()
+    return row
 
 
 def _valid_idempotency_key(value):
@@ -253,6 +305,14 @@ def put_desired_config(session, *, production_id: UUID, actor_id: UUID, payload:
             status = 200
         session.add(row)
         session.flush()
+        _persist_execution_template(
+            session,
+            production_id=production_id,
+            actor_id=actor_id,
+            desired=body,
+            config_revision=row.config_revision,
+            enabled=bool(body.get("activation", {}).get("enabled", False)),
+        )
         response_body = _configuration_payload(row)
         etag = f'"{row.config_revision}"'
         _remember(session, production_id, actor_id, key, operation, request_hash, status, etag, response_body)
@@ -293,6 +353,16 @@ def set_activation(session, *, production_id: UUID, actor_id: UUID, enabled: boo
             # materialization semantics are not implemented. Deactivation stays
             # available so old configurations can be made safe.
             _fail(409, "invalid_event", field="sync_policy.mode")
+        if enabled:
+            try:
+                from .template_materialization import validate_sync_template_scope
+                validate_sync_template_scope(
+                    row.desired_config.get("template_selection", {}).get("selections"),
+                    policy.get("scope", {}),
+                    allow_empty=False,
+                )
+            except (TypeError, ValueError):
+                _fail(409, "invalid_event", field="sync_policy.scope")
         body = dict(row.desired_config)
         epoch = row.notification_epoch + 1
         body["activation"] = {
@@ -304,6 +374,14 @@ def set_activation(session, *, production_id: UUID, actor_id: UUID, enabled: boo
         row.notification_epoch = epoch
         row.desired_config = body
         row.updated_at = datetime.now(timezone.utc)
+        _persist_execution_template(
+            session,
+            production_id=production_id,
+            actor_id=actor_id,
+            desired=body,
+            config_revision=row.config_revision,
+            enabled=enabled,
+        )
         response_body = _configuration_payload(row)
         etag = f'"{row.config_revision}"'
         _remember(session, production_id, actor_id, key, operation, request_hash, 200, etag, response_body)

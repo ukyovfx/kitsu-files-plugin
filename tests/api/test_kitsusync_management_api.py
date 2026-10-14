@@ -86,8 +86,11 @@ def management_client(authenticated_plugin_client, synthetic_upload_task, zou_db
     client.vfx_db_factory = zou_db_factory
     yield client
 
-    from plugin.models import KitsuSyncDesiredConfiguration, KitsuSyncManagementIdempotency
+    from plugin.models import KitsuSyncDesiredConfiguration, KitsuSyncManagementIdempotency, SharedTemplateConfiguration
     with zou_db_factory.begin() as session:
+        session.execute(SharedTemplateConfiguration.__table__.delete().where(
+            SharedTemplateConfiguration.production_id == production_id
+        ))
         session.execute(KitsuSyncManagementIdempotency.__table__.delete().where(
             KitsuSyncManagementIdempotency.production_id == production_id
         ))
@@ -103,7 +106,7 @@ def management_client(authenticated_plugin_client, synthetic_upload_task, zou_db
             app.config.pop(key, None)
 
 
-def _payload(client, *, mode="adopt_existing"):
+def _payload(client, *, mode="new_production"):
     return {
         "contract_version": "1.0",
         "connection_id": str(client.vfx_connection_id),
@@ -114,13 +117,14 @@ def _payload(client, *, mode="adopt_existing"):
             "root_id": "synthetic-root-id",
             "root_state": "verified",
         },
-        "template_selection": {"selections": [{
-            "scope": "shot", "template_id": "synthetic-shot-template",
-            "revision": 1, "overrides": {},
-        }]},
+        "template_selection": {"selections": [
+            {"scope": "production", "template_id": "vfx-files.production.default", "revision": 1, "overrides": {}},
+            {"scope": "shot", "template_id": "vfx-files.shot.default", "revision": 1, "overrides": {}},
+            {"scope": "task", "template_id": "vfx-files.task.default", "revision": 1, "overrides": {}},
+        ]},
         "sync_policy": {
             "mode": mode,
-            "scope": {"episodes": False, "sequences": True, "shots": True, "assets": True, "tasks": True},
+            "scope": {"episodes": False, "sequences": False, "shots": True, "assets": False, "tasks": True},
             "notify_new_deliveries": False,
         },
     }
@@ -157,6 +161,8 @@ def test_management_api_enforces_service_auth_scope_actor_and_production(managem
 
 
 def test_desired_config_create_replay_conflict_update_and_activation_fencing(management_client):
+    from sqlalchemy import select
+
     client = management_client
     route = _route(client)
     payload = _payload(client)
@@ -170,6 +176,17 @@ def test_desired_config_create_replay_conflict_update_and_activation_fencing(man
     assert created.headers["ETag"] == '"1"'
     assert created.json["config_revision"] == 1
     assert created.json["activation"] == {"enabled": False, "activated_at": None, "notification_epoch": 0}
+    from plugin.models import SharedTemplateConfiguration
+    with client.vfx_db_factory.begin() as session:
+        template = session.scalar(select(SharedTemplateConfiguration).where(
+            SharedTemplateConfiguration.production_id == client.vfx_production_id
+        ))
+        assert template is not None
+        assert template.version == 1 and template.enabled is False
+        assert template.allowed_root_id == "synthetic-root-id"
+        assert template.template_tree["folder_id"] == "vfx-files-v1:production-root"
+        assert template.role_mappings["shot"] == ["vfx-files-v1:shot"]
+        assert template.role_mappings["task"] == ["vfx-files-v1:task-shot"]
 
     replay = client.put(route, json=payload, headers=headers)
     assert replay.status_code == 201
@@ -185,7 +202,7 @@ def test_desired_config_create_replay_conflict_update_and_activation_fencing(man
     })
     assert exists_conflict.status_code == 412
 
-    updated_payload = _payload(client, mode="future_only")
+    updated_payload = _payload(client, mode="new_production")
     stale = client.put(route, json=updated_payload, headers={
         **client.vfx_management_headers("vfx.config.write"),
         "Idempotency-Key": "stale-update-key-0003", "If-Match": '"9"',

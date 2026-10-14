@@ -86,3 +86,39 @@ def test_asset_task_template_includes_nested_working_and_output_folders_by_templ
         "production:prod:task:task-uuid:template:working:template:cache",
         "production:prod:task:task-uuid:template:publish",
     ]
+
+
+def test_materialized_tree_supports_mixed_asset_and_shot_branches_with_optional_episode_scope():
+    from plugin.integrations.template_materialization import materialize_template_selection
+    from plugin.integrations.providers import templates_payload
+
+    selections = []
+    for scope in ("production", "asset", "sequence", "shot", "task"):
+        template = templates_payload(scope)["templates"][0]
+        selections.append({
+            "scope": scope, "template_id": template["id"], "revision": template["revision"], "overrides": {},
+        })
+    tree, roles, _root = materialize_template_selection(selections)
+
+    shot_plan = build_folder_plan(
+        tree=tree, role_mappings=roles, production_id="prod",
+        shot_id="shot-id", shot_name="SH010", sequence_id="sequence-id", sequence_name="SQ01",
+        episode_id="episode-id", episode_name="EP01", task_id="shot-task", task_name="comp",
+        included_roles={"sequence"},
+    )
+    asset_plan = build_folder_plan(
+        tree=tree, role_mappings=roles, production_id="prod",
+        shot_id="", shot_name="", asset_id="asset-id", asset_name="Hero",
+        task_id="asset-task", task_name="model", included_roles=set(),
+    )
+
+    assert [(item.display_name, item.scope_key) for item in shot_plan[:5]] == [
+        ("00_Production", "production:prod:root:template:vfx-files-v1:00-production"),
+        ("01_Shared_Assets", "production:prod:root:template:vfx-files-v1:01-shared-assets"),
+        ("02_Shots", "production:prod:root:template:vfx-files-v1:02-shots"),
+        ("SQ01", "production:prod:sequence:sequence-id"),
+        ("SH010", "production:prod:shot:shot-id"),
+    ]
+    assert all("episode:episode-id" not in item.scope_key for item in shot_plan)
+    assert ("Hero", "production:prod:asset:asset-id") in [(item.display_name, item.scope_key) for item in asset_plan]
+    assert ("model", "production:prod:task:asset-task") in [(item.display_name, item.scope_key) for item in asset_plan]

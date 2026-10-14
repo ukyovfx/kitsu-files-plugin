@@ -25,6 +25,10 @@ def templates_payload(scope: str) -> dict:
     if scope not in _TEMPLATE_CATALOG:
         raise ProviderContractError(400, "invalid_event", "scope")
     template_id, label, pattern, tokens = _TEMPLATE_CATALOG[scope]
+    # Import lazily: the materializer resolves IDs through this immutable
+    # catalog and the response builder advertises exactly its override keys.
+    from .template_materialization import ROOT_BINDING, available_override_keys
+
     return {
         "contract_version": "1.0",
         "templates": [{
@@ -34,6 +38,11 @@ def templates_payload(scope: str) -> dict:
             "label": label,
             "pattern": pattern,
             "available_tokens": list(tokens),
+            "materialization": {
+                "schema_revision": 1,
+                "root_binding": ROOT_BINDING,
+                "available_overrides": available_override_keys(scope),
+            },
         }],
     }
 

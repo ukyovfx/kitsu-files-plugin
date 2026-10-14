@@ -180,43 +180,6 @@ def test_installed_http_snapshot_preview_apply_worker_and_recovery(
         task_type = session.get(TaskType, task_type_id)
         assert task.project_id == production_id and task.entity_id == entity_id
         assert task_type.for_entity == "Shot"
-        template = SharedTemplateConfiguration(
-            production_id=production_id,
-            storage_connection_id=connection_id,
-            allowed_root_id="synthetic-root-id",
-            template_folder_id="synthetic-template-root",
-            template_tree={
-                "folder_id": "synthetic-template-root",
-                "name": "Shared Layout",
-                "children": [
-                    {
-                        "folder_id": "synthetic-shot-role",
-                        "name": "{shot}",
-                        "children": [
-                            {
-                                "folder_id": "synthetic-task-role",
-                                "name": "{task}",
-                                "children": [
-                                    {
-                                        "folder_id": "synthetic-working-folder",
-                                        "name": "Working",
-                                        "children": [],
-                                    }
-                                ],
-                            }
-                        ],
-                    }
-                ],
-            },
-            role_mappings={
-                "shot": "synthetic-shot-role",
-                "task": "synthetic-task-role",
-            },
-            version=1,
-            enabled=True,
-            updated_by=actor_id,
-        )
-        session.add(template)
 
     desired = {
         "contract_version": "1.0",
@@ -230,6 +193,12 @@ def test_installed_http_snapshot_preview_apply_worker_and_recovery(
         },
         "template_selection": {
             "selections": [
+                {
+                    "scope": "production",
+                    "template_id": "vfx-files.production.default",
+                    "revision": 1,
+                    "overrides": {},
+                },
                 {
                     "scope": "shot",
                     "template_id": "vfx-files.shot.default",
@@ -247,10 +216,10 @@ def test_installed_http_snapshot_preview_apply_worker_and_recovery(
         "sync_policy": {
             "mode": "new_production",
             "scope": {
-                "episodes": True,
-                "sequences": True,
+                "episodes": False,
+                "sequences": False,
                 "shots": True,
-                "assets": True,
+                "assets": False,
                 "tasks": True,
             },
             "notify_new_deliveries": False,
@@ -277,6 +246,18 @@ def test_installed_http_snapshot_preview_apply_worker_and_recovery(
         created.headers["ETag"] == '"1"'
         and created.json["activation"]["enabled"] is False
     )
+    with zou_db_factory.begin() as session:
+        execution_template = session.scalar(select(SharedTemplateConfiguration).where(
+            SharedTemplateConfiguration.production_id == production_id
+        ))
+        assert execution_template is not None
+        assert execution_template.version == created.json["config_revision"]
+        assert execution_template.enabled is False
+        assert execution_template.storage_connection_id == connection_id
+        assert execution_template.allowed_root_id == "synthetic-root-id"
+        assert execution_template.template_tree["folder_id"] == "vfx-files-v1:production-root"
+        assert execution_template.role_mappings["shot"] == ["vfx-files-v1:shot"]
+        assert execution_template.role_mappings["task"] == ["vfx-files-v1:task-shot"]
     replayed_config = client.put(
         config_url,
         json=desired,
@@ -733,7 +714,7 @@ def test_installed_http_snapshot_preview_apply_worker_and_recovery(
         assert persisted_job.state == "completed" and persisted_job.payload[
             "progress"
         ] == {"completed": 1, "total": 1}
-        assert len(bindings) == 3 and all(
+        assert len(bindings) == 11 and all(
             binding.state == "ready" and binding.provider_folder_id
             for binding in bindings
         )
@@ -772,10 +753,11 @@ def test_installed_http_snapshot_preview_apply_worker_and_recovery(
     )
     assert materialized.objects["synthetic-root-id"].name == "FakeStorage root"
     expected_folder_ids = {binding.provider_folder_id for binding in bindings}
-    assert len(expected_folder_ids) == 3
+    assert len(expected_folder_ids) == 11
     assert expected_folder_ids.issubset(materialized.objects)
     assert {materialized.objects[folder_id].name for folder_id in expected_folder_ids} == {
-        shot.name, task.name, "Working",
+        "00_Production", "01_Shared_Assets", "02_Shots", "03_Editorial", "04_Delivery",
+        shot.name, task.name, "Working", "Publish", "Shared Outputs", "Final Delivery",
     }
 
     # Restarting the separate worker process reads the persisted queue and
