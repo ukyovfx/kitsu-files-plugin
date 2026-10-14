@@ -14,6 +14,7 @@ API = "https://www.googleapis.com/drive/v3"
 UPLOAD_API = "https://www.googleapis.com/upload/drive/v3"
 OIDC_USERINFO_API = "https://openidconnect.googleapis.com/v1/userinfo"
 FOLDER_MIME = "application/vnd.google-apps.folder"
+SHORTCUT_MIME = "application/vnd.google-apps.shortcut"
 
 
 @dataclass(frozen=True)
@@ -293,9 +294,12 @@ class GoogleDriveStorageAdapter:
         return self._object(response.json())
 
     def verify(self, object_id: str, size: int, sha256_hex: str):
+        if not self._root_verified:
+            raise PermissionFailure("Allowed root must be verified before checksum verification")
         obj = self.get(object_id)
-        if obj is None or obj.trashed or obj.size != size:
+        if obj is None or obj.trashed or obj.size != size or obj.parent_id is None or obj.mime_type == SHORTCUT_MIME:
             return False
+        self.assert_parent_within_root(obj.parent_id)
         # Drive exposes md5Checksum, not SHA-256. A byte readback is required for SHA-256 proof.
         response = self._request("GET", f"{API}/files/{object_id}", params={"alt": "media", "supportsAllDrives": "true"})
         if response.status_code in (401, 403):
@@ -308,13 +312,16 @@ class GoogleDriveStorageAdapter:
             if chunk:
                 count += len(chunk)
                 digest.update(chunk)
-        return count == size and digest.hexdigest() == sha256_hex
+        if count != size or digest.hexdigest() != sha256_hex:
+            return False
+        self._revalidate_download_object(object_id, obj)
+        return True
 
     def download_to(self, object_id: str, destination: BinaryIO) -> tuple[int, str]:
         if not self._root_verified:
             raise PermissionFailure("Allowed root must be verified before download")
         obj = self.get(object_id)
-        if obj is None or obj.trashed or obj.parent_id is None:
+        if obj is None or obj.trashed or obj.parent_id is None or obj.mime_type == SHORTCUT_MIME:
             raise PermissionFailure("Drive object is unavailable")
         self.assert_parent_within_root(obj.parent_id)
         response = self._request("GET", f"{API}/files/{object_id}", params={"alt": "media", "supportsAllDrives": "true"})
@@ -322,16 +329,47 @@ class GoogleDriveStorageAdapter:
             raise PermissionFailure("Drive object is not readable")
         if response.status_code != 200:
             raise AmbiguousOutcome("Drive download result is not confirmed")
-        digest = sha256()
-        count = 0
-        for chunk in response.iter_content(chunk_size=1024 * 1024):
-            if chunk:
-                destination.write(chunk)
-                digest.update(chunk)
-                count += len(chunk)
-        if obj.size is not None and count != obj.size:
-            raise AmbiguousOutcome("Drive download byte count differs from metadata")
-        return count, digest.hexdigest()
+        start = destination.tell() if destination.seekable() else None
+        try:
+            digest = sha256()
+            count = 0
+            for chunk in response.iter_content(chunk_size=1024 * 1024):
+                if chunk:
+                    destination.write(chunk)
+                    digest.update(chunk)
+                    count += len(chunk)
+            if obj.size is not None and count != obj.size:
+                raise AmbiguousOutcome("Drive download byte count differs from metadata")
+            self._revalidate_download_object(object_id, obj)
+            return count, digest.hexdigest()
+        except Exception:
+            # Callers stage downloads before serving them. Remove any bytes
+            # from a transfer whose post-read authorization check failed.
+            if start is not None:
+                try:
+                    destination.seek(start)
+                    destination.truncate()
+                except (OSError, AttributeError):
+                    pass
+            raise
+
+    def _revalidate_download_object(self, object_id: str, before: StorageObject) -> None:
+        """Recheck both object identity and root ancestry after reading media."""
+        current = self.get(object_id)
+        if current is None or current.trashed or current.parent_id is None or current.mime_type == SHORTCUT_MIME:
+            raise PermissionFailure("Drive object became unavailable during download")
+        # Check ancestry before comparing metadata so a moved object outside
+        # the allowed root fails as an authorization error.
+        self.assert_parent_within_root(current.parent_id)
+        if (
+            current.object_id != before.object_id
+            or current.parent_id != before.parent_id
+            or current.drive_id != before.drive_id
+            or current.size != before.size
+            or current.mime_type != before.mime_type
+            or current.modified_time != before.modified_time
+        ):
+            raise AmbiguousOutcome("Drive object metadata changed during download")
 
     def list_children(self, parent_id: str, page_token: str | None = None):
         if not self._root_verified:

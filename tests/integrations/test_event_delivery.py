@@ -216,8 +216,12 @@ def test_event_key_file_must_be_private_and_endpoint_must_match_contract():
 
 
 def test_event_key_file_reads_only_private_regular_file(tmp_path):
+    import os
     import pytest
     from plugin.integrations.event_delivery import load_event_delivery_config
+
+    if os.name != "posix":
+        pytest.skip("This test verifies POSIX mode bits; Windows ACL validation is not covered here")
 
     key_file = tmp_path / "event.key"
     key_file.write_bytes(b"synthetic-test-key-material-00000000000000000000")

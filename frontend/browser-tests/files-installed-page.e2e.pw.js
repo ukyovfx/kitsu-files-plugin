@@ -128,7 +128,6 @@ test('installed Files page uses KitsuSync-managed folders and carries w001 throu
     expect(await response.body()).toEqual(bytes)
   }
 
-  await artistB.ui.getByLabel('Publish Task').selectOption(taskId)
   await artistB.ui.getByLabel('Completed Working File').selectOption({ label: `w002 · ${name002}` })
   await artistB.ui.getByLabel('Output family').selectOption({ label: 'Synthetic Main' })
   await artistB.ui.getByRole('button', { name: 'Publish Working File' }).click()
@@ -161,7 +160,6 @@ test('installed Files page uses KitsuSync-managed folders and carries w001 throu
   overview = await readOverview(supervisor.page, productionId)
   expect(overview.publishes.find((row) => row.id === publish.id)).toMatchObject({ latest_published: true, latest_approved: true })
 
-  await artistB.ui.getByLabel('Publish Task').selectOption(taskId)
   await expect(artistB.ui.getByLabel('Handoff Publish')).toBeVisible()
   await artistB.ui.getByLabel('Handoff Publish').selectOption(publish.id)
   await artistB.ui.getByLabel('Handoff recipient').selectOption(artistAId)
