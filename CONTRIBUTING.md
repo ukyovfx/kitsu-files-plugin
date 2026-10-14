@@ -27,8 +27,12 @@ The installed-page seeder is credential-producing test code. Before running it, 
 
 ## Pull requests
 
-- Use a focused branch and draft pull request into `main`.
+- Use a focused branch and draft pull request. Target `main`, or the parent Draft PR branch for an intentional, documented stack.
 - Describe compatibility, migration, authorization, storage, recovery, and rollback effects.
 - Include test commands and their results; do not carry forward old PASS results as current evidence.
 - Never include secrets, internal server addresses, user information, or private production data in commits or pull request text.
 - Do not merge, tag, release, or deploy without separate authorization.
+
+## Licensing
+
+The repository does not currently contain a project `LICENSE` file. The plugin manifest's license field is not proof of redistribution rights. Before contributing code that would be published, confirm that you have the rights to submit it and preserve the license and attribution notices for any third-party material. Do not add or imply a project license without rights-holder confirmation.

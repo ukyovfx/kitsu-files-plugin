@@ -1,0 +1,26 @@
+name: Feature request
+description: Suggest a change for review.
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not include credentials, personal data, production media, internal server details, or confidential workflow information. Do not use this form for security vulnerabilities; follow SECURITY.md.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem to solve
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+    validations:
+      required: true
+  - type: textarea
+    id: constraints
+    attributes:
+      label: Compatibility and safety considerations
+      description: Include host, authorization, storage, recovery, and migration considerations where relevant.
