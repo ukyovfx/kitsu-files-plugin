@@ -80,6 +80,7 @@ def management_client(authenticated_plugin_client, synthetic_upload_task, zou_db
         return {"Authorization": f"Bearer {token}", "X-KitsuSync-Actor-ID": str(actor_id)}
 
     client = app.test_client()
+    client.vfx_app = app
     client.vfx_management_headers = headers
     client.vfx_production_id = production_id
     client.vfx_connection_id = connection_id
@@ -296,7 +297,9 @@ def test_concurrent_updates_with_same_etag_have_one_winner(management_client):
 
 
 def test_provider_reads_and_root_verification_are_authenticated_and_production_scoped(management_client):
-    from plugin.storage.fake import FakeStorage
+    # Use the installed manifest package name so exception classes raised by
+    # the adapter are identical to those caught by the installed HTTP module.
+    from vfx_files.storage.fake import FakeStorage
 
     client = management_client
     adapter = FakeStorage(root_id="synthetic-root-id", drive_id="synthetic-drive-id")
@@ -375,7 +378,7 @@ def test_provider_reads_and_root_verification_are_authenticated_and_production_s
             "Idempotency-Key": "root-verify-foreign-001",
         },
     )
-    assert forbidden_root.status_code == 403
+    assert forbidden_root.status_code == 403, forbidden_root.get_data(as_text=True)
     assert forbidden_root.json["code"] == "drive_permission_denied"
     assert adapter.calls == []
 

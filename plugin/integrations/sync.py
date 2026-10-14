@@ -306,7 +306,6 @@ def create_sync_preview(session, *, production_id: UUID, actor_id: UUID, payload
             Template.production_id == production_id,
             Template.storage_connection_id == connection.id,
             Template.allowed_root_id == connection.allowed_root_id,
-            Template.enabled.is_(True),
         ))
         if template is None:
             raise SyncOperationError(409, "connection_not_ready")

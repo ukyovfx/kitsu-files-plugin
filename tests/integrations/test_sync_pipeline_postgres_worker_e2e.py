@@ -408,7 +408,7 @@ def test_installed_http_snapshot_preview_apply_worker_and_recovery(
         json=preview_body,
         headers=headers("vfx.sync.preview", idempotency=f"inactive-preview-{uuid4()}"),
     )
-    assert preview_before_activation.status_code == 200
+    assert preview_before_activation.status_code == 200, preview_before_activation.get_data(as_text=True)
     assert preview_before_activation.json["state"] == "preview_ready"
     with zou_db_factory() as session:
         assert (
@@ -652,6 +652,9 @@ def test_installed_http_snapshot_preview_apply_worker_and_recovery(
     worker_environment = os.environ.copy()
     worker_environment.update(
         {
+            # Zou's child process validates the host secret at startup. Keep
+            # this generated/synthetic test key inside the disposable worker.
+            "SECRET_KEY": "vfx-files-isolated-worker-test-secret-key-32-bytes",
             "VFX_FILES_ENABLED": "true",
             "VFX_FILES_WORKER_ENABLED": "true",
             "VFX_FILES_STORAGE_MODE": "fake",

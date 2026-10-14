@@ -2,9 +2,9 @@
   "bomFormat": "CycloneDX",
   "specVersion": "1.5",
   "serialNumber": "urn:uuid:f3780869-6d13-4c7a-9309-883243286c13",
-  "version": 5,
+  "version": 6,
   "metadata": {
-    "timestamp": "2026-10-14T02:04:52Z",
+    "timestamp": "2026-10-14T02:12:18Z",
     "component": {
       "type": "application",
       "name": "vfx-kitsu-files-plugin",
@@ -308,7 +308,7 @@
       "hashes": [
         {
           "alg": "SHA-256",
-          "content": "1e1d8cc3b7bd0e43e759ee10f1e16d8a3ed2d342ef7299e18543a32132c21ceb"
+          "content": "16278d4317d1dbcdfa178e7617c5ee5bff50941609c5dcde45d77f52ffcf3f0f"
         }
       ]
     },
