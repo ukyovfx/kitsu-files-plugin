@@ -80,6 +80,14 @@ export function createFilesApi(client) {
       return readJson(await client.request('GET', `${ROOT}/output-packages/${encodeURIComponent(packageId)}/delivery-targets`))
     },
 
+    async linkOutputPackagePublication(packageId, publishId, idempotencyKey) {
+      if (!packageId || !publishId || !idempotencyKey) throw new TypeError('A Package, approved Publish and idempotency key are required')
+      return readJson(await mutation('POST', `${ROOT}/output-packages/${encodeURIComponent(packageId)}/publication-binding`, {
+        headers: { 'Content-Type': 'application/json', 'Idempotency-Key': idempotencyKey },
+        body: JSON.stringify({ publish_id: publishId })
+      }))
+    },
+
     async createOutputPackageDelivery(packageId, recipientTaskId, recipientTaskTypeId, idempotencyKey) {
       if (!packageId || !recipientTaskId || !recipientTaskTypeId || !idempotencyKey) {
         throw new TypeError('A Package, receiving Task Type and idempotency key are required')

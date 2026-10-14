@@ -122,7 +122,7 @@ onUnmounted(() => requests.invalidate())
         <p v-else class="muted">No verified Task folder bindings are ready yet. Drive connection, root, templates and synchronization are managed through KitsuSync.</p>
       </section>
       <UploadPanel :enabled="overview.upload_ready" :tasks="overview.tasks" :fixed-task-id="taskId" :api="api" @uploaded="load" />
-      <OutputPackagePanel :tasks="overview.tasks" :fixed-task-id="taskId" :api="api" @changed="load" />
+      <OutputPackagePanel :tasks="overview.tasks" :publishes="overview.publishes" :fixed-task-id="taskId" :api="api" @changed="load" />
       <PublishWorkflow :production-id="productionId" :tasks="overview.tasks" :publishes="overview.publishes" :fixed-task-id="taskId" :api="api" @changed="load" />
       <div class="content-grid">
         <PublishList :publishes="overview.publishes" :actor-id="overview.actor_id" :role="overview.role" :busy-id="busyId" @approve="approve" />

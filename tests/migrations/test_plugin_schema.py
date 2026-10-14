@@ -14,6 +14,7 @@ KITSUSYNC_IDEMPOTENCY_MIGRATION = ROOT / "plugin/migrations/versions/0011_kitsus
 KITSUSYNC_SYNC_MIGRATION = ROOT / "plugin/migrations/versions/0012_kitsusync_hierarchy_sync.py"
 DRIVE_OAUTH_MIGRATION = ROOT / "plugin/migrations/versions/0013_encrypted_drive_oauth.py"
 EVENT_OUTBOX_BINDING_MIGRATION = ROOT / "plugin/migrations/versions/0014_event_outbox_connection_binding.py"
+PACKAGE_PUBLICATION_MIGRATION = ROOT / "plugin/migrations/versions/0015_package_publication_binding.py"
 
 
 def test_plugin_tables_are_namespaced_and_nullable_folder_identity_is_avoided():
@@ -206,3 +207,17 @@ def test_event_outbox_binding_migration_is_additive_and_preserves_bound_rows():
     assert '"event_activation_epoch"' in source
     assert "restore a consistent snapshot instead of downgrading" in source
     assert "Output Package event eligibility is immutable" in source
+
+
+def test_package_publication_binding_is_additive_and_immutable():
+    source = PACKAGE_PUBLICATION_MIGRATION.read_text()
+    assert 'revision = "vxf_0015"' in source
+    assert 'down_revision = "vxf_0014"' in source
+    assert '"plugin_vfx_files_output_package_publication"' in source
+    assert 'sa.ForeignKey("plugin_vfx_files_output_package.id")' in source
+    assert 'sa.ForeignKey("plugin_vfx_files_publish.id")' in source
+    assert 'UniqueConstraint("package_id"' in source
+    assert 'UniqueConstraint("publish_id"' in source
+    assert "Output Package publication links are immutable" in source
+    assert "restore a consistent snapshot instead of downgrading" in source
+    assert "schema_epoch = 14" in source and "schema_epoch = 13" in source

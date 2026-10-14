@@ -40,6 +40,8 @@ def approve_publish(session_factory, *, actor_id: UUID, actor_role: str, publish
         session.add(event)
         session.flush()
         _refresh_latest_approved(session, publish.task_id, publish.output_family_id)
+        from ..packages.publication import refresh_package_publication_pointers
+        refresh_package_publication_pointers(session, publish.task_id)
         return event.id
 
 
@@ -78,6 +80,8 @@ def revoke_approval(session_factory, *, actor_id: UUID, actor_role: str, approva
         session.add(event)
         session.flush()
         _refresh_latest_approved(session, publish.task_id, publish.output_family_id)
+        from ..packages.publication import refresh_package_publication_pointers
+        refresh_package_publication_pointers(session, publish.task_id)
         return event.id
 
 

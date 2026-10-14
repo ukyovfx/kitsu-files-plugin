@@ -14,6 +14,7 @@ from werkzeug.exceptions import ServiceUnavailable
 from .authz import Actor, Capability, NotFound, PermissionDenied, assert_compatible_host, authorize, issue_csrf_token, resolve_request_scope, verify_csrf_token
 from .compat import HOST_ZOU_VERSION, SCHEMA_EPOCH, WORKER_BUILD, assert_runtime_host, current_actor_role
 from .packages.delivery_service import PackageDeliveryConflict, PackageDeliveryDenied
+from .packages.publication import PackagePublicationConflict
 
 
 def _setting(name, default=None):
@@ -346,7 +347,7 @@ class TaskOutputPackages(MethodView):
                 abort(403)
         except (PermissionDenied, NotFound, ValueError, TypeError):
             abort(403)
-        from .models import OutputPackage, OutputPackageFile, OutputPackagePointer
+        from .models import OutputPackage, OutputPackageFile, OutputPackagePointer, OutputPackagePublication, Publish
         try:
             limit = int(request.args.get("limit", 50))
             offset = int(request.args.get("offset", 0))
@@ -366,23 +367,49 @@ class TaskOutputPackages(MethodView):
             (str(row.output_type_id), row.package_type): row
             for row in OutputPackagePointer.query.filter_by(task_id=parsed_task_id).all()
         }
-        return [{
-            "id": str(row.id), "production_id": str(row.production_id),
-            "entity_id": str(row.entity_id), "task_id": str(row.task_id),
-            "output_type_id": str(row.output_type_id), "package_type": row.package_type,
-            "version": row.version, "state": row.state, "qc_state": row.qc_state,
-            "job_state": jobs[str(row.id)].state if str(row.id) in jobs else None,
-            "job_error_code": jobs[str(row.id)].last_error_code if str(row.id) in jobs else None,
-            "qc_report": row.qc_report, "manifest_sha256": row.manifest_sha256,
-            "file_count": OutputPackageFile.query.filter_by(package_id=row.id).count(),
-            "manifest_summary": {
-                key: value for key, value in json.loads(row.manifest_bytes).items() if key != "files"
-            },
-            "latest_working": pointers.get((str(row.output_type_id), row.package_type)).latest_output_id == row.id if pointers.get((str(row.output_type_id), row.package_type)) else False,
-            "latest_published": pointers.get((str(row.output_type_id), row.package_type)).latest_published_id == row.id if pointers.get((str(row.output_type_id), row.package_type)) else False,
-            "latest_approved": pointers.get((str(row.output_type_id), row.package_type)).latest_approved_id == row.id if pointers.get((str(row.output_type_id), row.package_type)) else False,
-            "latest_final_delivery": pointers.get((str(row.output_type_id), row.package_type)).latest_final_delivery_id == row.id if pointers.get((str(row.output_type_id), row.package_type)) else False,
-        } for row in rows]
+        publications = {
+            str(row.package_id): row
+            for row in OutputPackagePublication.query.filter(
+                OutputPackagePublication.package_id.in_([row.id for row in rows])
+            ).all()
+        } if rows else {}
+        package_publish_ids = [row.publish_id for row in publications.values()]
+        formal_publishes = {
+            str(row.id): row for row in Publish.query.filter(Publish.id.in_(package_publish_ids)).all()
+        } if package_publish_ids else {}
+        from .packages.publication import approved_publish_candidates
+        session = current_app.extensions["sqlalchemy"].session
+        result = []
+        for row in rows:
+            pointer = pointers.get((str(row.output_type_id), row.package_type))
+            binding = publications.get(str(row.id))
+            formal_publish = formal_publishes.get(str(binding.publish_id)) if binding else None
+            candidates = approved_publish_candidates(session, row)
+            result.append({
+                "id": str(row.id), "production_id": str(row.production_id),
+                "entity_id": str(row.entity_id), "task_id": str(row.task_id),
+                "output_type_id": str(row.output_type_id), "package_type": row.package_type,
+                "version": row.version, "state": row.state, "qc_state": row.qc_state,
+                "job_state": jobs[str(row.id)].state if str(row.id) in jobs else None,
+                "job_error_code": jobs[str(row.id)].last_error_code if str(row.id) in jobs else None,
+                "qc_report": row.qc_report, "manifest_sha256": row.manifest_sha256,
+                "file_count": OutputPackageFile.query.filter_by(package_id=row.id).count(),
+                "manifest_summary": {
+                    key: value for key, value in json.loads(row.manifest_bytes).items() if key != "files"
+                },
+                "formal_publish": ({
+                    "id": str(formal_publish.id), "version": formal_publish.version,
+                    "state": formal_publish.state, "qc_state": formal_publish.qc_state,
+                    "manifest_sha256": formal_publish.manifest_sha256,
+                    "approval_active": any(item.id == formal_publish.id for item in candidates),
+                } if formal_publish else None),
+                "approved_publish_candidates": [{"id": str(item.id), "version": item.version} for item in candidates],
+                "latest_working": pointer.latest_output_id == row.id if pointer else False,
+                "latest_published": pointer.latest_published_id == row.id if pointer else False,
+                "latest_approved": pointer.latest_approved_id == row.id if pointer else False,
+                "latest_final_delivery": pointer.latest_final_delivery_id == row.id if pointer else False,
+            })
+        return result
 
     @jwt_required()
     def post(self, task_id):
@@ -577,6 +604,51 @@ class TaskStorageObjects(MethodView):
             "next_page_token": listing.next_page_token,
             "complete": listing.complete,
         }
+
+
+class OutputPackagePublicationBinding(MethodView):
+    @jwt_required()
+    def post(self, package_id):
+        _require_enabled()
+        _assert_compatible()
+        try:
+            _require_mutation_origin()
+            package_uuid = UUID(str(package_id))
+            from .models import OutputPackage
+            package = OutputPackage.query.filter_by(id=package_uuid).one_or_none()
+            if package is None:
+                abort(404)
+            actor = _request_actor(str(package.production_id))
+            scope = _resolve_scope(actor, str(package.production_id), str(package.task_id))
+            authorize(actor, Capability.PUBLISH, scope)
+            from .compat import authorize_task_mutation
+            if not authorize_task_mutation(actor, package.task_id, "publish"):
+                abort(403)
+            payload = request.get_json(silent=False) or {}
+            if set(payload) != {"publish_id"}:
+                abort(400)
+            publish_uuid = UUID(str(payload["publish_id"]))
+            key = request.headers.get("Idempotency-Key", "").strip()
+            if not key or len(key) > 255:
+                abort(400)
+            from sqlalchemy.orm import sessionmaker
+            db_ext = current_app.extensions["sqlalchemy"]
+            sessions = sessionmaker(bind=db_ext.engine, expire_on_commit=False)
+            from .packages.publication import bind_approved_publish
+            result = bind_approved_publish(
+                sessions, package_id=package_uuid, publish_id=publish_uuid,
+                actor_id=actor.actor_id, idempotency_key=key,
+            )
+        except (PermissionDenied, NotFound):
+            abort(403)
+        except (ValueError, TypeError) as error:
+            abort(400, description=str(error))
+        except PackagePublicationConflict as error:
+            abort(409, description=str(error))
+        return {
+            "id": str(result.id), "package_id": str(result.package_id),
+            "publish_id": str(result.publish_id), "replayed": result.replayed,
+        }, 200 if result.replayed else 201
 
 
 class OutputPackageDeliveryTargets(MethodView):
@@ -2220,6 +2292,7 @@ routes = [
     ("/tasks/<task_id>/output-package-options", TaskOutputPackageOptions),
     ("/tasks/<task_id>/output-package-deliveries", TaskPackageDeliveries),
     ("/tasks/<task_id>/storage-objects", TaskStorageObjects),
+    ("/output-packages/<package_id>/publication-binding", OutputPackagePublicationBinding),
     ("/output-packages/<package_id>/delivery-targets", OutputPackageDeliveryTargets),
     ("/output-packages/<package_id>/deliveries", OutputPackageDeliveryCreate),
     ("/output-package-deliveries/<delivery_id>/respond", OutputPackageDeliveryResponse),

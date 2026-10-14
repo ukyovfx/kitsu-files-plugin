@@ -225,12 +225,88 @@ def test_task_api_to_worker_creates_immutable_package_copy_and_verified_download
     assert listed.json[0]["id"] == reservation["id"]
     assert listed.json[0]["qc_state"] == "passed"
     assert "files" not in listed.json[0]["manifest_summary"]
+    assert listed.json[0]["latest_published"] is False
+    assert listed.json[0]["latest_approved"] is False
     file_page = client.get(f"/plugins/vfx_files/output-packages/{reservation['id']}/files?limit=1&offset=0")
     assert file_page.status_code == 200
     assert file_page.json["next_offset"] is None
     download = client.get(f"/plugins/vfx_files/output-package-files/{package_file_id}/download")
     assert download.status_code == 200
     assert download.data == content
+
+    # An Output Package is not formally Published or Approved merely because
+    # its own package QC passed. Link only an exact single-file package copy
+    # to the completed, approved native Publish that references the same w001
+    # source file and checksum.
+    from plugin.approvals.service import approve_publish
+    from plugin.models import Publish, PublishPointer
+    publish_id = uuid4()
+    output_family_id = uuid4()
+    publish_manifest_sha256 = hashlib.sha256(b"synthetic exact Publish manifest").hexdigest()
+    with zou_db_factory.begin() as session:
+        session.add(Publish(
+            id=publish_id, task_id=task_id, output_family_id=output_family_id,
+            version=1, source_revision_file_id=UUID(working_file["id"]),
+            created_by=uuid4(), state="completed", byte_count=len(content),
+            sha256=digest, storage_connection_id=connection_id,
+            provider_artifact_id=working_file["provider_object_id"],
+            manifest_sha256=publish_manifest_sha256, manifest_bytes=b"synthetic exact Publish manifest",
+            native_output_file_id=uuid4(), native_revision=1, qc_state="passed",
+        ))
+        session.add(PublishPointer(
+            task_id=task_id, output_family_id=output_family_id,
+            latest_published_id=publish_id,
+        ))
+    approve_publish(
+        zou_db_factory, actor_id=uuid4(), actor_role="supervisor", publish_id=publish_id,
+        policy_id="synthetic-review-v1", policy_sha256="a" * 64,
+        idempotency_key=f"synthetic-approval:{publish_id}",
+    )
+
+    package_id = reservation["id"]
+    wrong_publish_id = uuid4()
+    wrong_publish_manifest_sha256 = hashlib.sha256(b"synthetic mismatched Publish manifest").hexdigest()
+    with zou_db_factory.begin() as session:
+        session.add(Publish(
+            id=wrong_publish_id, task_id=task_id, output_family_id=uuid4(),
+            version=1, source_revision_file_id=UUID(working_file["id"]),
+            created_by=uuid4(), state="completed", byte_count=len(content),
+            sha256="f" * 64, storage_connection_id=connection_id,
+            provider_artifact_id="unrelated-publish-artifact",
+            manifest_sha256=wrong_publish_manifest_sha256, manifest_bytes=b"synthetic mismatched Publish manifest",
+            native_output_file_id=uuid4(), native_revision=1, qc_state="passed",
+        ))
+    approve_publish(
+        zou_db_factory, actor_id=uuid4(), actor_role="supervisor", publish_id=wrong_publish_id,
+        policy_id="synthetic-review-v1", policy_sha256="a" * 64,
+        idempotency_key=f"synthetic-approval:{wrong_publish_id}",
+    )
+    mismatched_link = client.post(
+        f"/plugins/vfx_files/output-packages/{package_id}/publication-binding",
+        json={"publish_id": str(wrong_publish_id)},
+        headers={**headers, "Idempotency-Key": f"package-publication:{uuid4()}"},
+    )
+    assert mismatched_link.status_code == 409
+
+    publication_key = f"package-publication:{uuid4()}"
+    bound = client.post(
+        f"/plugins/vfx_files/output-packages/{package_id}/publication-binding",
+        json={"publish_id": str(publish_id)},
+        headers={**headers, "Idempotency-Key": publication_key},
+    )
+    assert bound.status_code == 201, bound.get_data(as_text=True)
+    link_replay = client.post(
+        f"/plugins/vfx_files/output-packages/{package_id}/publication-binding",
+        json={"publish_id": str(publish_id)},
+        headers={**headers, "Idempotency-Key": publication_key},
+    )
+    assert link_replay.status_code == 200
+    assert link_replay.json["id"] == bound.json["id"]
+    relisted = client.get(f"/plugins/vfx_files/tasks/{task_id}/output-packages?limit=10&offset=0")
+    assert relisted.status_code == 200
+    assert relisted.json[0]["formal_publish"]["id"] == str(publish_id)
+    assert relisted.json[0]["latest_published"] is True
+    assert relisted.json[0]["latest_approved"] is True
 
     # Production Files recipient selection, immutable response history and
     # contract-v1 delivery outbox are exercised through the actual Plugin API.
@@ -295,13 +371,13 @@ def test_task_api_to_worker_creates_immutable_package_copy_and_verified_download
         "X-VFX-Files-CSRF": recipient_client.get("/plugins/vfx_files/csrf-token").json["csrf_token"],
     }
 
-    package_id = reservation["id"]
     targets = client.get(f"/plugins/vfx_files/output-packages/{package_id}/delivery-targets")
     assert targets.status_code == 200, targets.get_data(as_text=True)
     selected_target = next(item for item in targets.json["targets"] if item["task_id"] == str(recipient_task_id))
     assert selected_target["task_type_id"] == str(recipient_type_id)
     assert selected_target["department_name"].startswith("VFX Effects ")
 
+    delivery_key = f"delivery:{uuid4()}"
     def send(package, key):
         return client.post(
             f"/plugins/vfx_files/output-packages/{package}/deliveries",
@@ -309,7 +385,6 @@ def test_task_api_to_worker_creates_immutable_package_copy_and_verified_download
             headers={**headers, "Idempotency-Key": key},
         )
 
-    delivery_key = f"delivery:{uuid4()}"
     created = send(package_id, delivery_key)
     assert created.status_code == 201, created.get_data(as_text=True)
     delivery_id = created.json["id"]
@@ -375,6 +450,29 @@ def test_task_api_to_worker_creates_immutable_package_copy_and_verified_download
     _run_worker_until_ready(lambda: client.get(
         f"/plugins/vfx_files/tasks/{task_id}/output-packages?limit=10&offset=0"
     ).json[0]["state"] == "completed")
+    publish_two_id = uuid4()
+    publish_two_manifest_sha256 = hashlib.sha256(b"synthetic second Publish manifest").hexdigest()
+    with zou_db_factory.begin() as session:
+        session.add(Publish(
+            id=publish_two_id, task_id=task_id, output_family_id=output_family_id,
+            version=2, source_revision_file_id=UUID(working_file["id"]),
+            created_by=uuid4(), state="completed", byte_count=len(content),
+            sha256=digest, storage_connection_id=connection_id,
+            provider_artifact_id=working_file["provider_object_id"],
+            manifest_sha256=publish_two_manifest_sha256, manifest_bytes=b"synthetic second Publish manifest",
+            native_output_file_id=uuid4(), native_revision=2, qc_state="passed",
+        ))
+    approval_two_id = approve_publish(
+        zou_db_factory, actor_id=uuid4(), actor_role="supervisor", publish_id=publish_two_id,
+        policy_id="synthetic-review-v1", policy_sha256="a" * 64,
+        idempotency_key=f"synthetic-approval:{publish_two_id}",
+    )
+    link_two = client.post(
+        f"/plugins/vfx_files/output-packages/{version_two.json['id']}/publication-binding",
+        json={"publish_id": str(publish_two_id)},
+        headers={**headers, "Idempotency-Key": f"package-publication:{uuid4()}"},
+    )
+    assert link_two.status_code == 201, link_two.get_data(as_text=True)
     revised = send(version_two.json["id"], f"delivery-revision:{uuid4()}")
     assert revised.status_code == 200, revised.get_data(as_text=True)
     assert revised.json["id"] == delivery_id
@@ -383,6 +481,18 @@ def test_task_api_to_worker_creates_immutable_package_copy_and_verified_download
     accepted = respond("accepted", f"response:{uuid4()}")
     assert accepted.status_code == 200, accepted.get_data(as_text=True)
     assert accepted.json["state"] == "accepted"
+
+    from plugin.approvals.service import revoke_approval
+    revoke_approval(
+        zou_db_factory, actor_id=uuid4(), actor_role="supervisor", approval_id=approval_two_id,
+        reason="Synthetic verification of pointer revocation",
+        idempotency_key=f"synthetic-revoke:{publish_two_id}",
+    )
+    revoked_package = client.get(f"/plugins/vfx_files/tasks/{task_id}/output-packages?limit=10&offset=0")
+    assert revoked_package.status_code == 200
+    assert revoked_package.json[0]["id"] == version_two.json["id"]
+    assert revoked_package.json[0]["latest_published"] is True
+    assert revoked_package.json[0]["latest_approved"] is False
 
     with zou_db_factory.begin() as session:
         delivery = session.get(OutputPackageDelivery, UUID(delivery_id))

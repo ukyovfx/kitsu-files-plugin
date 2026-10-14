@@ -1,7 +1,7 @@
 <script setup>
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 
-const props = defineProps({ taskId: { type: String, default: null }, tasks: { type: Array, default: () => [] }, fixedTaskId: { type: String, default: null }, api: { type: Object, required: true } })
+const props = defineProps({ taskId: { type: String, default: null }, tasks: { type: Array, default: () => [] }, publishes: { type: Array, default: () => [] }, fixedTaskId: { type: String, default: null }, api: { type: Object, required: true } })
 const emit = defineEmits(['changed'])
 const selectedTaskId = ref(props.fixedTaskId || props.taskId || '')
 const requestGeneration = ref(0)
@@ -27,6 +27,7 @@ const packageFiles = ref({})
 const taskDeliveries = ref([])
 const deliveryTargets = ref({})
 const selectedDeliveryTargets = ref({})
+const selectedPublications = ref({})
 const deliveryFeedback = ref({})
 const deliveryFiles = ref({})
 const deliveryBusy = ref('')
@@ -101,6 +102,10 @@ async function refresh(requestId = ++requestGeneration.value) {
     if (requestId !== requestGeneration.value || packageOptions.task_id !== taskScope.value) return
     options.value = packageOptions
     packages.value = currentPackages
+    selectedPublications.value = Object.fromEntries(currentPackages.map((item) => [
+      item.id,
+      approvedPublicationCandidates(item)[0]?.id || '',
+    ]))
     workingRevisions.value = currentWorking
     taskDeliveries.value = currentDeliveries.deliveries || []
     sourceWorkingRevisionId.value = currentWorking.latest_working_id || ''
@@ -218,6 +223,27 @@ async function loadDeliveryTargets(item) {
 function recipientLabel(target) {
   const team = target.department_name || 'Task Type team'
   return `${team} · ${target.task_type_name} · ${target.task_name}`
+}
+
+function approvedPublicationCandidates(item) {
+  const candidateIds = new Set((item.approved_publish_candidates || []).map((row) => row.id))
+  return props.publishes.filter((row) => candidateIds.has(row.id) && row.task_id === item.task_id && row.state === 'completed' && row.qc_state === 'passed')
+}
+
+async function linkFormalPublish(item) {
+  const publishId = selectedPublications.value[item.id]
+  if (!publishId) return
+  deliveryBusy.value = item.id
+  error.value = ''
+  try {
+    await props.api.linkOutputPackagePublication(item.id, publishId, `package-publication:${item.id}:${publishId}`)
+    await refresh()
+    emit('changed')
+  } catch (cause) {
+    error.value = cause.message || 'The exact approved Publish could not be linked to this package.'
+  } finally {
+    deliveryBusy.value = ''
+  }
 }
 
 async function sendPackage(item) {
@@ -352,7 +378,21 @@ onUnmounted(() => {
         <article v-for="item in packages" :key="item.id" class="package-row">
           <button class="text-button" @click="togglePackage(item)"><strong>{{ item.package_type }} v{{ String(item.version).padStart(3, '0') }}</strong></button>
           <span>{{ item.state }} · QC {{ item.qc_state }}</span>
+          <span class="package-pointers" aria-label="Package publication status">{{ item.latest_working ? 'Latest Package' : '' }}<template v-if="item.latest_published"> · Latest Published</template><template v-if="item.latest_approved"> · Latest Approved</template></span>
           <span class="muted">{{ item.file_count }} files · {{ item.manifest_sha256 }}</span>
+          <div v-if="item.formal_publish" class="package-publication" role="status">
+            Formally Published v{{ String(item.formal_publish.version).padStart(3, '0') }} · {{ item.formal_publish.state }} · QC {{ item.formal_publish.qc_state }}<template v-if="item.formal_publish.approval_active"> · exact approval active</template><template v-else> · approval revoked or unavailable</template>
+          </div>
+          <div v-else-if="approvedPublicationCandidates(item).length" class="package-publication">
+            <label>Exact approved Publish
+              <select v-model="selectedPublications[item.id]" :aria-label="`Approved Publish for ${item.id}`">
+                <option v-for="publish in approvedPublicationCandidates(item)" :key="publish.id" :value="publish.id">v{{ String(publish.version).padStart(3, '0') }} · {{ publish.id }}</option>
+              </select>
+            </label>
+            <button class="button secondary" :disabled="deliveryBusy === item.id || !selectedPublications[item.id]" @click="linkFormalPublish(item)">{{ deliveryBusy === item.id ? 'Linking…' : 'Confirm Package / Publish match' }}</button>
+            <p class="muted">Only exact single-file Working provenance and SHA-256 matches are linkable. The server revalidates both immutable manifests and the active approval.</p>
+          </div>
+          <p v-else-if="item.state === 'completed' && item.qc_state === 'passed'" class="muted">Package delivery uses this immutable QC-passed manifest. Formal Publish approval is shown only when an exact one-file provenance match is linked; it is never inferred from the package or Drive timestamps.</p>
           <pre v-if="item.qc_report?.missing_frames?.length" class="upload-error">Missing frames: {{ item.qc_report.missing_frames.join(', ') }}</pre>
           <div v-if="item.state === 'completed' && item.qc_state === 'passed'" class="delivery-compose">
             <button class="button secondary" :disabled="deliveryBusy === item.id" @click="loadDeliveryTargets(item)">Choose delivery recipient</button>
