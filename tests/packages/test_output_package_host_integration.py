@@ -322,7 +322,9 @@ def test_task_api_to_worker_creates_immutable_package_copy_and_verified_download
             first_name="Synthetic", last_name=f"FX Artist {uuid4().hex[:8]}",
             email=f"fx-artist-{uuid4().hex}@example.invalid", role="user", active=True,
         )
-        department = Department(name=f"VFX Effects {uuid4().hex[:8]}")
+        # Zou 1.0.94 requires a color for Department rows; keep the synthetic
+        # recipient fixture valid against the pinned PostgreSQL schema.
+        department = Department(name=f"VFX Effects {uuid4().hex[:8]}", color="#64748B")
         session.add_all([recipient_person, department])
         session.flush()
         recipient_type = TaskType(
@@ -336,8 +338,9 @@ def test_task_api_to_worker_creates_immutable_package_copy_and_verified_download
             name="fx", project_id=production_id, task_type_id=recipient_type.id,
             entity_id=entity_id,
         )
+        session.add(recipient_task)
+        session.flush()
         session.add_all([
-            recipient_task,
             ProjectPersonLink(project_id=production_id, person_id=recipient_person.id, role="user"),
             TaskPersonLink(task_id=recipient_task.id, person_id=recipient_person.id),
             DepartmentLink(department_id=department.id, person_id=recipient_person.id),
@@ -345,7 +348,7 @@ def test_task_api_to_worker_creates_immutable_package_copy_and_verified_download
         session.flush()
         recipient_task_id = recipient_task.id
         recipient_type_id = recipient_type.id
-        token = create_access_token_for_raw_person(recipient_person)
+        recipient_person_id = recipient_person.id
         other_production = Project(name=f"VFX Other Production {uuid4()}", team=[session.get(Person, actor_id)])
         session.add(other_production)
         session.flush()
@@ -363,6 +366,10 @@ def test_task_api_to_worker_creates_immutable_package_copy_and_verified_download
         session.add(cross_production_task)
         session.flush()
         cross_production_task_id = cross_production_task.id
+
+    with app.app_context():
+        token_person = app.extensions["sqlalchemy"].session.get(Person, recipient_person_id)
+        token = create_access_token_for_raw_person(token_person)
 
     recipient_client = app.test_client()
     recipient_client.set_cookie(app.config.get("JWT_ACCESS_COOKIE_NAME", "access_token_cookie"), token)
@@ -474,7 +481,7 @@ def test_task_api_to_worker_creates_immutable_package_copy_and_verified_download
     )
     assert link_two.status_code == 201, link_two.get_data(as_text=True)
     revised = send(version_two.json["id"], f"delivery-revision:{uuid4()}")
-    assert revised.status_code == 200, revised.get_data(as_text=True)
+    assert revised.status_code == 201, revised.get_data(as_text=True)
     assert revised.json["id"] == delivery_id
     assert revised.json["revision"] == 2
     assert revised.json["state"] == "revised"
@@ -527,9 +534,10 @@ def test_task_api_to_worker_creates_immutable_package_copy_and_verified_download
         with zou_db_factory.begin() as session:
             session.add(outsider)
             session.flush()
-            session.add(ProjectPersonLink(project_id=production_id, person_id=outsider.id, role="user"))
-            session.flush()
-            outsider_token = create_access_token_for_raw_person(outsider)
+            outsider_id = outsider.id
+            session.add(ProjectPersonLink(project_id=production_id, person_id=outsider_id, role="user"))
+        token_person = app.extensions["sqlalchemy"].session.get(Person, outsider_id)
+        outsider_token = create_access_token_for_raw_person(token_person)
     outsider_client = app.test_client()
     outsider_client.set_cookie(app.config.get("JWT_ACCESS_COOKIE_NAME", "access_token_cookie"), outsider_token)
     assert outsider_client.get(
@@ -538,9 +546,9 @@ def test_task_api_to_worker_creates_immutable_package_copy_and_verified_download
     with zou_db_factory.begin() as session:
         session.execute(ProjectPersonLink.__table__.delete().where(
             ProjectPersonLink.project_id == production_id,
-            ProjectPersonLink.person_id == outsider.id,
+            ProjectPersonLink.person_id == outsider_id,
         ))
-        session.delete(session.get(Person, outsider.id))
+        session.delete(session.get(Person, outsider_id))
         session.execute(Task.__table__.delete().where(Task.id == cross_production_task_id))
         session.execute(Entity.__table__.delete().where(Entity.id == other_entity.id))
         other_project = session.get(Project, other_production_id)

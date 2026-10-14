@@ -223,7 +223,10 @@ def append_file_delivery_event(session, delivery, *, event_type):
         or source.entity_id != package.entity_id
         or recipient.project_id != package.production_id or recipient.entity_id != package.entity_id
         or recipient.task_type_id != delivery.recipient_task_type_id
-        or session.get(ProjectTaskTypeLink, (recipient.project_id, recipient.task_type_id)) is None
+        or session.query(ProjectTaskTypeLink.id).filter_by(
+            project_id=recipient.project_id,
+            task_type_id=recipient.task_type_id,
+        ).one_or_none() is None
         or source_type is None or recipient_type is None or entity_type is None
         or sender is None or production is None
     ):

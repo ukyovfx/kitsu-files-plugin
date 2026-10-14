@@ -34,6 +34,9 @@ def test_multi_file_snapshot_stays_unpublished_until_every_file_is_verified(
     authenticated_plugin_client, synthetic_upload_task, zou_app, zou_db_factory, tmp_path, monkeypatch
 ):
     client = authenticated_plugin_client
+    monkeypatch.setitem(client.vfx_app.config, "VFX_FILES_FAKE_STORAGE_ROOT", str(tmp_path / "multi-file-storage.json"))
+    monkeypatch.setitem(client.vfx_app.config, "VFX_FILES_FAKE_ROOT_ID", "synthetic-root-id")
+    monkeypatch.setitem(client.vfx_app.config, "VFX_FILES_FAKE_DRIVE_ID", "synthetic-drive-id")
     _production_id, _entity_type, _task_type, _entity_id, task_id, _connection_id, _actor_id = synthetic_upload_task
     route = f"/plugins/vfx_files/tasks/{task_id}/working-revisions"
     files = [

@@ -1307,7 +1307,10 @@ class HandoffResponse(MethodView):
                         target_project_id=destination.project_id, target_entity_id=destination.entity_id,
                         target_department_id=destination_type.department_id,
                         requested_department_id=record.recipient_department_id, department_exists=True,
-                        task_type_in_project=session.get(ProjectTaskTypeLink, (destination.project_id, destination.task_type_id)) is not None,
+                        task_type_in_project=session.query(ProjectTaskTypeLink.id).filter_by(
+                            project_id=destination.project_id,
+                            task_type_id=destination.task_type_id,
+                        ).one_or_none() is not None,
                     )
                     and department_recipient_is_current_member(
                         actor_id=responder_id, designated_person_id=record.recipient_person_id,

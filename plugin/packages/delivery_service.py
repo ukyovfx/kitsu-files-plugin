@@ -77,7 +77,10 @@ def create_package_delivery(
             or source.entity_id != package.entity_id
             or recipient.entity_id != package.entity_id
             or recipient.task_type_id != recipient_task_type_id
-            or session.get(ProjectTaskTypeLink, (recipient.project_id, recipient.task_type_id)) is None
+            or session.query(ProjectTaskTypeLink.id).filter_by(
+                project_id=recipient.project_id,
+                task_type_id=recipient.task_type_id,
+            ).one_or_none() is None
         ):
             raise PackageDeliveryDenied("Recipient Task must be a different Task Type on the same Production entity")
 
