@@ -515,7 +515,14 @@ class DriveRootsResource(MethodView):
                     raise ProviderContractError(503, "provider_unavailable")
                 item = {"id": root.object_id, "name": root.name, "account_mode": connection.account_mode}
                 if connection.account_mode == "shared_drive":
-                    if root.drive_id != connection.drive_id:
+                    # A newly authorized Shared Drive connection has no
+                    # selected drive_id until the administrator verifies a
+                    # root. Root discovery may therefore return the adapter's
+                    # verified candidate identity, while an already-bound
+                    # connection remains restricted to its existing Drive.
+                    if not root.drive_id or (
+                        connection.drive_id and root.drive_id != connection.drive_id
+                    ):
                         raise ProviderContractError(503, "provider_unavailable")
                     item["drive_id"] = root.drive_id
                 roots.append(item)

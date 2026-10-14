@@ -404,6 +404,7 @@ def test_provider_template_catalog_matches_v1_and_is_scope_authorized(management
 
 def test_fake_shared_drive_root_verification_preserves_drive_identity(management_client, tmp_path, monkeypatch):
     from vfx_files.storage.fake import PersistentFakeStorage
+    from plugin.models import StorageConnection
 
     client = management_client
     app = client.vfx_app
@@ -414,6 +415,14 @@ def test_fake_shared_drive_root_verification_preserves_drive_identity(management
     monkeypatch.setitem(app.config, "VFX_FILES_FAKE_ROOT_ID", "synthetic-root-id")
     monkeypatch.setitem(app.config, "VFX_FILES_FAKE_DRIVE_ID", "synthetic-drive-id")
     monkeypatch.delitem(app.extensions, "vfx_files_storage_adapter_factory", raising=False)
+
+    # A new Shared Drive authorization does not have a selected Drive identity
+    # until a root candidate is verified. Root discovery must return the
+    # candidate's verified Drive identity rather than treating the unset
+    # connection field as a mismatch.
+    with client.vfx_db_factory.begin() as session:
+        connection = session.get(StorageConnection, client.vfx_connection_id)
+        connection.drive_id = None
 
     roots_url = f"{BASE}/drive-connections/{client.vfx_connection_id}/roots?production_id={client.vfx_production_id}"
     roots = client.get(roots_url, headers=client.vfx_management_headers("vfx.roots.read"))
