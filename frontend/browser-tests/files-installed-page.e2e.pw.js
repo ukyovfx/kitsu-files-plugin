@@ -1,7 +1,9 @@
 import { execFileSync } from 'node:child_process'
 import { expect, test } from '@playwright/test'
 
-const host = process.env.VFX_FILES_LIVE_HOST_CONTAINER
+const composeProject = process.env.VFX_FILES_LIVE_COMPOSE_PROJECT
+const composeFile = process.env.VFX_FILES_LIVE_COMPOSE_FILE
+const composeEnvFile = process.env.VFX_FILES_LIVE_COMPOSE_ENV_FILE
 const productionId = process.env.VFX_FILES_LIVE_PRODUCTION_ID
 const productionName = process.env.VFX_FILES_LIVE_PRODUCTION_NAME
 const taskId = process.env.VFX_FILES_LIVE_TASK_ID
@@ -9,7 +11,7 @@ const loginEmails = JSON.parse(process.env.VFX_FILES_LIVE_LOGIN_EMAILS || '{}')
 const loginPassword = process.env.VFX_FILES_LIVE_TEST_PASSWORD
 const artistAId = process.env.VFX_FILES_LIVE_ARTIST_A_ID
 
-const missingHostFixture = !host || !productionId || !productionName || !taskId || !loginPassword || !loginEmails.manager || !loginEmails.artist_a || !loginEmails.artist_b || !loginEmails.supervisor || !artistAId
+const missingHostFixture = !composeProject || !composeFile || !composeEnvFile || !productionId || !productionName || !taskId || !loginPassword || !loginEmails.manager || !loginEmails.artist_a || !loginEmails.artist_b || !loginEmails.supervisor || !artistAId
 
 const baseUrl = process.env.VFX_FILES_LIVE_BASE_URL || 'http://127.0.0.1:55253'
 const origin = new URL(baseUrl).origin
@@ -27,14 +29,14 @@ async function openFilesFromProductionMenu(page, productionId, { alreadySelected
     await expect(projectMenuItem).toBeVisible()
     await projectMenuItem.click()
   }
-  await expect.poll(() => page.frames().some((frame) => frame.url().includes('/plugins/vfx_files/') && frame.url().includes(`production_id=${encodeURIComponent(productionId)}`))).toBe(true)
-  let frame = page.frames().find((item) => item.url().includes('/plugins/vfx_files/'))
+  await expect.poll(() => page.frames().some((frame) => frame.url().includes('/api/plugins/vfx_files/frontend/') && frame.url().includes(`production_id=${encodeURIComponent(productionId)}`))).toBe(true)
+  let frame = page.frames().find((item) => item.url().includes('/api/plugins/vfx_files/frontend/'))
   if (selectedTaskId && !frame.url().includes(`task_id=${encodeURIComponent(selectedTaskId)}`)) {
-    await frame.goto(`${origin}/plugins/vfx_files/?production_id=${encodeURIComponent(productionId)}&task_id=${encodeURIComponent(selectedTaskId)}`)
+    await frame.goto(`${origin}/api/plugins/vfx_files/frontend/?production_id=${encodeURIComponent(productionId)}&task_id=${encodeURIComponent(selectedTaskId)}`)
   }
   const overview = await readOverview(page, productionId)
   expect(overview.production_id).toBe(productionId)
-  frame = page.frames().find((item) => item.url().includes('/plugins/vfx_files/'))
+  frame = page.frames().find((item) => item.url().includes('/api/plugins/vfx_files/frontend/'))
   await expect(frame.getByRole('heading', { name: 'Files', level: 1, exact: true })).toBeVisible()
 }
 
@@ -58,7 +60,7 @@ async function openFiles(browser, role) {
   await expect(production).toBeVisible()
   await production.click()
   await openFilesFromProductionMenu(page, productionId)
-  return { context, page, get ui() { return page.frames().find((frame) => frame.url().includes('/plugins/vfx_files/')) } }
+  return { context, page, get ui() { return page.frames().find((frame) => frame.url().includes('/api/plugins/vfx_files/frontend/')) } }
 }
 
 async function readOverview(page, productionId) {
@@ -68,21 +70,14 @@ async function readOverview(page, productionId) {
 }
 
 function runWorker() {
+  if (!composeProject || !composeFile || !composeEnvFile) {
+    throw new Error('Disposable Worker Compose identity is required for this integration test.')
+  }
   const output = execFileSync('docker', [
-    'exec',
-    '-e', 'SECRET_KEY=vfx-files-isolated-test-secret-key-32-bytes-minimum',
-    '-e', 'PLUGIN_FOLDER=/opt/zou/plugins',
-    '-e', 'PYTHONPATH=/opt/zou/plugins',
-    '-e', 'VFX_FILES_ENABLED=true',
-    '-e', 'VFX_FILES_WORKER_ENABLED=true',
-    '-e', 'VFX_FILES_STORAGE_MODE=fake',
-    '-e', `VFX_FILES_STAGING_ROOT=${process.env.VFX_FILES_LIVE_STAGING_ROOT}`,
-    '-e', `VFX_FILES_FAKE_STORAGE_ROOT=${process.env.VFX_FILES_LIVE_FAKE_STORAGE_PATH}`,
-    '-e', 'VFX_FILES_FAKE_ROOT_ID=synthetic-root-id',
-    '-e', 'VFX_FILES_FAKE_DRIVE_ID=synthetic-drive-id',
-    host,
+    'compose', '--project-name', composeProject, '--env-file', composeEnvFile, '--file', composeFile,
+    '--profile', 'worker', 'run', '--rm', '--no-deps', 'worker',
     '/opt/zou/env/bin/python', '-m', 'vfx_files.worker_runtime', '--once'
-  ], { encoding: 'utf8', timeout: 30_000 })
+  ], { encoding: 'utf8', timeout: 90_000 })
   expect(output).toContain('"result": "completed"')
 }
 
@@ -103,7 +98,6 @@ test('installed Files page uses KitsuSync-managed folders and carries w001 throu
   runWorker()
   await artistA.page.reload()
   await openFilesFromProductionMenu(artistA.page, productionId, { alreadySelected: true, taskId })
-  await artistA.ui.getByLabel('Choose Task').selectOption(taskId)
   await expect(artistA.ui.getByRole('link', { name: name001, exact: true })).toBeVisible()
   await expect(artistA.ui.locator('.revision-heading')).toContainText('w001')
 
@@ -122,7 +116,6 @@ test('installed Files page uses KitsuSync-managed folders and carries w001 throu
   runWorker()
   await artistB.page.reload()
   await openFilesFromProductionMenu(artistB.page, productionId, { alreadySelected: true, taskId })
-  await artistB.ui.getByLabel('Choose Task').selectOption(taskId)
   await expect(artistB.ui.locator('.revision-list').getByText('w001', { exact: true })).toBeVisible()
   await expect(artistB.ui.locator('.revision-list').getByText('w002', { exact: true })).toBeVisible()
   const pointer = artistB.ui.locator('.revision-heading')
