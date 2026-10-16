@@ -51,6 +51,27 @@ def zou_db_factory(zou_app):
     return sessionmaker(bind=db.engine, expire_on_commit=False)
 
 
+@pytest.fixture(autouse=True)
+def isolate_zou_scoped_session(request):
+    """Do not carry request transactions across tests on the session app."""
+    if "zou_app" not in request.fixturenames:
+        yield
+        return
+
+    # zou_app deliberately keeps one Flask application and app context for the
+    # synthetic host suite. Flask-SQLAlchemy therefore scopes request sessions
+    # to that same context, so requests can otherwise leave a transaction open
+    # for the next test. OAuth service operations use explicit session.begin().
+    request.getfixturevalue("zou_app")
+    from zou.app import db
+
+    db.session.remove()
+    try:
+        yield
+    finally:
+        db.session.remove()
+
+
 @pytest.fixture
 def authenticated_plugin_client(zou_app):
     from zou.app.models.person import Person
