@@ -19,7 +19,6 @@ const taskMode = computed(() => Boolean(taskId.value))
 const scopeKey = computed(() => `${productionId.value || ''}:${taskId.value || ''}`)
 const folderState = ref(null)
 const verifiedFolderLinks = computed(() => safeTaskFolderLinks(folderState.value?.folders))
-const currentTask = computed(() => overview.value?.tasks?.find((task) => task.id === taskId.value) || null)
 const driveSettingsHref = computed(() => {
   const query = new URLSearchParams({ production_id: productionId.value || '', drive_settings: '1' })
   return `/api/plugins/vfx_files/frontend/?${query.toString()}`
@@ -110,14 +109,6 @@ onUnmounted(() => requests.invalidate())
 
 <template>
   <main class="files-page" :data-theme="context.darkTheme ? 'dark' : 'light'" :data-mode="taskMode ? 'task' : 'admin-entry'">
-    <header v-if="taskMode" class="task-context-header">
-      <div class="task-context-copy">
-        <p class="eyebrow">{{ context.entityType || 'Task' }} · {{ currentTask?.task_type_name || 'Task files' }}</p>
-        <h1>{{ currentTask?.entity_name || 'Files' }}</h1>
-      </div>
-      <button class="button secondary refresh" :disabled="loading" @click="load">Refresh</button>
-    </header>
-
     <section v-if="!taskMode" class="admin-entry" aria-labelledby="admin-entry-heading">
       <p class="eyebrow">Production administration</p>
       <h1 id="admin-entry-heading">Files configuration</h1>
@@ -141,7 +132,6 @@ onUnmounted(() => requests.invalidate())
         <PublishList :publishes="overview.publishes" :actor-id="overview.actor_id" :role="overview.role" :busy-id="busyId" @approve="approve" />
         <HandoffPanel :handoffs="receivedHandoffs" :busy-id="busyId" @respond="respond" />
       </div>
-      <footer class="page-footer"><span>VFX Files plugin</span><span>Published and approved versions are tracked separately.</span></footer>
     </template>
   </main>
 </template>

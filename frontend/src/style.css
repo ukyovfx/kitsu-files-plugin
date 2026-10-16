@@ -6,11 +6,6 @@ button { font: inherit; }
 .files-page[data-theme='light'] { --panel: rgba(255,255,255,.92); --border: #dce2e9; --muted: #647184; --text: #1a2430; --surface: #f3f6f8; background: radial-gradient(ellipse at 14% -12%, #e1edf1 0, #f5f7f9 44rem); }
 .files-page[data-mode='task'] { min-height: 0; max-width: none; margin: 0; padding: 10px 12px 16px; background: transparent; color: var(--text); }
 .files-page[data-mode='admin-entry'] { min-height: 100vh; max-width: 960px; padding: 36px 28px; background: var(--surface); }
-.task-context-header { display: flex; align-items: center; gap: 12px; padding: 2px 2px 10px; border-bottom: 1px solid var(--border); }
-.task-context-copy { min-width: 0; flex: 1; }
-.task-context-copy .eyebrow { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.task-context-copy h1 { overflow: hidden; margin: 2px 0 0; font-size: 18px; letter-spacing: -.02em; text-overflow: ellipsis; white-space: nowrap; }
-.task-context-header .refresh { flex: none; padding: 7px 10px; }
 .admin-entry { display: grid; justify-items: start; gap: 12px; }
 .admin-entry h1 { font-size: 25px; }
 .admin-entry > p:not(.eyebrow) { max-width: 620px; color: var(--muted); font-size: 13px; line-height: 1.6; }

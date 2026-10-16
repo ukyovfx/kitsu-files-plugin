@@ -63,7 +63,9 @@ test('native Task detail Files tab stays scoped to the Kitsu Task and Production
     await expect(filesTab).toBeVisible()
     await filesTab.click()
     const frame = manager.page.frameLocator('iframe[title="VFX Files"]')
-    await expect(frame.locator('.files-page[data-mode="task"] .task-context-header')).toBeVisible()
+    await expect(frame.locator('.files-page[data-mode="task"] .task-context-header')).toHaveCount(0)
+    await expect(frame.locator('.files-page[data-mode="task"] .page-footer')).toHaveCount(0)
+    await expect(frame.getByText('Current Kitsu Task')).toHaveCount(0)
     await expect(frame.locator('.page-header')).toHaveCount(0)
     await expect(frame.getByLabel('Publish pointers')).toHaveCount(0)
     await expect(frame.getByLabel('Choose Task')).toHaveCount(0)
@@ -94,7 +96,7 @@ test('native Task detail Files tab stays scoped to the Kitsu Task and Production
     await artistA.page.getByRole('button', { name: /VFXComp/ }).click()
     await artistA.page.getByRole('tab', { name: 'VFX Files', exact: true }).click()
     const panel = artistA.page.frameLocator('iframe[title="VFX Files"]')
-    await expect(panel.locator('.files-page[data-mode="task"] .task-context-header')).toBeVisible()
+    await expect(panel.locator('.files-page[data-mode="task"] .task-context-header')).toHaveCount(0)
     return panel
   }
   let artistAFrame = await artistADrawer()
@@ -160,7 +162,7 @@ test('native Task detail Files tab stays scoped to the Kitsu Task and Production
   await supervisor.page.getByRole('button', { name: /VFXComp/ }).click()
   await supervisor.page.getByRole('tab', { name: 'VFX Files', exact: true }).click()
   const supervisorFrame = supervisor.page.frameLocator('iframe[title="VFX Files"]')
-  await expect(supervisorFrame.locator('.files-page[data-mode="task"] .task-context-header')).toBeVisible()
+  await expect(supervisorFrame.locator('.files-page[data-mode="task"] .task-context-header')).toHaveCount(0)
   const latestPublishRow = supervisorFrame.getByRole('row', { name: new RegExp(`${secondTaskId} Synthetic Main ${nextPublishVersion} passed`) })
   const approvalButton = latestPublishRow.getByRole('button', { name: 'Approve exact Publish' })
   await expect(approvalButton).toBeVisible()
