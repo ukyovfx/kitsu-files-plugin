@@ -8,3 +8,4 @@ icon = "folder-open"
 frontend_studio_enabled = false
 frontend_project_enabled = false
 frontend_task_enabled = true
+frontend_project_admin_enabled = true
