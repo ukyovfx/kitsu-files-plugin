@@ -37,6 +37,7 @@ def test_plugin_storage_resolution_requires_kitsusync_selected_verified_root():
     # Resolve the pinned Zou model registry before compiling its ORM select.
     from zou.app.models.asset_instance import AssetInstance  # noqa: F401
     from zou.app.models.person import Person  # noqa: F401
+
     from plugin.integrations.storage_authority import selected_storage_connection
 
     production_id, connection, session = _rows()

@@ -7,7 +7,7 @@ from sqlalchemy import select
 
 def selected_storage_connection(session, production_id):
     """Return the exact owner-selected root, preserving legacy rows for review."""
-    from ..models import ProductionDriveAuthority, StorageConnection
+    from ..models import DriveCredential, ProductionDriveAuthority, StorageConnection
 
     authority = session.scalar(select(ProductionDriveAuthority).where(
         ProductionDriveAuthority.production_id == production_id,
@@ -31,10 +31,28 @@ def selected_storage_connection(session, production_id):
                 or connection.allowed_root_id != authority.root_id
             ):
                 return None
+            credential = session.scalar(select(DriveCredential).where(
+                DriveCredential.connection_id == connection_id,
+                DriveCredential.production_id == production_id,
+            ))
+            if credential is None or credential.state != "active" or credential.account_mode != connection.account_mode:
+                return None
             if connection.account_mode == "my_drive":
-                return connection if connection.owner_subject else None
+                if (
+                    not connection.owner_subject
+                    or credential.account_subject != connection.owner_subject
+                    or credential.owner_subject != connection.owner_subject
+                ):
+                    return None
+                return connection
             if connection.account_mode == "shared_drive":
-                return connection if connection.drive_id else None
+                if (
+                    not connection.drive_id
+                    or credential.owner_subject is not None
+                    or credential.drive_id != connection.drive_id
+                ):
+                    return None
+                return connection
             return None
         if authority.owner != "legacy_kitsusync" or authority.state != "legacy_import_required":
             return None

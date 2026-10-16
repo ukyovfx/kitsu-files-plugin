@@ -31,6 +31,13 @@ def test_plugin_authority_selects_its_verified_root_without_kitsusync_config():
         connection_id=connection_id,
         root_id="plugin-root",
     )
+    credential = SimpleNamespace(
+        state="active",
+        account_mode="my_drive",
+        account_subject="verified-owner",
+        owner_subject="verified-owner",
+        drive_id=None,
+    )
     connection = SimpleNamespace(
         id=connection_id,
         production_id=production_id,
@@ -45,9 +52,58 @@ def test_plugin_authority_selects_its_verified_root_without_kitsusync_config():
     class Session:
         def scalar(self, statement):
             model = statement.column_descriptions[0]["entity"]
-            return authority if model.__name__ == "ProductionDriveAuthority" else connection
+            if model.__name__ == "ProductionDriveAuthority":
+                return authority
+            if model.__name__ == "DriveCredential":
+                return credential
+            return connection
 
     assert selected_storage_connection(Session(), production_id) is connection
+
+
+def test_plugin_authority_rejects_revoked_or_wrong_owner_credentials():
+    selected_storage_connection = _authority_resolver()
+    production_id, connection_id = uuid4(), uuid4()
+    authority = SimpleNamespace(
+        production_id=production_id,
+        owner="plugin",
+        state="configured",
+        config_revision=1,
+        connection_id=connection_id,
+        root_id="plugin-root",
+    )
+    connection = SimpleNamespace(
+        id=connection_id,
+        production_id=production_id,
+        enabled=True,
+        provider="google_drive",
+        allowed_root_id="plugin-root",
+        account_mode="my_drive",
+        owner_subject="verified-owner",
+        drive_id=None,
+    )
+    credential = SimpleNamespace(
+        state="revoked",
+        account_mode="my_drive",
+        account_subject="verified-owner",
+        owner_subject="verified-owner",
+        drive_id=None,
+    )
+
+    class Session:
+        def scalar(self, statement):
+            model = statement.column_descriptions[0]["entity"]
+            if model.__name__ == "ProductionDriveAuthority":
+                return authority
+            if model.__name__ == "DriveCredential":
+                return credential
+            return connection
+
+    session = Session()
+    assert selected_storage_connection(session, production_id) is None
+    credential.state = "active"
+    credential.owner_subject = "different-owner"
+    assert selected_storage_connection(session, production_id) is None
 
 
 def test_legacy_authority_is_not_silently_promoted_to_plugin_owner():
