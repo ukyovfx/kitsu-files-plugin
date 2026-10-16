@@ -82,7 +82,7 @@ test('Needs Fix requires feedback and Accepted persists after the page reloads',
       tasks: [],
       upload_ready: false,
       publishes: [{ id: 'p1', task_id: taskId, output_family_id: 'family1', output_family_name: 'Comp', version: 4, state: 'completed', qc_state: 'passed', latest_published: true, latest_approved: false }, { id: 'p2', task_id: taskId, output_family_id: 'family1', output_family_name: 'Comp', version: 3, state: 'completed', qc_state: 'passed', latest_published: false, latest_approved: true }],
-      handoffs: [{ id: handoffId, task_id: taskId, publish_id: 'p1', recipient_id: 'synthetic-recipient', state }]
+      handoffs: [{ id: handoffId, task_id: taskId, publish_id: 'p1', recipient_id: 'synthetic-recipient', state, can_respond: true, can_download: true }]
     })
     if (url.pathname.endsWith(`/handoffs/${handoffId}/respond`)) {
       const payload = JSON.parse(request.postData())
@@ -104,6 +104,120 @@ test('Needs Fix requires feedback and Accepted persists after the page reloads',
   await page.reload()
   await expect(page.locator('[data-state="accepted"]')).toBeVisible()
   await expect(page.getByText('Latest Published')).toHaveCount(2)
+})
+
+test('Department Publish Handoff confirms an exact version and opens a recipient inbox with verified download and history', async ({ page }) => {
+  const sourceTask = 'source-task'
+  const recipientTask = 'compositing-task'
+  const publishId = 'publish-lighting-005'
+  const handoffId = 'handoff-lighting-compositing'
+  let submitted = null
+  let handoffState = 'pending'
+  let responsePayload = null
+
+  await page.route('**/api/plugins/vfx_files/**', async (route) => {
+    const request = route.request()
+    const url = new URL(request.url())
+    if (url.pathname.endsWith('/csrf-token')) return json(route, { csrf_token: 'synthetic-csrf', expires_in: 900 })
+    if (url.pathname.endsWith('/overview')) {
+      const recipientView = url.searchParams.get('task_id') === recipientTask
+      return json(route, recipientView ? {
+        production_id: productionId,
+        actor_id: 'artist-compositing',
+        tasks: [{ id: recipientTask, name: 'comp', task_type_id: 'compositing-type', task_type_name: 'Compositing', entity_id: 'shot-1', entity_name: 'SH010' }],
+        upload_ready: false,
+        publishes: [],
+        handoffs: [{
+          id: handoffId, task_id: sourceTask, source_task_name: 'light', source_task_type_name: 'Lighting',
+          publish_id: publishId, publish_version: 5, publish_state: 'completed',
+          publish_sha256: 'a'.repeat(64), publish_source_file_name: 'SH010_comp_v005.exr',
+          sender_id: 'artist-lighting', sender_note: 'Review the edge treatment.',
+          recipient_department_id: 'department-compositing', recipient_department_name: 'Compositing',
+          recipient_task_id: recipientTask, recipient_task_name: 'comp', recipient_task_type_name: 'Compositing',
+          recipient_person_id: 'artist-compositing', recipient_person_name: 'Synthetic Compositor',
+          state: handoffState, can_respond: handoffState === 'pending', can_download: true,
+          events: [
+            { id: 'event-created', actor_id: 'artist-lighting', actor_name: 'Synthetic Lighter', type: 'created', feedback: null, created_at: '2026-10-16T08:00:00Z' },
+            ...(handoffState === 'needs_fix' ? [{ id: 'event-needs-fix', actor_id: 'artist-compositing', actor_name: 'Synthetic Compositor', type: 'needs_fix', feedback: 'Please include the missing matte edge.', created_at: '2026-10-16T08:05:00Z' }] : [])
+          ]
+        }]
+      } : {
+        production_id: productionId,
+        actor_id: 'artist-lighting',
+        tasks: [{ id: sourceTask, name: 'light', task_type_id: 'lighting-type', task_type_name: 'Lighting', entity_id: 'shot-1', entity_name: 'SH010' }],
+        upload_ready: false,
+        publishes: [{
+          id: publishId, task_id: sourceTask, version: 5, state: 'completed', qc_state: 'passed',
+          sha256: 'a'.repeat(64), source_file_name: 'SH010_comp_v005.exr',
+          manifest: { schema: 'vfx-files-manifest/1' }
+        }],
+        handoffs: []
+      })
+    }
+    if (url.pathname.endsWith(`/tasks/${sourceTask}/publish-options`)) return json(route, {
+      task_id: sourceTask, actor_id: 'artist-lighting', role: 'user', families: [], recipients: [],
+      department_targets: [{
+        task_id: recipientTask, task_name: 'comp', task_type_id: 'compositing-type',
+        task_type_name: 'Compositing', department_id: 'department-compositing',
+        department_name: 'Compositing', eligible_recipient_count: 1,
+        eligible_recipients: [{ id: 'artist-compositing', name: 'Synthetic Compositor' }]
+      }]
+    })
+    if (url.pathname.endsWith(`/tasks/${sourceTask}/working-revisions`)) return json(route, { task_id: sourceTask, latest_working_id: null, revisions: [] })
+    if (url.pathname.endsWith(`/tasks/${recipientTask}/publish-options`)) return json(route, { task_id: recipientTask, families: [], recipients: [], department_targets: [] })
+    if (url.pathname.endsWith(`/tasks/${recipientTask}/working-revisions`)) return json(route, { task_id: recipientTask, latest_working_id: null, revisions: [] })
+    if (url.pathname.endsWith(`/tasks/${recipientTask}/shared-folders`)) return json(route, { task_id: recipientTask, folders: [], checked_at: '2026-10-16T08:00:00Z' })
+    if (url.pathname.endsWith(`/tasks/${recipientTask}/output-package-options`)) return json(route, { task_id: recipientTask, output_types: [] })
+    if (url.pathname.endsWith(`/tasks/${recipientTask}/output-packages`)) return json(route, [])
+    if (url.pathname.endsWith(`/tasks/${recipientTask}/output-package-deliveries`)) return json(route, { task_id: recipientTask, deliveries: [] })
+    if (url.pathname.endsWith(`/tasks/${recipientTask}/storage-objects`)) return json(route, { task_id: recipientTask, items: [], next_page_token: null })
+    if (url.pathname.endsWith(`/publishes/${publishId}/handoffs`) && request.method() === 'POST') {
+      submitted = JSON.parse(request.postData())
+      return json(route, {
+        id: handoffId, state: 'pending', publish_id: publishId,
+        recipient_department_id: 'department-compositing', recipient_task_id: recipientTask,
+        recipient_person_id: 'artist-compositing', replayed: false
+      }, 201)
+    }
+    if (url.pathname.endsWith(`/handoffs/${handoffId}/respond`) && request.method() === 'POST') {
+      responsePayload = JSON.parse(request.postData())
+      handoffState = responsePayload.target
+      return json(route, { id: handoffId, state: handoffState, publish_id: publishId, replayed: false }, 201)
+    }
+    return json(route, { error: 'unexpected test request' }, 500)
+  })
+
+  await openFiles(page)
+  await page.getByLabel('Publish Task').selectOption(sourceTask)
+  await page.getByLabel('Department Handoff Publish').selectOption(publishId)
+  await page.getByLabel('Receiving Department').selectOption('department-compositing')
+  await page.getByLabel('Receiving Task Type').selectOption(recipientTask)
+  await page.getByLabel('Accountable person').selectOption('artist-compositing')
+  await page.getByLabel('Handoff note').fill('Review the edge treatment.')
+  await expect(page.getByRole('group', { name: 'Handoff confirmation summary' })).toContainText('SH010_comp_v005.exr')
+  await expect(page.getByRole('group', { name: 'Handoff confirmation summary' })).toContainText('Publish v005')
+  await page.getByRole('button', { name: 'Confirm and Send Publish' }).click()
+  await expect.poll(() => submitted).toEqual({
+    recipient_department_id: 'department-compositing', recipient_task_id: recipientTask,
+    recipient_person_id: 'artist-compositing', note: 'Review the edge treatment.'
+  })
+  await expect(page.getByText(/Created handoff for Compositing \/ Compositing · Publish v005/)).toBeVisible()
+
+  await page.goto(`/?production_id=${productionId}&task_id=${recipientTask}`)
+  await expect(page.getByText('Department Inbox')).toBeVisible()
+  const incoming = page.locator('.handoff-row').filter({ hasText: 'SH010_comp_v005.exr' })
+  await expect(incoming).toContainText('Lighting')
+  await expect(incoming).toContainText('Compositing')
+  await expect(incoming.getByRole('link', { name: 'Download verified Publish' })).toHaveAttribute(
+    'href', `/api/plugins/vfx_files/handoffs/${handoffId}/download`
+  )
+  await incoming.getByRole('textbox', { name: 'Needs Fix feedback' }).fill('Please include the missing matte edge.')
+  await incoming.getByRole('button', { name: 'Needs Fix' }).click()
+  await expect.poll(() => responsePayload).toEqual({ target: 'needs_fix', feedback: 'Please include the missing matte edge.' })
+  await expect(incoming).toContainText('needs_fix')
+  await expect(incoming).toContainText('Please include the missing matte edge.')
+  await page.reload()
+  await expect(page.locator('.handoff-row').filter({ hasText: 'SH010_comp_v005.exr' })).toContainText('needs_fix')
 })
 
 test('Production Files page keeps configuration in KitsuSync and creates a Task-scoped Output Package from a selected Working revision', async ({ page }) => {

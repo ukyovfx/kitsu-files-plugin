@@ -110,7 +110,9 @@ services:
       KV_PASSWORD: ${VFX_FILES_UAT_REDIS_PASSWORD:?Run init.ps1 first}
       PLUGIN_FOLDER: /opt/zou/plugins
       VFX_FILES_ENABLED: ${VFX_FILES_ENABLED:-false}
-      VFX_FILES_WORKER_ENABLED: "false"
+      # The API uses this flag to report upload readiness; it does not launch
+      # an in-process Worker. The Worker service remains opt-in via its profile.
+      VFX_FILES_WORKER_ENABLED: ${VFX_FILES_WORKER_ENABLED:-false}
       VFX_FILES_DISPOSABLE_TEST_MODE: "1"
       VFX_FILES_E2E_ROOT_URL: http://127.0.0.1:${VFX_FILES_UAT_HTTP_PORT:-55280}
       VFX_FILES_E2E_TEST_PASSWORD: ${VFX_FILES_UAT_TEST_PASSWORD:?Run init.ps1 first}

@@ -169,6 +169,12 @@ def synthetic_upload_task(authenticated_plugin_client, zou_db_factory, tmp_path,
                 # Completed Publish evidence is intentionally immutable. Keep
                 # its synthetic Kitsu graph together in the disposable host.
                 return
+            if session.scalar(
+                select(Handoff.id).where(Handoff.publish_id.in_(publish_ids)).limit(1)
+            ) is not None:
+                # Department and Person Handoff histories are append-only audit
+                # evidence. Keep their Publish and StorageConnection graph intact.
+                return
         # Completed package rows and their provider artifacts are immutable.
         # Preserve the synthetic Kitsu graph rather than bypassing those guards.
         if session.scalar(select(OutputPackage.id).where(OutputPackage.task_id == task_id).limit(1)) is not None:
@@ -179,28 +185,28 @@ def synthetic_upload_task(authenticated_plugin_client, zou_db_factory, tmp_path,
             # Outbox identity/history is immutable. Preserve its selected
             # connection and Kitsu scope as one synthetic evidence unit.
             return
-            native_output_ids = [row.native_output_file_id for row in publishes if row.native_output_file_id]
-            native_source_ids = [row.source_working_file_id for row in publishes if row.source_working_file_id]
-            handoffs = session.scalars(select(Handoff).where(Handoff.publish_id.in_(publish_ids))).all()
-            handoff_ids = [row.id for row in handoffs]
-            if handoff_ids:
-                session.execute(HandoffEvent.__table__.delete().where(HandoffEvent.handoff_id.in_(handoff_ids)))
-            session.execute(ApprovalEvent.__table__.delete().where(ApprovalEvent.publish_id.in_(publish_ids)))
-            session.execute(NativeCreateEvent.__table__.delete().where(NativeCreateEvent.publish_id.in_(publish_ids)))
-            session.execute(PublishCheckpoint.__table__.delete().where(PublishCheckpoint.publish_id.in_(publish_ids)))
-            session.execute(PinnedDependency.__table__.delete().where(PinnedDependency.publish_id.in_(publish_ids)))
-            session.execute(Handoff.__table__.delete().where(Handoff.id.in_(handoff_ids)))
-            session.execute(ReconciliationFinding.__table__.delete().where(ReconciliationFinding.kitsu_object_id.in_(publish_ids)))
-            session.execute(PublishPointer.__table__.delete().where(PublishPointer.task_id == task_id))
-            if native_output_ids:
-                from zou.app.models.output_file import OutputFile
-                session.execute(OutputFile.__table__.delete().where(OutputFile.id.in_(native_output_ids)))
-            if native_source_ids:
-                from zou.app.models.working_file import WorkingFile
-                session.execute(WorkingFile.__table__.delete().where(WorkingFile.id.in_(native_source_ids)))
-            for job in session.scalars(select(Job).where(Job.payload["task_id"].astext == str(task_id))).all():
-                session.delete(job)
-            session.execute(Publish.__table__.delete().where(Publish.id.in_(publish_ids)))
+        native_output_ids = [row.native_output_file_id for row in publishes if row.native_output_file_id]
+        native_source_ids = [row.source_working_file_id for row in publishes if row.source_working_file_id]
+        handoffs = session.scalars(select(Handoff).where(Handoff.publish_id.in_(publish_ids))).all()
+        handoff_ids = [row.id for row in handoffs]
+        if handoff_ids:
+            session.execute(HandoffEvent.__table__.delete().where(HandoffEvent.handoff_id.in_(handoff_ids)))
+        session.execute(ApprovalEvent.__table__.delete().where(ApprovalEvent.publish_id.in_(publish_ids)))
+        session.execute(NativeCreateEvent.__table__.delete().where(NativeCreateEvent.publish_id.in_(publish_ids)))
+        session.execute(PublishCheckpoint.__table__.delete().where(PublishCheckpoint.publish_id.in_(publish_ids)))
+        session.execute(PinnedDependency.__table__.delete().where(PinnedDependency.publish_id.in_(publish_ids)))
+        session.execute(Handoff.__table__.delete().where(Handoff.id.in_(handoff_ids)))
+        session.execute(ReconciliationFinding.__table__.delete().where(ReconciliationFinding.kitsu_object_id.in_(publish_ids)))
+        session.execute(PublishPointer.__table__.delete().where(PublishPointer.task_id == task_id))
+        if native_output_ids:
+            from zou.app.models.output_file import OutputFile
+            session.execute(OutputFile.__table__.delete().where(OutputFile.id.in_(native_output_ids)))
+        if native_source_ids:
+            from zou.app.models.working_file import WorkingFile
+            session.execute(WorkingFile.__table__.delete().where(WorkingFile.id.in_(native_source_ids)))
+        for job in session.scalars(select(Job).where(Job.payload["task_id"].astext == str(task_id))).all():
+            session.delete(job)
+        session.execute(Publish.__table__.delete().where(Publish.id.in_(publish_ids)))
         session.execute(OutputFamilyMapping.__table__.delete().where(OutputFamilyMapping.production_id == project_id))
         revisions = session.scalars(select(WorkingRevision).where(WorkingRevision.task_id == task_id)).all()
         revision_ids = [row.id for row in revisions]

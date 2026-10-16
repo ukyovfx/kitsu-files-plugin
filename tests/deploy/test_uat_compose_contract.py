@@ -15,7 +15,8 @@ def test_uat_compose_has_no_external_route_or_non_loopback_ui_binding():
     assert "6379:" not in compose
     assert "google_drive" not in compose
     assert "VFX_FILES_ENABLED: ${VFX_FILES_ENABLED:-false}" in compose
-    assert 'VFX_FILES_WORKER_ENABLED: "false"' in compose
+    assert "VFX_FILES_WORKER_ENABLED: ${VFX_FILES_WORKER_ENABLED:-false}" in compose
+    assert "The Worker service remains opt-in via its profile" in compose
 
 
 def test_api_shares_a_default_deny_guard_and_worker_stays_on_backend_network():
@@ -120,6 +121,26 @@ def test_scripts_wait_for_api_health_after_recreate():
     for script in ("install-plugin.ps1", "activate.ps1", "restore.ps1"):
         body = (UAT / "scripts" / script).read_text(encoding="utf-8")
         assert "Wait-UatServicesHealthy -Context $ctx -Services @('api')" in body
+
+
+def test_activation_enables_upload_readiness_without_starting_worker():
+    activate = (UAT / "scripts" / "activate.ps1").read_text(encoding="utf-8")
+    start = (UAT / "scripts" / "start-worker.ps1").read_text(encoding="utf-8")
+
+    assert "$envMap['VFX_FILES_WORKER_ENABLED'] = 'true'" in activate
+    assert "This command does not start a Worker" in activate
+    assert "--profile', 'worker'" in start
+
+
+def test_installed_page_seed_materializes_only_an_inactive_synthetic_storage_mirror():
+    seeder = (ROOT / "tests" / "e2e" / "seed_installed_page_flow.py").read_text(encoding="utf-8")
+    seed_script = (UAT / "scripts" / "seed.ps1").read_text(encoding="utf-8")
+
+    assert "KitsuSyncDesiredConfiguration(" in seeder
+    assert '"activation": {"enabled": False, "activated_at": None, "notification_epoch": 0}' in seeder
+    assert '"root_state": "verified"' in seeder
+    assert '"Artist A ID: $($seed.artist_a_id)"' in seed_script
+    assert '"Artist C ID: $($seed.artist_c_id)"' in seed_script
 
 
 def test_restart_waits_for_services_and_only_restarts_previously_enabled_worker():

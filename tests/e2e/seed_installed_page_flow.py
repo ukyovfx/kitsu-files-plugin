@@ -1,4 +1,4 @@
-"""Create a disposable Production and three browser identities on the pinned host."""
+"""Create a disposable Production, Department Tasks, and synthetic browser identities."""
 
 import json
 import os
@@ -7,8 +7,9 @@ from uuid import uuid4
 from zou.app import create_app, db
 from zou.app.models.entity import Entity
 from zou.app.models.entity_type import EntityType
-from zou.app.models.person import Person
-from zou.app.models.project import Project, ProjectPersonLink
+from zou.app.models.department import Department
+from zou.app.models.person import DepartmentLink, Person
+from zou.app.models.project import Project, ProjectPersonLink, ProjectTaskTypeLink
 from zou.app.models.project_status import ProjectStatus
 from zou.app.models.file_status import FileStatus
 from zou.app.models.output_type import OutputType
@@ -21,7 +22,12 @@ from seeder_safety import (
     validated_disposable_root_url as _validated_disposable_root_url,
     validated_synthetic_login_password as _validated_synthetic_login_password,
 )
-from vfx_files.models import FolderBinding, OutputFamilyMapping, StorageConnection
+from vfx_files.models import (
+    FolderBinding,
+    KitsuSyncDesiredConfiguration,
+    OutputFamilyMapping,
+    StorageConnection,
+)
 from vfx_files.storage.fake import PersistentFakeStorage
 
 
@@ -57,13 +63,19 @@ def main():
             email=f"artist-b-{suffix}@example.invalid",
             role="user",
         )
+        artist_c = Person(
+            first_name="Synthetic",
+            last_name=f"ArtistC{suffix}",
+            email=f"artist-c-{suffix}@example.invalid",
+            role="user",
+        )
         supervisor = Person(
             first_name="Synthetic",
             last_name=f"Supervisor{suffix}",
             email=f"supervisor-{suffix}@example.invalid",
             role="supervisor",
         )
-        synthetic_people = [manager, artist_a, artist_b, supervisor]
+        synthetic_people = [manager, artist_a, artist_b, artist_c, supervisor]
         for person in synthetic_people:
             person.active = True
             person.archived = False
@@ -81,7 +93,16 @@ def main():
         if sequence_type is None:
             sequence_type = EntityType(name="Sequence")
         shot_type = EntityType(name=f"VFXShot{suffix}")
-        task_type = TaskType(name=f"VFXComp{suffix}", for_entity="Shot")
+        source_department = Department(name=f"VFXLighting{suffix}", color="#64748B")
+        recipient_department = Department(name=f"VFXCompositing{suffix}", color="#64748B")
+        db.session.add_all([source_department, recipient_department])
+        db.session.flush()
+        task_type = TaskType(
+            name=f"VFXLighting{suffix}", for_entity="Shot", department_id=source_department.id,
+        )
+        recipient_task_type = TaskType(
+            name=f"VFXCompositing{suffix}", for_entity="Shot", department_id=recipient_department.id,
+        )
         output_type = OutputType(name=f"VFXOutput{suffix}", short_name=f"VFXOut{suffix}")
         file_status = FileStatus(name=f"VFXStatus{suffix}", color="#33AA77")
         project = Project(
@@ -100,6 +121,7 @@ def main():
                 task_type,
                 output_type,
                 file_status,
+                recipient_task_type,
                 project,
             ]
         )
@@ -108,6 +130,7 @@ def main():
             manager.id: "manager",
             artist_a.id: "user",
             artist_b.id: "user",
+            artist_c.id: "user",
             supervisor.id: "supervisor",
         }
         for person_id, role in memberships.items():
@@ -127,6 +150,20 @@ def main():
         task = Task(name="comp", project_id=project.id, task_type_id=task_type.id, entity_id=shot.id)
         db.session.add(task)
         db.session.flush()
+        recipient_task = Task(
+            name="compositing-review", project_id=project.id,
+            task_type_id=recipient_task_type.id, entity_id=shot.id,
+        )
+        db.session.add(recipient_task)
+        db.session.flush()
+        db.session.add_all([
+            ProjectTaskTypeLink(project_id=project.id, task_type_id=task_type.id),
+            ProjectTaskTypeLink(project_id=project.id, task_type_id=recipient_task_type.id),
+            DepartmentLink(department_id=recipient_department.id, person_id=artist_a.id),
+            DepartmentLink(department_id=recipient_department.id, person_id=artist_c.id),
+            TaskPersonLink(task_id=recipient_task.id, person_id=artist_a.id),
+            TaskPersonLink(task_id=recipient_task.id, person_id=artist_c.id),
+        ])
         db.session.add_all([
             TaskPersonLink(task_id=task.id, person_id=artist_a.id),
             TaskPersonLink(task_id=task.id, person_id=artist_b.id),
@@ -145,6 +182,37 @@ def main():
         )
         db.session.add(connection)
         db.session.flush()
+        # The UAT package does not run a KitsuSync service. Materialize only
+        # the synthetic, inactive v1 desired-config mirror needed for the
+        # installed Files page to resolve its selected FakeStorage root. This
+        # is test-fixture setup, not a Plugin configuration API or live sync.
+        db.session.add(KitsuSyncDesiredConfiguration(
+            production_id=project.id,
+            config_revision=1,
+            notification_epoch=0,
+            desired_config={
+                "contract_version": "1.0",
+                "connection_id": str(connection.id),
+                "drive": {
+                    "account_mode": "shared_drive",
+                    "drive_id": "synthetic-drive-id",
+                    "owner_subject": None,
+                    "root_id": "synthetic-root-id",
+                    "root_state": "verified",
+                },
+                "template_selection": {"selections": [
+                    {"scope": "production", "template_id": "vfx-files.production.default", "revision": 1, "overrides": {}},
+                    {"scope": "shot", "template_id": "vfx-files.shot.default", "revision": 1, "overrides": {}},
+                    {"scope": "task", "template_id": "vfx-files.task.default", "revision": 1, "overrides": {}},
+                ]},
+                "sync_policy": {
+                    "mode": "new_production",
+                    "scope": {"episodes": False, "sequences": False, "shots": True, "assets": False, "tasks": True},
+                    "notify_new_deliveries": False,
+                },
+                "activation": {"enabled": False, "activated_at": None, "notification_epoch": 0},
+            },
+        ))
         db.session.add(FolderBinding(
             storage_connection_id=connection.id,
             allowed_root_id=connection.allowed_root_id,
@@ -200,20 +268,25 @@ def main():
             "production_id": str(project.id),
             "production_name": project.name,
             "task_id": str(task.id),
+            "recipient_task_id": str(recipient_task.id),
             "sequence_id": str(sequence.id),
             "shot_id": str(shot.id),
             "task_type_id": str(task_type.id),
+            "recipient_department_id": str(recipient_department.id),
+            "recipient_department_name": recipient_department.name,
             "entity_type_id": str(shot_type.id),
             "sequence_type_created": created_sequence_type,
             "storage_connection_id": str(connection.id),
             "artist_a_id": str(artist_a.id),
             "artist_b_id": str(artist_b.id),
+            "artist_c_id": str(artist_c.id),
             "supervisor_id": str(supervisor.id),
             "manager_id": str(manager.id),
             "login_emails": {
                 "manager": manager.email,
                 "artist_a": artist_a.email,
                 "artist_b": artist_b.email,
+                "artist_c": artist_c.email,
                 "supervisor": supervisor.email,
             },
             "cookie_name": cookie_name,
