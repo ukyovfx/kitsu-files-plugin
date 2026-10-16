@@ -458,6 +458,7 @@ class ProductionDriveAuthority(db.Model):
     root_id = db.Column(String(255))
     desired_config = db.Column(JSONB)
     activation_enabled = db.Column(Boolean, nullable=False, default=False)
+    activation_transition_pending = db.Column(Boolean, nullable=False, default=False)
     updated_by = db.Column(UUIDType(binary=False))
     updated_at = db.Column(DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now())
     __table_args__ = (

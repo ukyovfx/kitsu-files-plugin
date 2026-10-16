@@ -255,3 +255,14 @@ def test_drive_authority_audit_migration_is_immutable_and_refuses_lossy_downgrad
     assert "BEFORE UPDATE OR DELETE" in source
     assert "restore a consistent pre-migration snapshot instead of downgrading" in source
     assert "schema_epoch = 17" in source and "schema_epoch = 16" in source
+
+
+def test_activation_barrier_migration_tracks_pending_transitions_and_blocks_unsafe_downgrade():
+    migration = ROOT / "plugin/migrations/versions/0019_activation_barrier.py"
+    source = migration.read_text(encoding="utf-8")
+    assert 'revision = "vxf_0019"' in source
+    assert 'down_revision = "vxf_0018"' in source
+    assert 'sa.Column("activation_transition_pending", sa.Boolean(), nullable=False, server_default=sa.false())' in source
+    assert "activation_transition_pending = true" in source
+    assert "Drive deactivation barriers are pending" in source
+    assert "schema_epoch = 18" in source and "schema_epoch = 17" in source

@@ -100,6 +100,7 @@ def oauth_db(monkeypatch, tmp_path):
         root_id: Mapped[str | None] = mapped_column(String, nullable=True)
         desired_config: Mapped[dict | None] = mapped_column(JSON, nullable=True)
         activation_enabled: Mapped[bool] = mapped_column(Boolean)
+        activation_transition_pending: Mapped[bool] = mapped_column(Boolean, default=False)
         updated_by: Mapped[UUID | None] = mapped_column(Uuid, nullable=True)
 
     class ProductionDriveAuthorityEvent(Base):
@@ -161,11 +162,29 @@ def oauth_db(monkeypatch, tmp_path):
         snapshot_id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
         page_index: Mapped[int] = mapped_column(Integer, primary_key=True)
 
+    class KitsuSyncEventOutbox(Base):
+        __tablename__ = "event_outbox_stub"
+        id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+        production_id: Mapped[UUID] = mapped_column(Uuid)
+        storage_connection_id: Mapped[UUID | None] = mapped_column(Uuid, nullable=True)
+        event_id: Mapped[str] = mapped_column(String, unique=True)
+        event_type: Mapped[str] = mapped_column(String)
+        payload: Mapped[dict] = mapped_column(JSON)
+        payload_sha256: Mapped[str] = mapped_column(String)
+        state: Mapped[str] = mapped_column(String)
+        attempts: Mapped[int] = mapped_column(Integer)
+        lease_generation: Mapped[int] = mapped_column(Integer)
+        lease_owner: Mapped[UUID | None] = mapped_column(Uuid, nullable=True)
+        lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+        available_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+        last_response_code: Mapped[str | None] = mapped_column(String, nullable=True)
+
     models = ModuleType("plugin.models")
     for model in (
         StorageConnection, DriveCredential, DriveAuthorizationIntent, KitsuSyncDesiredConfiguration,
         ProductionDriveAuthority, ProductionDriveAuthorityEvent, SharedTemplateConfiguration,
         Job, KitsuSyncManagementIdempotency, KitsuSyncHierarchySnapshot, KitsuSyncHierarchySnapshotPage,
+        KitsuSyncEventOutbox,
     ):
         setattr(models, model.__name__, model)
     monkeypatch.setitem(sys.modules, "plugin.models", models)
@@ -592,12 +611,40 @@ def test_plugin_configuration_and_activation_are_fenced_and_do_not_create_legacy
         active, status, etag = set_plugin_activation(
             session, production_id=PRODUCTION, actor_id=ACTOR, enabled=True,
             payload={"contract_version": "1.0"}, idempotency_key="plugin-activate-0001",
-            if_match='"2"', capabilities=capabilities,
+            if_match='"2"', capabilities=capabilities, deactivation_barrier_required=True,
         )
-    assert status == 200 and etag == '"3"'
-    assert active["activation"]["enabled"] is True
+    assert status == 202 and etag == '"3"'
+    assert active["activation"]["enabled"] is False
+    assert active["activation"]["requested_enabled"] is True
+    assert active["activation"]["transition_pending"] is True
     with sessions() as session:
-        assert session.get(ProductionDriveAuthority, PRODUCTION).activation_epoch == 3
+        authority = session.get(ProductionDriveAuthority, PRODUCTION)
+        assert authority.activation_epoch == 3 and not authority.activation_enabled
+        assert authority.activation_transition_pending
+        assert session.scalar(select(SharedTemplateConfiguration).where(
+            SharedTemplateConfiguration.production_id == PRODUCTION,
+        )).enabled is False
+        outbox_row = session.scalar(select(models.KitsuSyncEventOutbox).where(
+            models.KitsuSyncEventOutbox.production_id == PRODUCTION,
+        ))
+        assert outbox_row.event_type == "storage_authority.activation_requested"
+        assert outbox_row.payload["activation_epoch"] == 3
+        worker_id = uuid4()
+        outbox_row.state = "leased"
+        outbox_row.lease_owner = worker_id
+        outbox_row.lease_generation = 1
+        outbox_row.lease_expires_at = datetime.now(timezone.utc) + timedelta(minutes=1)
+        session.commit()
+        from plugin.integrations.event_delivery import SqlAlchemyEventOutbox
+        leased = __import__("types").SimpleNamespace(
+            id=outbox_row.id, production_id=outbox_row.production_id,
+            event_type=outbox_row.event_type, payload=outbox_row.payload,
+            lease_generation=outbox_row.lease_generation,
+        )
+        assert SqlAlchemyEventOutbox(sessions).finish(leased, worker_id, "delivered", response_code="202")
+        session.expire_all()
+        authority = session.get(ProductionDriveAuthority, PRODUCTION)
+        assert authority.activation_enabled and not authority.activation_transition_pending
         assert session.scalar(select(SharedTemplateConfiguration).where(
             SharedTemplateConfiguration.production_id == PRODUCTION,
         )).enabled is True
@@ -608,6 +655,92 @@ def test_plugin_configuration_and_activation_are_fenced_and_do_not_create_legacy
             if_match='"2"', capabilities=None,
         )
     assert stale.value.code == "stale_config"
+    with sessions() as session:
+        standalone, status, _etag = set_plugin_activation(
+            session, production_id=PRODUCTION, actor_id=ACTOR, enabled=False,
+            payload={"contract_version": "1.0"}, idempotency_key="plugin-deactivate-standalone-001",
+            if_match='"3"', capabilities=None,
+        )
+    assert status == 200 and standalone["activation"]["enabled"] is False
+    assert standalone["activation"]["transition_pending"] is False
+
+
+def test_integrated_deactivation_stays_pending_until_signed_barrier_ack(oauth_db):
+    from sqlalchemy import select
+
+    from plugin.integrations.configuration import set_plugin_activation
+    from plugin.models import ProductionDriveAuthority
+
+    sessions, models, _keyring, _extensions = oauth_db
+    connection_id = uuid4()
+    connection = models.StorageConnection(
+        id=connection_id, production_id=PRODUCTION, provider="google_drive",
+        account_mode="my_drive", owner_subject="oidc-subject-a", drive_id=None,
+        allowed_root_id="app-visible-root", credential_ref=str(connection_id), enabled=True,
+    )
+    authority = models.ProductionDriveAuthority(
+        production_id=PRODUCTION, owner="plugin", state="configured", config_revision=4,
+        activation_epoch=7, connection_id=connection_id, root_id="app-visible-root",
+        desired_config={"contract_version": "1.0", "activation": {"enabled": True, "notification_epoch": 7}},
+        activation_enabled=True,
+    )
+    with sessions.begin() as session:
+        session.add_all([connection, authority])
+
+    with sessions() as session:
+        body, status, etag = set_plugin_activation(
+            session, production_id=PRODUCTION, actor_id=ACTOR, enabled=False,
+            payload={"contract_version": "1.0"}, idempotency_key="plugin-deactivate-barrier-0001",
+            if_match='"4"', capabilities=None, deactivation_barrier_required=True,
+        )
+    assert status == 202 and etag == '"5"'
+    assert body["activation"]["enabled"] is False
+    assert body["activation"]["transition_pending"] is True
+    with sessions() as session:
+        authority = session.get(ProductionDriveAuthority, PRODUCTION)
+        row = session.scalar(select(models.KitsuSyncEventOutbox).where(
+            models.KitsuSyncEventOutbox.production_id == PRODUCTION,
+        ))
+        assert not authority.activation_enabled and authority.activation_transition_pending
+        assert authority.activation_epoch == 8
+        assert row.event_type == "storage_authority.deactivation_requested"
+        assert row.payload["activation_epoch"] == 7
+        assert row.payload["new_activation_epoch"] == 8
+        assert row.state == "queued"
+
+
+def test_integrated_credential_loss_queues_deactivation_barrier(oauth_db, monkeypatch):
+    from sqlalchemy import select
+
+    from plugin.integrations.storage_authority import fence_plugin_authority_after_credential_failure
+    from plugin.models import ProductionDriveAuthority
+
+    sessions, models, _keyring, _extensions = oauth_db
+    connection_id = uuid4()
+    with sessions.begin() as session:
+        session.add(models.StorageConnection(
+            id=connection_id, production_id=PRODUCTION, provider="google_drive",
+            account_mode="my_drive", owner_subject="oidc-subject-a", drive_id=None,
+            allowed_root_id="app-visible-root", credential_ref=str(connection_id), enabled=True,
+        ))
+        session.add(ProductionDriveAuthority(
+            production_id=PRODUCTION, owner="plugin", state="configured", config_revision=9,
+            activation_epoch=13, connection_id=connection_id, root_id="app-visible-root",
+            desired_config={"contract_version": "1.0", "activation": {"enabled": True, "notification_epoch": 13}},
+            activation_enabled=True,
+        ))
+    monkeypatch.setenv("VFX_FILES_KITSUSYNC_EVENT_ENDPOINT", "https://kitsusync.example.invalid/api/integrations/vfx-files/v1/events")
+    with sessions.begin() as session:
+        assert fence_plugin_authority_after_credential_failure(session, PRODUCTION, connection_id)
+    with sessions() as session:
+        authority = session.get(ProductionDriveAuthority, PRODUCTION)
+        row = session.scalar(select(models.KitsuSyncEventOutbox).where(
+            models.KitsuSyncEventOutbox.production_id == PRODUCTION,
+        ))
+        assert not authority.activation_enabled and authority.activation_transition_pending
+        assert authority.activation_epoch == 14 and authority.config_revision == 10
+        assert row.event_type == "storage_authority.deactivation_requested"
+        assert row.payload["activation_epoch"] == 13 and row.payload["new_activation_epoch"] == 14
 
 
 def test_legacy_import_requires_verified_root_and_explicit_revisioned_confirmation(oauth_db):

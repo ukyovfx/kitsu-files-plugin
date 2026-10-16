@@ -95,7 +95,7 @@ async function connect() {
 }
 
 async function verifyRoot() {
-  if (!selectedConnectionId.value || !selectedRootId.value || busy.value || status.value?.activation_enabled) return
+  if (!selectedConnectionId.value || !selectedRootId.value || busy.value || status.value?.activation_enabled || status.value?.activation_transition_pending) return
   busy.value = true
   error.value = ''
   try {
@@ -117,6 +117,7 @@ async function verifyRoot() {
 const canSaveConfiguration = computed(() =>
   status.value?.owner === 'plugin' && status.value?.state === 'configured'
   && !status.value?.activation_enabled
+  && !status.value?.activation_transition_pending
   && selectedScopes.value.tasks
   && (selectedScopes.value.assets || selectedScopes.value.shots)
   && (!selectedScopes.value.sequences || selectedScopes.value.shots)
@@ -228,7 +229,7 @@ onMounted(load)
           <div><dt>Configuration owner</dt><dd>{{ status.owner === 'plugin' ? 'VFX Files Plugin' : 'KitsuSync (legacy)' }}</dd></div>
           <div><dt>Connection</dt><dd>{{ status.credential_state === 'active' ? 'Connected' : status.state.replaceAll('_', ' ') }}</dd></div>
           <div><dt>Verified root</dt><dd>{{ status.root_state === 'verified' ? 'Verified' : 'Not configured' }}</dd></div>
-          <div><dt>Storage activation</dt><dd>{{ status.activation_enabled ? 'Active' : 'Inactive' }}</dd></div>
+          <div><dt>Storage activation</dt><dd>{{ status.activation_transition_pending ? 'Waiting for KitsuSync barrier' : status.activation_enabled ? 'Active' : 'Inactive' }}</dd></div>
         </dl>
 
         <p v-if="callbackStatus === 'connected'" class="notice" role="status">Google authorization completed. Choose an app-authorized root below.</p>
@@ -278,14 +279,14 @@ onMounted(load)
         </template>
         <template v-else-if="status.state === 'configured'">
           <label class="drive-field">App-authorized Production root
-            <select v-model="selectedRootId" :disabled="busy || status.activation_enabled || !roots.length">
+            <select v-model="selectedRootId" :disabled="busy || status.activation_enabled || status.activation_transition_pending || !roots.length">
               <option value="" disabled>Select a folder</option>
               <option v-for="root in roots" :key="root.id" :value="root.id">{{ root.name }}</option>
             </select>
           </label>
-          <button class="button secondary" :disabled="busy || status.activation_enabled || !selectedRootId || selectedRootId === status.root_id" @click="verifyRoot">Verify root change</button>
+          <button class="button secondary" :disabled="busy || status.activation_enabled || status.activation_transition_pending || !selectedRootId || selectedRootId === status.root_id" @click="verifyRoot">Verify root change</button>
           <p class="muted">The verified root is the Production folder. Files Plugin stores credentials on the server and uses the existing Drive scope.</p>
-          <fieldset class="drive-options" :disabled="busy || status.activation_enabled">
+          <fieldset class="drive-options" :disabled="busy || status.activation_enabled || status.activation_transition_pending">
             <legend>Folder templates and synchronization scope</legend>
             <label><input v-model="selectedScopes.shots" type="checkbox"> Shots</label>
             <label><input v-model="selectedScopes.assets" type="checkbox"> Assets</label>
@@ -304,10 +305,11 @@ onMounted(load)
             <button class="button primary" :disabled="busy || !canSaveConfiguration" @click="saveConfiguration">
               {{ busy ? 'Saving…' : 'Save Drive settings' }}
             </button>
-            <button v-if="status.activation_enabled" class="button secondary" :disabled="busy" @click="setActivation(false)">Deactivate Drive sync</button>
-            <button v-else class="button primary" :disabled="busy || !configuration?.configured || !canSaveConfiguration" @click="setActivation(true)">Activate Drive sync</button>
+            <button v-if="status.activation_enabled && !status.activation_transition_pending" class="button secondary" :disabled="busy" @click="setActivation(false)">Deactivate Drive sync</button>
+            <button v-else-if="!status.activation_transition_pending" class="button primary" :disabled="busy || !configuration?.configured || !canSaveConfiguration" @click="setActivation(true)">Activate Drive sync</button>
           </div>
-          <p class="muted">Activation verifies the saved Production root again. Changing settings requires deactivation and creates a fresh activation epoch.</p>
+          <p v-if="status.activation_transition_pending" class="notice" role="status">Waiting for KitsuSync to durably fence the previous activation epoch and resolve in-flight Discord delivery. Drive sync stays paused until KitsuSync confirms the barrier. Use Refresh to check progress.</p>
+          <p v-else class="muted">Activation verifies the saved Production root again. Changing settings requires deactivation and creates a fresh activation epoch.</p>
         </template>
         <p v-else class="muted">Drive setup is unavailable in the current state. No Drive files or permissions have been changed.</p>
       </template>

@@ -243,6 +243,20 @@ class SqlAlchemyEventOutbox:
                 return False
             with self.session_factory() as session:
                 state = effective_drive_authority(session, row.production_id)
+                event_type = getattr(row, "event_type", "")
+                if event_type in {
+                    "storage_authority.deactivation_requested", "storage_authority.activation_requested",
+                }:
+                    next_epoch = row.payload.get("new_activation_epoch")
+                    target_enabled = event_type == "storage_authority.activation_requested"
+                    from ..models import ProductionDriveAuthority
+                    authority = session.get(ProductionDriveAuthority, row.production_id)
+                    return bool(
+                        authority is not None and authority.owner == "plugin"
+                        and authority.activation_transition_pending and not authority.activation_enabled
+                        and state is not None and state["activation_epoch"] == next_epoch
+                        and event_epoch + (0 if target_enabled else 1) == next_epoch
+                    )
                 return bool(
                     state is not None and state["activation_enabled"]
                     and state["activation_epoch"] == event_epoch
@@ -255,7 +269,7 @@ class SqlAlchemyEventOutbox:
 
     def finish(self, row, worker_id, state, *, response_code, retry_after_seconds=None):
         from datetime import timedelta
-        from sqlalchemy import func, update
+        from sqlalchemy import func, select, update
         from ..models import KitsuSyncEventOutbox
 
         if state not in ("delivered", "retry", "quarantined"):
@@ -274,4 +288,28 @@ class SqlAlchemyEventOutbox:
                 last_response_code=response_code[:64],
                 available_at=(func.now() + timedelta(seconds=retry_after_seconds)) if retry_after_seconds else func.now(),
             )
-            return session.execute(query).rowcount == 1
+            changed = session.execute(query).rowcount == 1
+            if changed and state == "delivered" and getattr(row, "event_type", "") in {
+                "storage_authority.deactivation_requested", "storage_authority.activation_requested",
+            }:
+                from ..models import ProductionDriveAuthority
+
+                new_epoch = row.payload.get("new_activation_epoch")
+                if isinstance(new_epoch, int) and not isinstance(new_epoch, bool):
+                    authority = session.scalar(select(ProductionDriveAuthority).where(
+                        ProductionDriveAuthority.production_id == row.production_id,
+                        ProductionDriveAuthority.owner == "plugin",
+                        ProductionDriveAuthority.activation_epoch == new_epoch,
+                        ProductionDriveAuthority.activation_transition_pending.is_(True),
+                    ).with_for_update())
+                    if authority is not None:
+                        requested = bool(authority.desired_config.get("activation", {}).get("enabled", False)) if isinstance(authority.desired_config, dict) else False
+                        authority.activation_enabled = requested
+                        authority.activation_transition_pending = False
+                        from ..models import SharedTemplateConfiguration
+                        template = session.scalar(select(SharedTemplateConfiguration).where(
+                            SharedTemplateConfiguration.production_id == row.production_id,
+                        ).with_for_update())
+                        if template is not None:
+                            template.enabled = requested
+            return changed

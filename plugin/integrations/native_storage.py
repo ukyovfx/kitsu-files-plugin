@@ -131,6 +131,8 @@ def select_native_root(session, *, production_id: UUID, actor_id: UUID, connecti
             session.flush()
         if authority.owner != "plugin" or authority.state not in {"unconfigured", "configured"}:
             raise ConfigurationError(409, "drive_authority_unavailable")
+        if getattr(authority, "activation_transition_pending", False):
+            raise ConfigurationError(409, "activation_barrier_pending")
         if authority.config_revision != expected_revision:
             raise ConfigurationError(409, "stale_config")
         if authority.activation_enabled:

@@ -161,13 +161,16 @@ def test_credential_failure_fences_only_the_matching_plugin_authority():
     authority = SimpleNamespace(
         production_id=production_id, owner="plugin", state="configured",
         config_revision=7, activation_epoch=12, connection_id=connection_id,
-        activation_enabled=True,
+        activation_enabled=True, desired_config={"activation": {"enabled": True}},
     )
 
     class Session:
+        query_count = 0
+
         def scalar(self, statement):
             assert statement._for_update_arg is not None
-            return authority
+            self.query_count += 1
+            return authority if self.query_count == 1 else None
 
     session = Session()
     assert fence_plugin_authority_after_credential_failure(session, production_id, connection_id)
@@ -192,6 +195,7 @@ def test_plugin_authority_status_is_sanitized_and_reports_legacy_gate():
         connection_id=connection_id,
         root_id="plugin-root",
         activation_enabled=False,
+        activation_transition_pending=False,
     )
     connection = SimpleNamespace(
         id=connection_id,
@@ -230,6 +234,7 @@ def test_plugin_authority_status_is_sanitized_and_reports_legacy_gate():
         "account_mode": "my_drive",
         "credential_state": "active",
         "activation_enabled": False,
+        "activation_transition_pending": False,
     }
     assert "owner_subject" not in result
     assert "ciphertext" not in result

@@ -1074,6 +1074,7 @@ class NativeDriveActivation(MethodView):
 
     @jwt_required()
     def post(self, production_id):
+        import os
         _assert_compatible()
         try:
             _require_mutation_origin()
@@ -1137,10 +1138,13 @@ class NativeDriveActivation(MethodView):
                     enabled=payload["enabled"], payload={"contract_version": payload.get("contract_version")},
                     idempotency_key=request.headers.get("Idempotency-Key"),
                     if_match=request.headers.get("If-Match"), capabilities=capabilities,
+                    deactivation_barrier_required=bool(
+                        os.environ.get("VFX_FILES_KITSUSYNC_EVENT_ENDPOINT", "").strip()
+                    ),
                 )
             body.get("drive", {}).pop("owner_subject", None)
             response = current_app.response_class(
-                current_app.json.dumps(body), status=200, mimetype="application/json",
+                current_app.json.dumps(body), status=_status, mimetype="application/json",
             )
             response.headers["ETag"] = etag
             return response

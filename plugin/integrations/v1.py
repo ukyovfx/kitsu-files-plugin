@@ -27,6 +27,7 @@ _EVENT_FIELDS = {
     "contract_version", "producer_id", "event_id", "event_type", "occurred_at", "production_id",
     "activation_epoch", "production_name", "episode_id", "episode_name", "entity", "source",
     "output_package", "delivery", "sender", "folder", "sender_person_id",
+    "config_revision", "previous_activation_epoch", "new_activation_epoch",
 }
 _FILE_EVENT_TYPES = {
     "file_delivery.created", "file_delivery.ready", "file_delivery.accepted",
@@ -97,6 +98,11 @@ def _validate_event_shape(event: dict[str, Any]) -> None:
     elif event["event_type"] in _PACKAGE_EVENT_TYPES:
         required = {"source", "output_package"}
         event_specific_fields = {"source", "output_package", "sender_person_id"}
+    elif event["event_type"] in {
+        "storage_authority.deactivation_requested", "storage_authority.activation_requested",
+    }:
+        required = {"config_revision", "previous_activation_epoch", "new_activation_epoch"}
+        event_specific_fields = required
     else:
         raise ContractValidationError("Event type is not supported by the published v1 contract")
     common_fields = {"contract_version", "producer_id", "event_id", "event_type", "occurred_at", "production_id", "activation_epoch", "production_name", "episode_id", "episode_name"}
@@ -106,6 +112,20 @@ def _validate_event_shape(event: dict[str, Any]) -> None:
         raise ContractValidationError("Event omits fields required by its published event type")
     if not isinstance(event["activation_epoch"], int) or isinstance(event["activation_epoch"], bool) or event["activation_epoch"] < 1:
         raise ContractValidationError("Event activation epoch is invalid")
+    if event["event_type"] in {
+        "storage_authority.deactivation_requested", "storage_authority.activation_requested",
+    }:
+        previous = event["previous_activation_epoch"]
+        following = event["new_activation_epoch"]
+        if (
+            not _is_contract_int(event["config_revision"])
+            or
+            not _is_contract_int(previous) or not _is_contract_int(following)
+            or following != previous + 1
+            or event["event_type"] == "storage_authority.deactivation_requested" and event["activation_epoch"] != previous
+            or event["event_type"] == "storage_authority.activation_requested" and event["activation_epoch"] != following
+        ):
+            raise ContractValidationError("Deactivation barrier epochs are invalid")
     for field in ("production_name", "episode_name"):
         if field in event and event[field] is not None and (not isinstance(event[field], str) or len(event[field]) > 240):
             raise ContractValidationError("Event display name is invalid")

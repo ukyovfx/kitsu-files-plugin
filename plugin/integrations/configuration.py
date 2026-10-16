@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 import hashlib
 import re
-from uuid import UUID, uuid4
+from uuid import UUID, uuid4, uuid5
 
 from sqlalchemy import select, text
 
@@ -296,6 +296,11 @@ def _plugin_configuration_response(authority, body):
     )
     response = _configuration_payload(row)
     response.update({"configured": True, "owner": "plugin", "state": "configured"})
+    response["activation"].update({
+        "enabled": bool(authority.activation_enabled),
+        "requested_enabled": bool(body.get("activation", {}).get("enabled", False)),
+        "transition_pending": bool(getattr(authority, "activation_transition_pending", False)),
+    })
     response.get("drive", {}).pop("owner_subject", None)
     return response
 
@@ -330,6 +335,8 @@ def put_plugin_desired_config(
             _fail(409, "drive_authority_unavailable")
         if authority.config_revision != expected:
             _fail(409, "stale_config", expected_revision=expected, actual_revision=authority.config_revision)
+        if getattr(authority, "activation_transition_pending", False):
+            _fail(409, "activation_barrier_pending")
         if authority.activation_enabled:
             _fail(409, "deactivate_before_config_change")
         connection = selected_storage_connection(session, production_id)
@@ -371,6 +378,7 @@ def put_plugin_desired_config(
 def set_plugin_activation(
     session, *, production_id: UUID, actor_id: UUID, enabled: bool,
     payload: object, idempotency_key: str, if_match: str | None, capabilities=None,
+    deactivation_barrier_required: bool = False,
 ):
     """Activate or deactivate the Plugin-owned Production with fresh fencing."""
     from ..models import ProductionDriveAuthority, SharedTemplateConfiguration
@@ -398,6 +406,8 @@ def set_plugin_activation(
             _fail(409, "drive_authority_unavailable")
         if authority.config_revision != expected:
             _fail(409, "stale_config", expected_revision=expected, actual_revision=authority.config_revision)
+        if getattr(authority, "deactivation_pending", False):
+            _fail(409, "activation_barrier_pending")
         desired = authority.desired_config
         if not isinstance(desired, dict):
             _fail(409, "configuration_required")
@@ -433,9 +443,12 @@ def set_plugin_activation(
                 SharedTemplateConfiguration.production_id == production_id,
             ).with_for_update())
 
+        previous_epoch = authority.activation_epoch
+        transition_pending = bool(deactivation_barrier_required and authority.activation_enabled != enabled)
         authority.activation_epoch += 1
         authority.config_revision += 1
-        authority.activation_enabled = enabled
+        authority.activation_enabled = False if transition_pending else enabled
+        authority.activation_transition_pending = transition_pending
         authority.updated_by = actor_id
         desired = dict(desired)
         desired["activation"] = {
@@ -445,15 +458,48 @@ def set_plugin_activation(
         }
         authority.desired_config = desired
         if template is not None:
-            template.enabled = enabled
+            # Keep every local worker paused until KitsuSync has durably
+            # fenced the transition and acknowledged the drain barrier.
+            template.enabled = enabled and not transition_pending
             template.version = authority.config_revision
             template.updated_by = actor_id
+        if transition_pending:
+            from ..models import KitsuSyncEventOutbox
+
+            transition_type = "storage_authority.activation_requested" if enabled else "storage_authority.deactivation_requested"
+            event_id = str(uuid5(
+                UUID("c1edfb56-6b81-4cc2-94bc-a388c0a19db4"),
+                f"{production_id}:{transition_type}:{previous_epoch}:{authority.activation_epoch}",
+            ))
+            event = {
+                "contract_version": "1.0",
+                "events": [{
+                    "contract_version": "1.0", "producer_id": "vfx-files-plugin",
+                    "event_id": event_id, "event_type": transition_type,
+                    "occurred_at": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
+                    "production_id": str(production_id),
+                    "activation_epoch": authority.activation_epoch if enabled else previous_epoch,
+                    "config_revision": authority.config_revision,
+                    "previous_activation_epoch": previous_epoch,
+                    "new_activation_epoch": authority.activation_epoch,
+                }],
+            }
+            from .v1 import canonical_json, sha256_hex, validate_event_batch
+            validate_event_batch(event)
+            payload = event["events"][0]
+            session.add(KitsuSyncEventOutbox(
+                production_id=production_id, storage_connection_id=None,
+                event_id=event_id, event_type=transition_type, payload=payload,
+                payload_sha256=sha256_hex(canonical_json(payload)), state="queued", attempts=0,
+                lease_generation=0,
+            ))
         session.flush()
         body = _plugin_configuration_response(authority, desired)
         etag = f'"{authority.config_revision}"'
-        _remember(session, production_id, actor_id, key, operation, request_hash, 200, etag, body)
+        response_status = 202 if transition_pending else 200
+        _remember(session, production_id, actor_id, key, operation, request_hash, response_status, etag, body)
         session.flush()
-    return body, 200, etag
+    return body, response_status, etag
 
 
 def put_desired_config(session, *, production_id: UUID, actor_id: UUID, payload: object, idempotency_key: str,
