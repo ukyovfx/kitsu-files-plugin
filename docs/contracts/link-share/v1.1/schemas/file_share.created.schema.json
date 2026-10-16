@@ -138,6 +138,7 @@
         "revision",
         "shared_by_id",
         "shared_at",
+        "idempotency_key",
         "object",
         "metadata",
         "inventory",
@@ -170,7 +171,7 @@
         },
         "idempotency_key": {
           "type": "string",
-          "minLength": 1,
+          "minLength": 16,
           "maxLength": 128,
           "pattern": "^[A-Za-z0-9._~:-]+$"
         },

@@ -23,7 +23,7 @@ The schema is intentionally strict (`additionalProperties: false` at every objec
 - `share.id`: common UUID for one user-requested share operation, including its selected recipient Tasks.
 - `share.share_target_id`: stable UUID for one recipient Task within that operation. Unique per recipient and stable through retries.
 - `share.revision`: `1` means the initial immutable share record. Contract 1.1 emits only `file_share.created` at revision 1. Metadata refreshes do not increment it. Changing the object or recipient requires a new share operation; a future update/revoke event needs a separately reviewed schema.
-- `idempotency_key`: stable per target and request. It identifies the original create semantics; it is not recalculated from mutable metadata.
+- `idempotency_key`: required, stable per target and request, 16–128 characters using the documented safe syntax. It identifies the original create semantics; it is not recalculated from mutable metadata. It is distinct from the HTTP batch `Idempotency-Key`, which also remains stable across retries.
 
 The Plugin MUST reject reuse of a target idempotency key for a different Production, source, object, or recipient. A replay of the same request returns the existing share target and emits no second event.
 
