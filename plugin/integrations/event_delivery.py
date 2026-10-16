@@ -235,44 +235,21 @@ class SqlAlchemyEventOutbox:
             )
 
     def is_current_activation(self, row):
-        from sqlalchemy import select
-        from ..models import KitsuSyncDesiredConfiguration, StorageConnection
+        from .storage_authority import effective_drive_authority
 
         try:
             event_epoch = row.payload["activation_epoch"]
             if isinstance(event_epoch, bool) or not isinstance(event_epoch, int) or event_epoch < 1:
                 return False
             with self.session_factory() as session:
-                desired = session.get(KitsuSyncDesiredConfiguration, row.production_id)
-                if desired is None:
-                    return False
-                config = dict(desired.desired_config)
-                activation = config.get("activation") or {}
-                drive = config.get("drive") or {}
-                if (
-                    not activation.get("enabled")
-                    or desired.notification_epoch != event_epoch
-                    or activation.get("notification_epoch") != event_epoch
-                    or drive.get("root_state") != "verified"
-                    or row.storage_connection_id is None
-                ):
-                    return False
-                connection_id = UUID(str(config["connection_id"]))
-                if UUID(str(row.storage_connection_id)) != connection_id:
-                    return False
-                connection = session.scalar(select(StorageConnection).where(
-                    StorageConnection.id == connection_id,
-                    StorageConnection.production_id == row.production_id,
-                ))
-                if (
-                    connection is None or not connection.enabled or connection.provider != "google_drive"
-                    or connection.allowed_root_id != drive.get("root_id")
-                    or connection.account_mode != drive.get("account_mode")
-                ):
-                    return False
-                if connection.account_mode == "my_drive":
-                    return bool(connection.owner_subject and connection.owner_subject == drive.get("owner_subject"))
-                return bool(connection.account_mode == "shared_drive" and connection.drive_id and connection.drive_id == drive.get("drive_id"))
+                state = effective_drive_authority(session, row.production_id)
+                return bool(
+                    state is not None and state["activation_enabled"]
+                    and state["activation_epoch"] == event_epoch
+                    and state["connection_id"] is not None
+                    and row.storage_connection_id is not None
+                    and UUID(str(row.storage_connection_id)) == UUID(state["connection_id"])
+                )
         except (KeyError, TypeError, ValueError):
             return False
 

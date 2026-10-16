@@ -60,6 +60,97 @@ def selected_storage_connection(session, production_id):
     return _legacy_selected_storage_connection(session, production_id)
 
 
+def effective_drive_authority(session, production_id, *, lock_legacy=False):
+    """Return the effective Drive owner, root and activation fence.
+
+    Legacy rows retain their existing interpretation until explicit import.
+    Plugin-owned rows become authoritative only after a fully configured
+    connection is selected and its encrypted credential remains active.
+    """
+    from ..models import KitsuSyncDesiredConfiguration, ProductionDriveAuthority
+
+    authority_query = select(ProductionDriveAuthority).where(
+        ProductionDriveAuthority.production_id == production_id,
+    )
+    if lock_legacy:
+        authority_query = authority_query.with_for_update()
+    authority = session.scalar(authority_query)
+    if authority is not None and authority.owner == "plugin":
+        try:
+            epoch = authority.activation_epoch
+            revision = authority.config_revision
+            connection_id = UUID(str(authority.connection_id))
+        except (TypeError, ValueError, AttributeError):
+            return None
+        connection = selected_storage_connection(session, production_id)
+        configured = (
+            authority.state == "configured" and revision >= 1
+            and connection is not None and connection.id == connection_id
+            and connection.allowed_root_id == authority.root_id
+        )
+        enabled = bool(
+            configured and authority.activation_enabled
+            and isinstance(epoch, int) and not isinstance(epoch, bool) and epoch >= 1
+        )
+        return {
+            "owner": "plugin", "state": "configured" if configured else authority.state,
+            "config_revision": revision, "activation_epoch": epoch,
+            "activation_enabled": enabled,
+            "connection_id": str(connection.id) if configured else None,
+            "root_id": connection.allowed_root_id if configured else None,
+            "account_mode": connection.account_mode if configured else None,
+            "root_state": "verified" if configured else None,
+        }
+    if authority is not None and not (
+        authority.owner == "legacy_kitsusync" and authority.state == "legacy_import_required"
+    ):
+        return None
+
+    query = select(KitsuSyncDesiredConfiguration).where(
+        KitsuSyncDesiredConfiguration.production_id == production_id,
+    )
+    if lock_legacy:
+        query = query.with_for_update()
+    desired = session.scalar(query)
+    if desired is None:
+        return {
+            "owner": "legacy_kitsusync" if authority is not None else "plugin",
+            "state": "legacy_import_required" if authority is not None else "unconfigured",
+            "config_revision": 0, "activation_epoch": 0, "activation_enabled": False,
+            "connection_id": None, "root_id": None, "account_mode": None, "root_state": None,
+        }
+    config = dict(desired.desired_config or {})
+    activation = config.get("activation") or {}
+    drive = config.get("drive") or {}
+    epoch = desired.notification_epoch
+    try:
+        connection_id = UUID(str(config["connection_id"]))
+    except (KeyError, TypeError, ValueError, AttributeError):
+        connection_id = None
+    connection = selected_storage_connection(session, production_id)
+    configured = bool(
+        connection_id is not None and connection is not None
+        and connection.id == connection_id
+        and drive.get("root_state") == "verified"
+        and connection.allowed_root_id == drive.get("root_id")
+        and connection.account_mode == drive.get("account_mode")
+    )
+    enabled = bool(
+        configured and activation.get("enabled") is True
+        and isinstance(epoch, int) and not isinstance(epoch, bool) and epoch >= 1
+        and activation.get("notification_epoch") == epoch
+    )
+    return {
+        "owner": "legacy_kitsusync", "state": "legacy_import_required",
+        "config_revision": desired.config_revision, "activation_epoch": epoch,
+        "activation_enabled": enabled,
+        "connection_id": str(connection.id) if configured else None,
+        "root_id": connection.allowed_root_id if configured else None,
+        "account_mode": connection.account_mode if configured else None,
+        "root_state": "verified" if configured else None,
+    }
+
+
 def _legacy_selected_storage_connection(session, production_id):
     """Keep current KitsuSync storage live only while import remains pending."""
     from ..models import KitsuSyncDesiredConfiguration, StorageConnection
@@ -180,6 +271,11 @@ def production_drive_authority_status(session, production_id):
         "account_mode": connection.account_mode,
         "credential_state": credential.state if credential is not None else "missing",
     })
-    if credential is None or credential.state != "active":
+    if (
+        credential is None or credential.state != "active"
+        or isinstance(authority.activation_epoch, bool)
+        or not isinstance(authority.activation_epoch, int)
+        or authority.activation_epoch < 1
+    ):
         status["activation_enabled"] = False
     return status

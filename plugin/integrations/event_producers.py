@@ -21,33 +21,18 @@ def _time_text(value):
 
 
 def current_notification_epoch(session, *, production_id, selected_connection_id):
-    """Require the exact enabled KitsuSync connection/root before emitting."""
-    from ..models import KitsuSyncDesiredConfiguration
-    from .storage_authority import selected_storage_connection
+    """Require the effective owner's enabled epoch and exact selected root."""
+    from .storage_authority import effective_drive_authority
 
-    desired = session.scalar(select(KitsuSyncDesiredConfiguration).where(
-        KitsuSyncDesiredConfiguration.production_id == production_id,
-    ).with_for_update())
-    if desired is None:
-        return None
-    config = dict(desired.desired_config)
-    activation = config.get("activation") or {}
-    drive = config.get("drive") or {}
-    try:
-        connection_id = UUID(str(config["connection_id"]))
-    except (KeyError, TypeError, ValueError):
-        return None
-    epoch = desired.notification_epoch
+    state = effective_drive_authority(session, production_id, lock_legacy=True)
     if (
-        not activation.get("enabled")
-        or isinstance(epoch, bool) or not isinstance(epoch, int) or epoch < 1
-        or activation.get("notification_epoch") != epoch
-        or connection_id != UUID(str(selected_connection_id))
-        or drive.get("root_state") != "verified"
+        state is None or not state["activation_enabled"]
+        or state["root_state"] != "verified"
+        or state["connection_id"] != str(selected_connection_id)
     ):
         return None
-    connection = selected_storage_connection(session, production_id)
-    if connection is None or connection.id != connection_id:
+    epoch = state["activation_epoch"]
+    if isinstance(epoch, bool) or not isinstance(epoch, int) or epoch < 1:
         return None
     return epoch
 
