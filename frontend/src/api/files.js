@@ -37,6 +37,21 @@ export function createFilesApi(client) {
       return readJson(await client.request('GET', `${ROOT}/productions/${encodeURIComponent(productionId)}/tasks/${encodeURIComponent(taskId)}/shared-folders`))
     },
 
+    async getDriveAuthorityStatus(productionId) {
+      if (!productionId) throw new TypeError('A Production ID is required')
+      return readJson(await client.request('GET', `${ROOT}/productions/${encodeURIComponent(productionId)}/drive/status`))
+    },
+
+    async createDriveAuthorization(productionId, accountMode, idempotencyKey) {
+      if (!productionId || !['my_drive', 'shared_drive'].includes(accountMode) || !idempotencyKey) {
+        throw new TypeError('A Production, Drive account mode and idempotency key are required')
+      }
+      return readJson(await mutation('POST', `${ROOT}/productions/${encodeURIComponent(productionId)}/drive/authorizations`, {
+        headers: { 'Content-Type': 'application/json', 'Idempotency-Key': idempotencyKey },
+        body: JSON.stringify({ contract_version: '1.0', account_mode: accountMode })
+      }))
+    },
+
     async listTaskUploads(taskId) {
       return readJson(await client.request('GET', `${ROOT}/tasks/${encodeURIComponent(taskId)}/uploads`))
     },

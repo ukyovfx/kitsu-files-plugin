@@ -773,6 +773,13 @@ class NativeDriveAuthorization(MethodView):
 
         database = current_app.extensions["sqlalchemy"]
         sessions = sessionmaker(bind=database.engine, expire_on_commit=False)
+        from .integrations.storage_authority import production_drive_authority_status
+
+        with sessions() as session:
+            authority = production_drive_authority_status(session, scope.production_id)
+        if authority["owner"] != "plugin" or authority["state"] != "unconfigured":
+            code = "legacy_import_required" if authority["owner"] == "legacy_kitsusync" else "drive_authority_already_configured"
+            return {"code": code}, 409
         native_payload = {
             "contract_version": payload.get("contract_version"),
             "production_id": str(scope.production_id),
@@ -792,6 +799,32 @@ class NativeDriveAuthorization(MethodView):
         except OAuthOperationError as exc:
             return {"code": exc.code}, exc.status
         return response, status
+
+
+class NativeDriveStatus(MethodView):
+    """Expose the credential-free Production authority status to Kitsu admins."""
+
+    @jwt_required()
+    def get(self, production_id):
+        _assert_compatible()
+        try:
+            actor = _request_actor(production_id)
+            scope = _resolve_scope(actor, production_id)
+            authorize(actor, Capability.PROVISION, scope)
+        except NotFound:
+            abort(404)
+        except PermissionDenied:
+            abort(403)
+
+        from sqlalchemy.orm import sessionmaker
+
+        from .integrations.storage_authority import production_drive_authority_status
+
+        database = current_app.extensions["sqlalchemy"]
+        sessions = sessionmaker(bind=database.engine, expire_on_commit=False)
+        with sessions() as session:
+            status = production_drive_authority_status(session, scope.production_id)
+        return status
 
 
 class ProductionOverview(MethodView):
@@ -1945,6 +1978,7 @@ from .integrations.http import (  # noqa: E402 - route declarations stay after l
 
 
 routes = [
+    ("/productions/<production_id>/drive/status", NativeDriveStatus),
     ("/productions/<production_id>/drive/authorizations", NativeDriveAuthorization),
     ("/integrations/v1/drive-connections/authorizations", DriveAuthorizationResource),
     ("/integrations/v1/drive-connections", DriveConnectionsResource),

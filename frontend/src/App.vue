@@ -4,6 +4,7 @@ import HandoffPanel from './components/HandoffPanel.vue'
 import PublishList from './components/PublishList.vue'
 import PublishWorkflow from './components/PublishWorkflow.vue'
 import OutputPackagePanel from './components/OutputPackagePanel.vue'
+import DriveSettingsPanel from './components/DriveSettingsPanel.vue'
 import UploadPanel from './components/UploadPanel.vue'
 import { createRequestGeneration } from './taskContext.js'
 import { safeTaskFolderLinks } from './taskFolderLinks.js'
@@ -14,6 +15,10 @@ const loading = ref(true)
 const error = ref('')
 const busyId = ref('')
 const productionId = computed(() => props.context.productionId)
+const driveSettingsHref = computed(() => {
+  const query = new URLSearchParams({ production_id: productionId.value || '', drive_settings: '1' })
+  return `/api/plugins/vfx_files/frontend/?${query.toString()}`
+})
 const taskId = computed(() => props.context.taskId || null)
 const scopeKey = computed(() => `${productionId.value || ''}:${taskId.value || ''}`)
 const folderState = ref(null)
@@ -56,7 +61,9 @@ async function load() {
   }
 }
 
-watch(scopeKey, () => load())
+watch(scopeKey, () => {
+  if (!props.context.driveSettings) load()
+})
 
 async function respond(handoff, target, feedback = '') {
   busyId.value = handoff.id
@@ -85,7 +92,7 @@ async function approve(publish) {
 }
 
 onMounted(() => {
-  load()
+  if (!props.context.driveSettings) load()
   pollTimer = window.setInterval(() => {
     if (overview.value?.publishes.some((publish) => !['completed', 'failed', 'reconcile_required'].includes(publish.state))) load()
   }, 3000)
@@ -96,6 +103,8 @@ onUnmounted(() => requests.invalidate())
 
 <template>
   <main class="files-page" :data-theme="context.darkTheme ? 'dark' : 'light'">
+    <DriveSettingsPanel v-if="context.driveSettings" :production-id="productionId" :api="api" />
+    <template v-else>
     <header class="page-header">
       <div class="brand-mark">VF</div>
       <div class="heading-copy">
@@ -104,6 +113,7 @@ onUnmounted(() => requests.invalidate())
         <p class="subtitle">Versioned work, published artifacts and task handoffs.</p>
       </div>
       <button class="button secondary refresh" :disabled="loading" @click="load">Refresh</button>
+      <a v-if="['admin', 'manager'].includes(overview?.role)" class="button secondary" :href="driveSettingsHref">Drive settings</a>
     </header>
 
     <div v-if="error" class="notice" role="alert"><span class="notice-dot"></span>{{ error }}</div>
@@ -119,7 +129,7 @@ onUnmounted(() => requests.invalidate())
         <div class="panel-heading"><div><p class="eyebrow">Kitsu Task context</p><h2>Shared folders</h2></div></div>
         <p v-if="folderState?.error" class="upload-error" role="alert">{{ folderState.error }}</p>
         <p v-else-if="verifiedFolderLinks.length" class="folder-links"><a v-for="folder in verifiedFolderLinks" :key="folder.scope_key" :href="folder.url" target="_blank" rel="noopener noreferrer">Open {{ folder.name }}</a></p>
-        <p v-else class="muted">No verified Task folder bindings are ready yet. Drive connection, root, templates and synchronization are managed through KitsuSync.</p>
+        <p v-else class="muted">No verified Task folder bindings are ready yet. Drive connection settings are managed in the VFX Files Plugin settings; synchronization appears here.</p>
       </section>
       <UploadPanel :enabled="overview.upload_ready" :tasks="overview.tasks" :fixed-task-id="taskId" :api="api" @uploaded="load" />
       <OutputPackagePanel v-if="taskId" :task-id="taskId" :api="api" @changed="load" />
@@ -129,6 +139,7 @@ onUnmounted(() => requests.invalidate())
         <HandoffPanel :handoffs="receivedHandoffs" :busy-id="busyId" @respond="respond" />
       </div>
       <footer class="page-footer"><span>VFX Files plugin</span><span>Published and approved versions are tracked separately.</span></footer>
+    </template>
     </template>
   </main>
 </template>

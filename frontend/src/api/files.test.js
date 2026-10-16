@@ -21,6 +21,25 @@ describe('Files API', () => {
     expect(client.request).toHaveBeenCalledWith('GET', 'plugins/vfx_files/overview?production_id=p-1&task_id=t-1')
   })
 
+  it('reads sanitized Plugin authority status and starts native OAuth with CSRF and idempotency', async () => {
+    const client = { request: vi.fn()
+      .mockResolvedValueOnce(response({ owner: 'plugin', state: 'unconfigured' }))
+      .mockResolvedValueOnce(response({ csrf_token: 'drive-csrf' }))
+      .mockResolvedValueOnce(response({ authorization_url: 'https://accounts.google.test/oauth', authorization_id: 'auth-1' })) }
+    const api = createFilesApi(client)
+    await expect(api.getDriveAuthorityStatus('prod/a')).resolves.toMatchObject({ owner: 'plugin' })
+    await api.createDriveAuthorization('prod/a', 'my_drive', 'native-drive:prod/a:one')
+    expect(client.request.mock.calls[0]).toEqual(['GET', 'plugins/vfx_files/productions/prod%2Fa/drive/status'])
+    expect(client.request.mock.calls[1]).toEqual(['GET', 'plugins/vfx_files/csrf-token'])
+    const [method, path, options] = client.request.mock.calls[2]
+    expect(method).toBe('POST')
+    expect(path).toBe('plugins/vfx_files/productions/prod%2Fa/drive/authorizations')
+    expect(options.csrfToken).toBe('drive-csrf')
+    expect(options.headers['Idempotency-Key']).toBe('native-drive:prod/a:one')
+    expect(JSON.parse(options.body)).toEqual({ contract_version: '1.0', account_mode: 'my_drive' })
+    await expect(api.createDriveAuthorization('prod/a', 'drive', 'key')).rejects.toThrow('account mode')
+  })
+
   it('fetches a CSRF token and submits an idempotent handoff response', async () => {
     const client = { request: vi.fn()
       .mockResolvedValueOnce(response({ csrf_token: 'signed-token' }))

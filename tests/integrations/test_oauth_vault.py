@@ -297,6 +297,11 @@ def test_native_kitsu_authorization_requires_manager_role_and_same_origin_csrf(o
         view_func=resources.NativeDriveAuthorization.as_view("native_drive_authorization"),
         methods=["POST"],
     )
+    app.add_url_rule(
+        "/api/plugins/vfx_files/productions/<production_id>/drive/status",
+        view_func=resources.NativeDriveStatus.as_view("native_drive_status"),
+        methods=["GET"],
+    )
     with app.app_context():
         token = create_access_token(identity=str(ACTOR))
     client = app.test_client()
@@ -307,6 +312,20 @@ def test_native_kitsu_authorization_requires_manager_role_and_same_origin_csrf(o
         "Idempotency-Key": "native-kitsu-drive-intent-001",
     }
     path = f"/api/plugins/vfx_files/productions/{PRODUCTION}/drive/authorizations"
+    with sessions.begin() as session:
+        session.add(models.ProductionDriveAuthority(
+            production_id=PRODUCTION, owner="legacy_kitsusync", state="legacy_import_required",
+            config_revision=0, activation_epoch=0, connection_id=None, activation_enabled=False,
+        ))
+    legacy = client.post(
+        path,
+        json={"contract_version": "1.0", "account_mode": "my_drive"},
+        headers=headers,
+        base_url="https://kitsu.example.test",
+    )
+    assert legacy.status_code == 409 and legacy.json["code"] == "legacy_import_required"
+    with sessions.begin() as session:
+        session.delete(session.get(models.ProductionDriveAuthority, PRODUCTION))
     response = client.post(
         path,
         json={"contract_version": "1.0", "account_mode": "my_drive"},
@@ -321,7 +340,23 @@ def test_native_kitsu_authorization_requires_manager_role_and_same_origin_csrf(o
         assert intent.actor_id == ACTOR
         assert intent.return_surface == "kitsu_plugin"
 
+    status = client.get(
+        f"/api/plugins/vfx_files/productions/{PRODUCTION}/drive/status",
+        headers={"Authorization": f"Bearer {token}"},
+        base_url="https://kitsu.example.test",
+    )
+    assert status.status_code == 200
+    assert status.json["owner"] == "plugin" and status.json["state"] == "unconfigured"
+    assert "credential_state" in status.json
+    assert "refresh_token" not in status.get_data(as_text=True)
+
     role[0] = "user"
+    hidden_status = client.get(
+        f"/api/plugins/vfx_files/productions/{PRODUCTION}/drive/status",
+        headers={"Authorization": f"Bearer {token}"},
+        base_url="https://kitsu.example.test",
+    )
+    assert hidden_status.status_code == 403
     denied = client.post(
         path,
         json={"contract_version": "1.0", "account_mode": "my_drive"},
