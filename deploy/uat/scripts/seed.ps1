@@ -13,6 +13,8 @@ $accountLines = @(
     "Recipient Task ID: $($seed.recipient_task_id)"
     "Receiving Department ID: $($seed.recipient_department_id)"
     "Receiving Department: $($seed.recipient_department_name)"
+    "Artist A ID: $($seed.artist_a_id)"
+    "Artist C ID: $($seed.artist_c_id)"
     "Manager: $($seed.login_emails.manager)"
     "Artist A: $($seed.login_emails.artist_a)"
     "Artist B: $($seed.login_emails.artist_b)"

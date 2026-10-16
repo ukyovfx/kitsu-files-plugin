@@ -22,7 +22,12 @@ from seeder_safety import (
     validated_disposable_root_url as _validated_disposable_root_url,
     validated_synthetic_login_password as _validated_synthetic_login_password,
 )
-from vfx_files.models import FolderBinding, OutputFamilyMapping, StorageConnection
+from vfx_files.models import (
+    FolderBinding,
+    KitsuSyncDesiredConfiguration,
+    OutputFamilyMapping,
+    StorageConnection,
+)
 from vfx_files.storage.fake import PersistentFakeStorage
 
 
@@ -177,6 +182,37 @@ def main():
         )
         db.session.add(connection)
         db.session.flush()
+        # The UAT package does not run a KitsuSync service. Materialize only
+        # the synthetic, inactive v1 desired-config mirror needed for the
+        # installed Files page to resolve its selected FakeStorage root. This
+        # is test-fixture setup, not a Plugin configuration API or live sync.
+        db.session.add(KitsuSyncDesiredConfiguration(
+            production_id=project.id,
+            config_revision=1,
+            notification_epoch=0,
+            desired_config={
+                "contract_version": "1.0",
+                "connection_id": str(connection.id),
+                "drive": {
+                    "account_mode": "shared_drive",
+                    "drive_id": "synthetic-drive-id",
+                    "owner_subject": None,
+                    "root_id": "synthetic-root-id",
+                    "root_state": "verified",
+                },
+                "template_selection": {"selections": [
+                    {"scope": "production", "template_id": "vfx-files.production.default", "revision": 1, "overrides": {}},
+                    {"scope": "shot", "template_id": "vfx-files.shot.default", "revision": 1, "overrides": {}},
+                    {"scope": "task", "template_id": "vfx-files.task.default", "revision": 1, "overrides": {}},
+                ]},
+                "sync_policy": {
+                    "mode": "new_production",
+                    "scope": {"episodes": False, "sequences": False, "shots": True, "assets": False, "tasks": True},
+                    "notify_new_deliveries": False,
+                },
+                "activation": {"enabled": False, "activated_at": None, "notification_epoch": 0},
+            },
+        ))
         db.session.add(FolderBinding(
             storage_connection_id=connection.id,
             allowed_root_id=connection.allowed_root_id,

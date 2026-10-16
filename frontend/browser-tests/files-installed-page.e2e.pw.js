@@ -87,7 +87,10 @@ function runWorker() {
 
 test('installed Files page uses KitsuSync-managed folders and carries w001 through Artist B to immutable w002', async ({ browser }) => {
   test.skip(missingHostFixture, 'Requires synthetic identities on the pinned disposable Zou host.')
-  test.setTimeout(150_000)
+  // A pinned host is slow to start disposable one-shot Workers between UI
+  // actions; budget the full installed-host flow rather than timing out after
+  // a successful first upload.
+  test.setTimeout(420_000)
   const manager = await openFiles(browser, 'manager')
   await openFilesFromProductionMenu(manager.page, productionId, { alreadySelected: true, taskId })
   await expect(manager.ui.getByRole('link', { name: 'Open folder' })).toHaveCount(0)
