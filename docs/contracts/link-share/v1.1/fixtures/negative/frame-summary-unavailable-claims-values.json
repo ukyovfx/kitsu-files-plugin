@@ -1,0 +1,142 @@
+{
+  "contract_version": "1.1",
+  "events": [
+    {
+      "contract_version": "1.1",
+      "producer_id": "vfx-files-plugin",
+      "event_id": "22b904d7-3526-485b-8780-f1a6554518a9",
+      "event_type": "file_share.created",
+      "occurred_at": "2026-10-16T04:12:00Z",
+      "production_id": "9cb8f70d-0b63-40b7-a73d-3237e6f50d3d",
+      "activation_epoch": 7,
+      "source": {
+        "entity_type": "shot",
+        "entity_id": "2b170f93-69fb-44e1-9e41-b1445262b584",
+        "entity_name": "sc010_sh020",
+        "task_id": "b953915f-aede-4833-8842-6200248b9497",
+        "task_type_id": "6d88fd4e-fcea-4d8f-998d-a7c0f2a7e725",
+        "task_type_name": "Compositing"
+      },
+      "recipient": {
+        "task_id": "f23f6273-4a56-4db8-9bdd-c3837fcbe3e4",
+        "task_type_id": "90d30435-7cff-495c-a316-1f10aa6aa0d8",
+        "task_type_name": "FX",
+        "department_id": "37651ae0-2838-4fd8-9b47-b79e736831ed",
+        "department_name": "FX"
+      },
+      "share": {
+        "id": "0c0726a5-f758-409d-8bc0-bfd9f46fb8d9",
+        "share_target_id": "b5c6c31d-f5f0-4ad7-8894-6d4c925cc832",
+        "revision": 1,
+        "shared_by_id": "c077e05c-2078-4ce1-8518-cb82e277e30d",
+        "shared_at": "2026-10-16T04:11:58Z",
+        "idempotency_key": "share-b5c6c31d-f5f0-4ad7-8894-6d4c925cc832-create-v1",
+        "object": {
+          "provider": "google_drive",
+          "object_id": "1FzExampleDriveFolder_opaqueID",
+          "object_type": "folder",
+          "url": "https://drive.google.com/drive/folders/1FzExampleDriveFolder_opaqueID"
+        },
+        "metadata": {
+          "status": "complete",
+          "observed_at": "2026-10-16T04:11:40Z",
+          "name": "plates_v003",
+          "mime_type": "application/vnd.google-apps.folder",
+          "size_bytes": null,
+          "modified_at": "2026-10-16T04:02:10Z",
+          "sha256": null
+        },
+        "inventory": {
+          "status": "partial",
+          "observed_at": "2026-10-16T04:11:42Z",
+          "scope": "direct_children",
+          "file_count": null,
+          "observed_file_count_lower_bound": 37,
+          "frame_summary": {
+            "status": "unavailable",
+            "frame_start": 1001,
+            "frame_end": 1048,
+            "missing_count": null,
+            "duplicate_count": null,
+            "missing_samples": []
+          }
+        },
+        "access": {
+          "status": "verified_service_only",
+          "access_verified_at": "2026-10-16T04:11:43Z",
+          "check_subject_type": "plugin_service_identity",
+          "check_subject_id": "synthetic-connection-32"
+        }
+      }
+    },
+    {
+      "contract_version": "1.1",
+      "producer_id": "vfx-files-plugin",
+      "event_id": "f85e1407-bc24-4d91-aaff-085fa35d3257",
+      "event_type": "file_share.created",
+      "occurred_at": "2026-10-16T04:12:00Z",
+      "production_id": "9cb8f70d-0b63-40b7-a73d-3237e6f50d3d",
+      "activation_epoch": 7,
+      "source": {
+        "entity_type": "shot",
+        "entity_id": "2b170f93-69fb-44e1-9e41-b1445262b584",
+        "entity_name": "sc010_sh020",
+        "task_id": "b953915f-aede-4833-8842-6200248b9497",
+        "task_type_id": "6d88fd4e-fcea-4d8f-998d-a7c0f2a7e725",
+        "task_type_name": "Compositing"
+      },
+      "recipient": {
+        "task_id": "775f3501-dc26-435d-a1d2-1d9f8e37b0aa",
+        "task_type_id": "4a5f5968-cc91-4313-9e70-e1784caa3201",
+        "task_type_name": "Layout",
+        "department_id": "491662d4-cbc4-4539-98c9-0fd5d5ef3ecb",
+        "department_name": "Layout"
+      },
+      "share": {
+        "id": "0c0726a5-f758-409d-8bc0-bfd9f46fb8d9",
+        "share_target_id": "536272e4-2bd2-416b-b1e3-7ff47e51c982",
+        "revision": 1,
+        "shared_by_id": "c077e05c-2078-4ce1-8518-cb82e277e30d",
+        "shared_at": "2026-10-16T04:11:58Z",
+        "idempotency_key": "share-536272e4-2bd2-416b-b1e3-7ff47e51c982-create-v1",
+        "object": {
+          "provider": "google_drive",
+          "object_id": "1FzExampleDriveFolder_opaqueID",
+          "object_type": "folder",
+          "url": "https://drive.google.com/drive/folders/1FzExampleDriveFolder_opaqueID"
+        },
+        "metadata": {
+          "status": "complete",
+          "observed_at": "2026-10-16T04:11:40Z",
+          "name": "plates_v003",
+          "mime_type": "application/vnd.google-apps.folder",
+          "size_bytes": null,
+          "modified_at": "2026-10-16T04:02:10Z",
+          "sha256": null
+        },
+        "inventory": {
+          "status": "partial",
+          "observed_at": "2026-10-16T04:11:42Z",
+          "scope": "direct_children",
+          "file_count": null,
+          "observed_file_count_lower_bound": 37,
+          "frame_summary": {
+            "status": "partial",
+            "frame_start": 1001,
+            "frame_end": 1048,
+            "missing_count": null,
+            "duplicate_count": null,
+            "missing_samples": []
+          }
+        },
+        "access": {
+          "status": "verified_service_only",
+          "access_verified_at": "2026-10-16T04:11:43Z",
+          "check_subject_type": "plugin_service_identity",
+          "check_subject_id": "synthetic-connection-32"
+        }
+      }
+    }
+  ],
+  "contract_version": "1.1"
+}

@@ -1,0 +1,678 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ukyovfx:vfx-files:contracts:1.1:file-share-created",
+  "title": "Draft VFX Files file_share.created event contract 1.1",
+  "description": "Unadopted proposal. Strict per-recipient link-only Drive share event; never a file_delivery event.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "contract_version",
+    "producer_id",
+    "event_id",
+    "event_type",
+    "occurred_at",
+    "production_id",
+    "activation_epoch",
+    "source",
+    "recipient",
+    "share"
+  ],
+  "properties": {
+    "contract_version": {
+      "const": "1.1"
+    },
+    "producer_id": {
+      "const": "vfx-files-plugin"
+    },
+    "event_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "event_type": {
+      "const": "file_share.created"
+    },
+    "occurred_at": {
+      "type": "string",
+      "format": "date-time",
+      "maxLength": 40
+    },
+    "production_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "activation_epoch": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 2147483647
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "entity_type",
+        "entity_id",
+        "task_id",
+        "task_type_id"
+      ],
+      "properties": {
+        "entity_type": {
+          "type": "string",
+          "enum": [
+            "shot",
+            "asset"
+          ]
+        },
+        "entity_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "entity_name": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 200
+        },
+        "task_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "task_type_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "task_type_name": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 120
+        }
+      }
+    },
+    "recipient": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "task_id",
+        "task_type_id"
+      ],
+      "properties": {
+        "task_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "task_type_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "task_type_name": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 120
+        },
+        "department_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid"
+        },
+        "department_name": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 120
+        }
+      }
+    },
+    "share": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "share_target_id",
+        "revision",
+        "shared_by_id",
+        "shared_at",
+        "idempotency_key",
+        "object",
+        "metadata",
+        "inventory",
+        "access"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "format": "uuid",
+          "description": "Common operation ID for all recipient targets selected in one user action."
+        },
+        "share_target_id": {
+          "type": "string",
+          "format": "uuid",
+          "description": "Stable ID for this one recipient Task target; unique within the share operation."
+        },
+        "revision": {
+          "type": "integer",
+          "const": 1,
+          "description": "The created record's initial revision. Contract 1.1 emits only revision 1; metadata observations do not increment it."
+        },
+        "shared_by_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "shared_at": {
+          "type": "string",
+          "format": "date-time",
+          "maxLength": 40
+        },
+        "idempotency_key": {
+          "type": "string",
+          "minLength": 16,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9._~:-]+$"
+        },
+        "object": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "provider",
+            "object_id",
+            "object_type",
+            "url"
+          ],
+          "properties": {
+            "provider": {
+              "const": "google_drive"
+            },
+            "object_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200,
+              "pattern": "^[A-Za-z0-9_-]+$"
+            },
+            "object_type": {
+              "type": "string",
+              "enum": [
+                "file",
+                "folder"
+              ]
+            },
+            "url": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512,
+              "pattern": "^https://drive\\.google\\.com/(file/d/[A-Za-z0-9_-]+/view|drive/folders/[A-Za-z0-9_-]+)$"
+            }
+          },
+          "allOf": [
+            {
+              "if": {
+                "properties": {
+                  "object_type": {
+                    "const": "file"
+                  }
+                },
+                "required": [
+                  "object_type"
+                ]
+              },
+              "then": {
+                "properties": {
+                  "url": {
+                    "pattern": "^https://drive\\.google\\.com/file/d/[A-Za-z0-9_-]+/view$"
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "object_type": {
+                    "const": "folder"
+                  }
+                },
+                "required": [
+                  "object_type"
+                ]
+              },
+              "then": {
+                "properties": {
+                  "url": {
+                    "pattern": "^https://drive\\.google\\.com/drive/folders/[A-Za-z0-9_-]+$"
+                  }
+                }
+              }
+            }
+          ]
+        },
+        "metadata": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "status",
+            "observed_at",
+            "name",
+            "mime_type",
+            "size_bytes",
+            "modified_at",
+            "sha256"
+          ],
+          "properties": {
+            "status": {
+              "type": "string",
+              "enum": [
+                "complete",
+                "partial",
+                "unavailable"
+              ]
+            },
+            "observed_at": {
+              "type": "string",
+              "format": "date-time",
+              "maxLength": 40
+            },
+            "name": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "maxLength": 255
+            },
+            "mime_type": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "maxLength": 127
+            },
+            "size_bytes": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 0,
+              "maximum": 9223372036854775807
+            },
+            "modified_at": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "format": "date-time",
+              "maxLength": 40
+            },
+            "sha256": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "pattern": "^[a-f0-9]{64}$"
+            }
+          },
+          "allOf": [
+            {
+              "if": {
+                "properties": {
+                  "status": {
+                    "const": "unavailable"
+                  }
+                },
+                "required": ["status"]
+              },
+              "then": {
+                "properties": {
+                  "name": {"type": "null"},
+                  "mime_type": {"type": "null"},
+                  "size_bytes": {"type": "null"},
+                  "modified_at": {"type": "null"},
+                  "sha256": {"type": "null"}
+                }
+              }
+            }
+          ]
+        },
+        "inventory": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "status",
+            "observed_at",
+            "scope",
+            "file_count",
+            "observed_file_count_lower_bound",
+            "frame_summary"
+          ],
+          "properties": {
+            "status": {
+              "type": "string",
+              "enum": [
+                "complete",
+                "partial",
+                "unavailable"
+              ]
+            },
+            "observed_at": {
+              "type": "string",
+              "format": "date-time",
+              "maxLength": 40
+            },
+            "scope": {
+              "type": "string",
+              "enum": [
+                "object",
+                "direct_children",
+                "recursive"
+              ]
+            },
+            "file_count": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 0,
+              "maximum": 1000000000
+            },
+            "observed_file_count_lower_bound": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 0,
+              "maximum": 1000000000
+            },
+            "frame_summary": {
+              "type": [
+                "object",
+                "null"
+              ],
+              "additionalProperties": false,
+              "required": [
+                "status",
+                "frame_start",
+                "frame_end",
+                "missing_count",
+                "duplicate_count",
+                "missing_samples"
+              ],
+              "properties": {
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "complete",
+                    "partial",
+                    "unavailable"
+                  ]
+                },
+                "frame_start": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "minimum": -1000000000,
+                  "maximum": 1000000000
+                },
+                "frame_end": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "minimum": -1000000000,
+                  "maximum": 1000000000
+                },
+                "missing_count": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "minimum": 0,
+                  "maximum": 1000000000
+                },
+                "duplicate_count": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "minimum": 0,
+                  "maximum": 1000000000
+                },
+                "missing_samples": {
+                  "type": "array",
+                  "maxItems": 20,
+                  "items": {
+                    "type": "integer",
+                    "minimum": -1000000000,
+                    "maximum": 1000000000
+                  }
+                }
+              },
+              "allOf": [
+                {
+                  "if": {
+                    "properties": {
+                      "status": {"const": "complete"}
+                    },
+                    "required": ["status"]
+                  },
+                  "then": {
+                    "required": [
+                      "frame_start",
+                      "frame_end",
+                      "missing_count",
+                      "duplicate_count"
+                    ],
+                    "properties": {
+                      "frame_start": {"type": "integer"},
+                      "frame_end": {"type": "integer"},
+                      "missing_count": {"type": "integer"},
+                      "duplicate_count": {"type": "integer"}
+                    }
+                  }
+                },
+                {
+                  "if": {
+                    "properties": {
+                      "status": {"const": "partial"}
+                    },
+                    "required": ["status"]
+                  },
+                  "then": {
+                    "required": [
+                      "missing_count",
+                      "duplicate_count"
+                    ],
+                    "properties": {
+                      "missing_count": {"type": "null"},
+                      "duplicate_count": {"type": "null"}
+                    }
+                  }
+                },
+                {
+                  "if": {
+                    "properties": {
+                      "status": {"const": "unavailable"}
+                    },
+                    "required": ["status"]
+                  },
+                  "then": {
+                    "properties": {
+                      "frame_start": {"type": "null"},
+                      "frame_end": {"type": "null"},
+                      "missing_count": {"type": "null"},
+                      "duplicate_count": {"type": "null"},
+                      "missing_samples": {"maxItems": 0}
+                    }
+                  }
+                }
+              ]
+            }
+          },
+          "allOf": [
+            {
+              "if": {
+                "properties": {
+                  "status": {
+                    "const": "complete"
+                  }
+                },
+                "required": [
+                  "status"
+                ]
+              },
+              "then": {
+                "properties": {
+                  "file_count": {
+                    "type": "integer"
+                  },
+                  "observed_file_count_lower_bound": {
+                    "type": "null"
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "status": {
+                    "const": "partial"
+                  }
+                },
+                "required": [
+                  "status"
+                ]
+              },
+              "then": {
+                "properties": {
+                  "file_count": {
+                    "type": "null"
+                  },
+                  "observed_file_count_lower_bound": {
+                    "type": "integer"
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "status": {
+                    "const": "unavailable"
+                  }
+                },
+                "required": [
+                  "status"
+                ]
+              },
+              "then": {
+                "properties": {
+                  "file_count": {
+                    "type": "null"
+                  },
+                  "observed_file_count_lower_bound": {
+                    "type": "null"
+                  }
+                }
+              }
+            }
+          ]
+        },
+        "access": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "status",
+            "access_verified_at",
+            "check_subject_type",
+            "check_subject_id"
+          ],
+          "properties": {
+            "status": {
+              "type": "string",
+              "enum": [
+                "verified_service_only",
+                "denied",
+                "unknown",
+                "not_checked"
+              ]
+            },
+            "access_verified_at": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "format": "date-time",
+              "maxLength": 40
+            },
+            "check_subject_type": {
+              "type": "string",
+              "enum": [
+                "plugin_service_identity",
+                "none"
+              ]
+            },
+            "check_subject_id": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "maxLength": 200
+            }
+          },
+          "allOf": [
+            {
+              "if": {
+                "properties": {
+                  "status": {
+                    "const": "verified_service_only"
+                  }
+                },
+                "required": [
+                  "status"
+                ]
+              },
+              "then": {
+                "properties": {
+                  "access_verified_at": {
+                    "type": "string"
+                  },
+                  "check_subject_type": {
+                    "const": "plugin_service_identity"
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "status": {
+                    "enum": [
+                      "denied",
+                      "unknown",
+                      "not_checked"
+                    ]
+                  }
+                },
+                "required": [
+                  "status"
+                ]
+              },
+              "then": {
+                "properties": {
+                  "check_subject_type": {
+                    "enum": [
+                      "plugin_service_identity",
+                      "none"
+                    ]
+                  }
+                }
+              }
+            }
+          ]
+        }
+      }
+    }
+  }
+}
