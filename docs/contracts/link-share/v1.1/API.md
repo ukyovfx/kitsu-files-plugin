@@ -60,7 +60,7 @@ Do not add or call an unauthenticated capabilities API. Before enabling the send
 
 ## KitsuSync event intake (existing route, candidate body)
 
-The endpoint path and HMAC framing remain the existing v1 ones. Exact required headers are `X-VFX-Key-Id`, `X-VFX-Timestamp`, `X-VFX-Nonce`, `X-VFX-Content-SHA256`, `X-VFX-Signature`, and `Idempotency-Key`; the last is 16–128 characters. The current KitsuSync 1.0 contract requires root `contract_version` plus `events`. The draft 1.1 batch likewise requires root `contract_version: "1.1"` plus `events`, and every event must be `1.1`. Current KitsuSync rejects 1.1 and therefore the sender must remain disabled until an exact 1.1 receiver is verified.
+The endpoint path and HMAC framing remain the existing v1 ones. Exact required headers are `X-VFX-Key-Id`, `X-VFX-Timestamp`, `X-VFX-Nonce`, `X-VFX-Content-SHA256`, `X-VFX-Signature`, and `Idempotency-Key`; the last is 16–128 characters. The current KitsuSync 1.0 contract requires root `contract_version` plus `events`. The draft 1.1 batch likewise requires root `contract_version: "1.1"` plus `events`, and every event must be `1.1`. KitsuSync PR #239 now contains Draft 1.1 receiver source, but the receiver is not deployed or operator-pinned. The sender must remain disabled until the exact receiver is verified; cross-target invariants between singleton requests also need an agreed and tested handling model.
 
 ```http
 POST /api/integrations/vfx-files/v1/events HTTP/1.1
