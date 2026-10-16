@@ -25,6 +25,7 @@ Department routing passes an immutable reference to the selected completed Publi
 | Installed Kitsu page smoke | PASS — synthetic Manager login, Production → Assets → VFX Files, same-origin iframe and authenticated overview returned 200 |
 | Fixture-browser acceptance | PASS — 4 passed; 4 installed-host workflows were skipped by the fixture run because the host variables are opt-in |
 | Frontend Vitest / build / npm audit | PASS — 21 tests; Vite build succeeded; 0 audit findings |
+| GitHub Actions on PR #15 | BLOCKED — all three checks failed before any job steps (steps=[]); no code check executed in those jobs |
 | Live Production, Staging, Google Drive or Discord | NOT TESTED — out of scope |
 
 The API tests use synthetic identities, Departments, Tasks and Publish records against the pinned PostgreSQL host through Zou's installed plugin package. The browser smoke used the same isolated installed Kitsu/Zou unit. The browser-fixture skips are not counted as host E2E evidence. No Worker change was required for Department Handoff; Worker processing was not part of this Handoff-specific acceptance.
