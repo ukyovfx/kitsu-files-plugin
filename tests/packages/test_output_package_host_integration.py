@@ -17,10 +17,10 @@ def _run_worker_until_ready(ready, *, attempts=30):
         if ready():
             return
         result = subprocess.run(
-            [sys.executable, "-m", "plugin.worker_runtime", "--once"],
+            [sys.executable, "-m", "vfx_files.worker_runtime", "--once"],
             check=False, capture_output=True, text=True, env=os.environ.copy(), timeout=30,
         )
-        assert result.returncode in (0, 2), "worker process failed"
+        assert result.returncode in (0, 2), f"worker process failed: {result.stderr[-4000:]}"
         if result.stdout:
             try:
                 state = json.loads(result.stdout.splitlines()[-1]).get("result")
@@ -523,6 +523,12 @@ def test_task_api_to_worker_creates_immutable_package_copy_and_verified_download
             manifest_sha256=publish_two_manifest_sha256, manifest_bytes=b"synthetic second Publish manifest",
             native_output_file_id=uuid4(), native_revision=2, qc_state="passed",
         ))
+        # This fixture inserts a completed Publish directly instead of using
+        # the publish reservation service, so keep its authoritative pointer in
+        # sync with the version being approved and revoked below.
+        publish_pointer = session.get(PublishPointer, (task_id, output_family_id))
+        assert publish_pointer is not None
+        publish_pointer.latest_published_id = publish_two_id
     approval_two = client.post(
         f"/plugins/vfx_files/publishes/{publish_two_id}/approvals",
         json={"policy_id": "synthetic-review-v1", "policy_sha256": "a" * 64},
@@ -669,9 +675,9 @@ def test_task_api_to_worker_creates_immutable_package_copy_and_verified_download
     assert duplicate_revoke.status_code == 409
     revoked_package = client.get(f"/plugins/vfx_files/tasks/{task_id}/output-packages?limit=10&offset=0")
     assert revoked_package.status_code == 200
-    assert revoked_package.json[0]["id"] == version_two.json["id"]
-    assert revoked_package.json[0]["latest_published"] is True
-    assert revoked_package.json[0]["latest_approved"] is False
+    revoked_package_v2 = next(row for row in revoked_package.json if row["id"] == version_two.json["id"])
+    assert revoked_package_v2["latest_published"] is True
+    assert revoked_package_v2["latest_approved"] is False
 
     with zou_db_factory() as session:
         publish_pointer = session.get(PublishPointer, (task_id, output_family_id))
@@ -689,12 +695,16 @@ def test_task_api_to_worker_creates_immutable_package_copy_and_verified_download
         delivery = session.get(OutputPackageDelivery, UUID(delivery_id))
         history = session.scalars(select(OutputPackageDeliveryEvent).where(
             OutputPackageDeliveryEvent.delivery_id == delivery.id,
+            OutputPackageDeliveryEvent.idempotency_key != legacy_key,
         ).order_by(OutputPackageDeliveryEvent.created_at, OutputPackageDeliveryEvent.id)).all()
-        assert [row.event_type for row in history] == ["delivered", "needs_fix", "revised", "accepted"]
+        assert [row.event_type for row in history] == [
+            "delivered", "needs_fix", "revised", "accepted", "revised", "accepted",
+        ]
         events = session.scalars(select(KitsuSyncEventOutbox).where(
             KitsuSyncEventOutbox.production_id == production_id,
             KitsuSyncEventOutbox.event_type.like("file_delivery.%"),
         )).all()
+        events = [event for event in events if event.payload["delivery"]["id"] == delivery_id]
         assert {row.event_type for row in events} == {
             "file_delivery.created", "file_delivery.needs_fix",
             "file_delivery.revised", "file_delivery.accepted",

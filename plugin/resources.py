@@ -1396,6 +1396,7 @@ class PublishApprovalRevoke(MethodView):
         _require_enabled()
         _assert_compatible()
         from .approvals.service import ApprovalDenied, revoke_approval
+        from .publishes.service import PublishConflict
         try:
             _require_mutation_origin()
             parsed_publish_id = UUID(str(publish_id))
