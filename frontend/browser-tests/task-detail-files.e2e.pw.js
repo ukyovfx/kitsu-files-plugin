@@ -40,7 +40,8 @@ test('native Task detail Files tab stays scoped to the Kitsu Task and Production
   expect(contextData.plugins).toContainEqual(expect.objectContaining({
     plugin_id: 'vfx_files',
     frontend_task_enabled: true,
-    frontend_project_enabled: false
+    frontend_project_enabled: false,
+    frontend_project_admin_enabled: true
   }))
   const overviewResponse = await manager.page.request.get(`${origin}/api/plugins/vfx_files/overview?production_id=${productionId}&task_id=${taskId}`)
   const overviewData = await overviewResponse.json()
@@ -50,6 +51,9 @@ test('native Task detail Files tab stays scoped to the Kitsu Task and Production
   await expect(manager.page.locator('.files-page[data-mode="admin-entry"] .admin-entry')).toBeVisible()
   await expect(manager.page.getByRole('heading', { name: 'Working Files', exact: true })).toHaveCount(0)
   await expect(manager.page.getByRole('link', { name: 'Open VFX Files Plugin settings' })).toHaveAttribute('href', /drive_settings=1/)
+
+  await manager.page.goto(`${origin}/productions/${productionId}/plugins/vfx_files`)
+  await expect(manager.page.locator('iframe.plugin-iframe')).toBeVisible()
 
   const openFilesTab = async (production, task) => {
     const entity = task === taskId ? entityIds.primary : task === secondTaskId ? entityIds.second : entityIds.other
@@ -83,6 +87,8 @@ test('native Task detail Files tab stays scoped to the Kitsu Task and Production
   expect(await hasContext(otherProductionId, otherTaskId)).toBe(true)
 
   const artistA = await login('artist_a')
+  await artistA.page.goto(`${origin}/productions/${productionId}/plugins/vfx_files`)
+  await expect(artistA.page.locator('iframe.plugin-iframe')).toHaveCount(0)
   const artistADrawer = async () => {
     await artistA.page.goto(`${origin}/productions/${productionId}/assets/${entityIds.second}`)
     await artistA.page.getByRole('button', { name: /VFXComp/ }).click()
