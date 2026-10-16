@@ -32,7 +32,7 @@ Run from a clean, committed source worktree. `init.ps1` and `build.ps1` reject d
 .\deploy\uat\scripts\install-plugin.ps1 -Unit demo
 ```
 
-Then create the synthetic Manager / Artist A / Artist B / Supervisor, Production, Sequence, Shot, Task and FakeStorage bindings. Enable the Files feature for Files workflow checks. This local package does not install or seed KitsuSync. The native Plugin Drive page supports sanitized authority status and verified root selection from Plugin-authorized My Drive folders; template configuration and explicit activation are not complete. Do not make a Google request or start the Worker for Drive sync from this UAT package.
+Then create the synthetic Manager / Artist A / Artist B / Supervisor, Production, Sequence, Shot, Task and FakeStorage bindings. Enable the Files feature for Files workflow checks. This local package does not install or seed KitsuSync. The native Plugin Production settings provide the Drive OAuth start, app-visible root verification, configuration save, and explicit activation workflow. Keep the synthetic UAT egress blocked: do not start Google OAuth, use a real Drive, or start the Worker for Drive sync from this package.
 
 ```powershell
 .\deploy\uat\scripts\seed.ps1 -Unit demo
