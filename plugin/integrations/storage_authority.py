@@ -1,6 +1,7 @@
 """Resolve a Production Drive connection through its explicit owner record."""
 
 from uuid import UUID
+from types import SimpleNamespace
 
 from sqlalchemy import select
 
@@ -176,6 +177,51 @@ def effective_drive_authority(session, production_id, *, lock_legacy=False):
         "account_mode": connection.account_mode if configured else None,
         "root_state": "verified" if configured else None,
     }
+
+
+def current_configuration_record(session, production_id, *, lock=False):
+    """Return the configuration owned by the current per-Production authority.
+
+    Plugin-owned Productions read their durable configuration only from the
+    authority row. Legacy rows remain readable only while legacy ownership is
+    explicitly in force. The returned view is transient and never persisted.
+    """
+    from ..models import KitsuSyncDesiredConfiguration, ProductionDriveAuthority
+
+    authority_query = select(ProductionDriveAuthority).where(
+        ProductionDriveAuthority.production_id == production_id,
+    )
+    if lock:
+        authority_query = authority_query.with_for_update()
+    authority = session.scalar(authority_query)
+    if authority is not None and authority.owner == "plugin":
+        if not isinstance(authority.desired_config, dict):
+            return None
+        config = dict(authority.desired_config)
+        previous_activation = config.get("activation")
+        activated_at = previous_activation.get("activated_at") if isinstance(previous_activation, dict) else None
+        config["activation"] = {
+            "enabled": bool(authority.activation_enabled),
+            "activated_at": activated_at if authority.activation_enabled else None,
+            "notification_epoch": authority.activation_epoch,
+        }
+        return SimpleNamespace(
+            production_id=authority.production_id,
+            config_revision=authority.config_revision,
+            notification_epoch=authority.activation_epoch,
+            desired_config=config,
+            authority=authority,
+        )
+    if authority is not None and authority.owner != "legacy_kitsusync":
+        return None
+    if authority is not None and authority.state != "legacy_import_required":
+        return None
+    query = select(KitsuSyncDesiredConfiguration).where(
+        KitsuSyncDesiredConfiguration.production_id == production_id,
+    )
+    if lock:
+        query = query.with_for_update()
+    return session.scalar(query)
 
 
 def _legacy_selected_storage_connection(session, production_id):

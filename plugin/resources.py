@@ -776,7 +776,7 @@ class NativeDriveAuthorization(MethodView):
 
         database = current_app.extensions["sqlalchemy"]
         sessions = sessionmaker(bind=database.engine, expire_on_commit=False)
-        from .integrations.storage_authority import production_drive_authority_status
+        from .integrations.storage_authority import current_configuration_record, production_drive_authority_status
 
         with sessions() as session:
             authority = production_drive_authority_status(session, scope.production_id)
@@ -820,17 +820,17 @@ class NativeDriveConnections(MethodView):
             abort(403)
 
         from .integrations.oauth import connection_status
-        from .models import DriveAuthorizationIntent, DriveCredential, StorageConnection
+        from .models import DriveCredential, StorageConnection
 
         rows = StorageConnection.query.filter_by(production_id=scope.production_id).order_by(StorageConnection.id).all()
-        native_ids = {
-            row.connection_id for row in DriveAuthorizationIntent.query.filter_by(
-                production_id=scope.production_id, return_surface="kitsu_plugin", status="connected",
-            ).all()
-        }
         return {"contract_version": "1.0", "connections": [
-            connection_status(row, DriveCredential.query.filter_by(connection_id=row.id).one_or_none())
-            for row in rows if row.id in native_ids
+            connection_status(row, DriveCredential.query.filter_by(
+                connection_id=row.id, production_id=scope.production_id,
+            ).one_or_none())
+            for row in rows
+            if row.account_mode == "my_drive" and DriveCredential.query.filter_by(
+                connection_id=row.id, production_id=scope.production_id, state="active",
+            ).one_or_none() is not None
         ]}
 
 
@@ -851,7 +851,7 @@ class NativeDriveRoots(MethodView):
             abort(403)
 
         from .integrations.native_storage import list_native_root_candidates
-        from .models import DriveAuthorizationIntent, DriveCredential, StorageConnection
+        from .models import DriveCredential, StorageConnection
 
         connection = StorageConnection.query.filter_by(
             id=connection_uuid, production_id=scope.production_id,
@@ -859,12 +859,13 @@ class NativeDriveRoots(MethodView):
         credential = DriveCredential.query.filter_by(connection_id=connection_uuid).one_or_none()
         if connection is None:
             abort(404)
-        if DriveAuthorizationIntent.query.filter_by(
-            production_id=scope.production_id, connection_id=connection_uuid,
-            return_surface="kitsu_plugin", status="connected",
-        ).one_or_none() is None:
-            abort(404)
-        if credential is None or credential.state != "active":
+        if (
+            credential is None or credential.state != "active"
+            or credential.account_mode != "my_drive" or connection.account_mode != "my_drive"
+            or not connection.owner_subject
+            or credential.account_subject != connection.owner_subject
+            or credential.owner_subject != connection.owner_subject
+        ):
             abort(409, description="connection_not_ready")
         if connection.account_mode != "my_drive":
             abort(409, description="shared_drive_selection_unavailable")
@@ -902,7 +903,7 @@ class NativeDriveRoots(MethodView):
             native_root_receipt,
             select_native_root,
         )
-        from .models import DriveAuthorizationIntent, DriveCredential, StorageConnection
+        from .models import DriveCredential, StorageConnection
         from .storage.base import PermissionFailure
         from sqlalchemy.orm import sessionmaker
 
@@ -912,12 +913,13 @@ class NativeDriveRoots(MethodView):
         credential = DriveCredential.query.filter_by(connection_id=connection_uuid).one_or_none()
         if connection is None:
             abort(404)
-        if DriveAuthorizationIntent.query.filter_by(
-            production_id=scope.production_id, connection_id=connection_uuid,
-            return_surface="kitsu_plugin", status="connected",
-        ).one_or_none() is None:
-            abort(404)
-        if credential is None or credential.state != "active":
+        if (
+            credential is None or credential.state != "active"
+            or credential.account_mode != "my_drive" or connection.account_mode != "my_drive"
+            or not connection.owner_subject
+            or credential.account_subject != connection.owner_subject
+            or credential.owner_subject != connection.owner_subject
+        ):
             return {"code": "connection_not_ready"}, 409
         if connection.account_mode != "my_drive":
             return {"code": "shared_drive_selection_unavailable"}, 409
@@ -979,7 +981,6 @@ class NativeDriveStatus(MethodView):
             abort(403)
 
         from sqlalchemy.orm import sessionmaker
-
         from .integrations.storage_authority import production_drive_authority_status
 
         database = current_app.extensions["sqlalchemy"]
@@ -987,6 +988,270 @@ class NativeDriveStatus(MethodView):
         with sessions() as session:
             status = production_drive_authority_status(session, scope.production_id)
         return status
+
+
+class NativeDriveConfiguration(MethodView):
+    """Read or change Plugin-owned templates and sync scope in native Kitsu."""
+
+    @jwt_required()
+    def get(self, production_id):
+        _assert_compatible()
+        try:
+            actor = _request_actor(production_id)
+            scope = _resolve_scope(actor, production_id)
+            authorize(actor, Capability.PROVISION, scope)
+        except NotFound:
+            abort(404)
+        except PermissionDenied:
+            abort(403)
+
+        from sqlalchemy.orm import sessionmaker
+        from .integrations.storage_authority import production_drive_authority_status
+        from .integrations.configuration import _configuration_payload
+        from .models import ProductionDriveAuthority
+
+        database = current_app.extensions["sqlalchemy"]
+        sessions = sessionmaker(bind=database.engine, expire_on_commit=False)
+        with sessions() as session:
+            authority = session.get(ProductionDriveAuthority, scope.production_id)
+            status = production_drive_authority_status(session, scope.production_id)
+            if authority is None or authority.owner != "plugin":
+                return {
+                    "contract_version": "1.0", "configured": False,
+                    "owner": status["owner"], "state": status["state"],
+                    "requires_explicit_legacy_import": status["owner"] == "legacy_kitsusync",
+                }
+            row = current_configuration_record(session, scope.production_id)
+            if row is None:
+                return {"contract_version": "1.0", "configured": False, "owner": "plugin", "state": authority.state}
+            body = _configuration_payload(row)
+            body.get("drive", {}).pop("owner_subject", None)
+            body["configured"] = True
+            response = current_app.response_class(
+                current_app.json.dumps(body), status=200, mimetype="application/json",
+            )
+            response.headers["ETag"] = f'"{row.config_revision}"'
+            return response
+
+    @jwt_required()
+    def post(self, production_id):
+        _assert_compatible()
+        try:
+            _require_mutation_origin()
+            actor = _request_actor(production_id)
+            scope = _resolve_scope(actor, production_id)
+            authorize(actor, Capability.PROVISION, scope)
+            payload = request.get_json(silent=False)
+        except NotFound:
+            abort(404)
+        except PermissionDenied:
+            abort(403)
+
+        from sqlalchemy.orm import sessionmaker
+        from .integrations.configuration import ConfigurationError, put_plugin_desired_config
+
+        database = current_app.extensions["sqlalchemy"]
+        sessions = sessionmaker(bind=database.engine, expire_on_commit=False)
+        try:
+            with sessions() as session:
+                body, _status, etag = put_plugin_desired_config(
+                    session, production_id=scope.production_id, actor_id=actor.actor_id,
+                    payload=payload, idempotency_key=request.headers.get("Idempotency-Key"),
+                    if_match=request.headers.get("If-Match"),
+                )
+            body.get("drive", {}).pop("owner_subject", None)
+            response = current_app.response_class(
+                current_app.json.dumps(body), status=200, mimetype="application/json",
+            )
+            response.headers["ETag"] = etag
+            return response
+        except ConfigurationError as error:
+            return {"code": error.code, **(error.details or {})}, error.status
+
+
+class NativeDriveActivation(MethodView):
+    """Explicitly activate or deactivate Plugin-owned Production storage."""
+
+    @jwt_required()
+    def post(self, production_id):
+        _assert_compatible()
+        try:
+            _require_mutation_origin()
+            actor = _request_actor(production_id)
+            scope = _resolve_scope(actor, production_id)
+            authorize(actor, Capability.PROVISION, scope)
+            payload = request.get_json(silent=False)
+        except NotFound:
+            abort(404)
+        except PermissionDenied:
+            abort(403)
+
+        if not isinstance(payload, dict) or set(payload) != {"contract_version", "enabled"} or not isinstance(payload.get("enabled"), bool):
+            abort(400)
+        from sqlalchemy.orm import sessionmaker
+        from .integrations.configuration import ConfigurationError, get_operation_receipt, set_plugin_activation
+        from .models import ProductionDriveAuthority, StorageConnection
+        from .storage.base import PermissionFailure
+
+        database = current_app.extensions["sqlalchemy"]
+        sessions = sessionmaker(bind=database.engine, expire_on_commit=False)
+        operation = "plugin.activation.enable" if payload["enabled"] else "plugin.activation.disable"
+        try:
+            with sessions() as session:
+                prior = get_operation_receipt(
+                    session, production_id=scope.production_id, actor_id=actor.actor_id,
+                    idempotency_key=request.headers.get("Idempotency-Key"), operation=operation,
+                    payload={"contract_version": payload.get("contract_version")},
+                    if_match=request.headers.get("If-Match"),
+                )
+            if prior is not None:
+                response = current_app.response_class(
+                    current_app.json.dumps(prior.response_body), status=prior.response_status, mimetype="application/json",
+                )
+                if prior.response_etag:
+                    response.headers["ETag"] = prior.response_etag
+                return response
+        except ConfigurationError as error:
+            return {"code": error.code, **(error.details or {})}, error.status
+        capabilities = None
+        if payload["enabled"]:
+            authority = ProductionDriveAuthority.query.filter_by(production_id=scope.production_id).one_or_none()
+            if authority is None or authority.owner != "plugin" or authority.state != "configured":
+                return {"code": "drive_authority_unavailable"}, 409
+            connection_row = StorageConnection.query.filter_by(
+                id=authority.connection_id, production_id=scope.production_id,
+            ).one_or_none()
+            if connection_row is None:
+                return {"code": "connection_not_ready"}, 409
+            connection = _storage_adapter(connection_row, allow_unconfigured=True)
+            try:
+                capabilities = connection.verify_root_candidate(authority.root_id)
+            except PermissionFailure:
+                return {"code": "root_unverified"}, 403
+            except Exception:
+                return {"code": "provider_unavailable"}, 503
+        try:
+            with sessions() as session:
+                body, _status, etag = set_plugin_activation(
+                    session, production_id=scope.production_id, actor_id=actor.actor_id,
+                    enabled=payload["enabled"], payload={"contract_version": payload.get("contract_version")},
+                    idempotency_key=request.headers.get("Idempotency-Key"),
+                    if_match=request.headers.get("If-Match"), capabilities=capabilities,
+                )
+            body.get("drive", {}).pop("owner_subject", None)
+            response = current_app.response_class(
+                current_app.json.dumps(body), status=200, mimetype="application/json",
+            )
+            response.headers["ETag"] = etag
+            return response
+        except ConfigurationError as error:
+            return {"code": error.code, **(error.details or {})}, error.status
+
+
+class NativeDriveLegacyImport(MethodView):
+    """Preview and explicitly confirm a non-destructive legacy ownership transfer."""
+
+    @jwt_required()
+    def get(self, production_id):
+        _assert_compatible()
+        try:
+            actor = _request_actor(production_id)
+            scope = _resolve_scope(actor, production_id)
+            authorize(actor, Capability.PROVISION, scope)
+        except NotFound:
+            abort(404)
+        except PermissionDenied:
+            abort(403)
+
+        from sqlalchemy.orm import sessionmaker
+        from .integrations.legacy_import import preview_legacy_import
+
+        database = current_app.extensions["sqlalchemy"]
+        sessions = sessionmaker(bind=database.engine, expire_on_commit=False)
+        with sessions() as session:
+            return preview_legacy_import(session, scope.production_id)
+
+    @jwt_required()
+    def post(self, production_id):
+        _assert_compatible()
+        try:
+            _require_mutation_origin()
+            actor = _request_actor(production_id)
+            scope = _resolve_scope(actor, production_id)
+            authorize(actor, Capability.PROVISION, scope)
+            payload = request.get_json(silent=False)
+        except NotFound:
+            abort(404)
+        except PermissionDenied:
+            abort(403)
+        if (
+            not isinstance(payload, dict)
+            or set(payload) != {"contract_version", "source_revision", "confirm"}
+            or payload.get("contract_version") != "1.0"
+            or not isinstance(payload.get("source_revision"), int)
+            or isinstance(payload.get("source_revision"), bool)
+            or payload.get("confirm") is not True
+        ):
+            abort(400)
+
+        from sqlalchemy.orm import sessionmaker
+        from .integrations.configuration import ConfigurationError, get_operation_receipt
+        from .integrations.legacy_import import import_legacy_configuration, preview_legacy_import
+        from .models import StorageConnection
+        from .storage.base import PermissionFailure
+
+        database = current_app.extensions["sqlalchemy"]
+        sessions = sessionmaker(bind=database.engine, expire_on_commit=False)
+        try:
+            with sessions() as session:
+                prior = get_operation_receipt(
+                    session, production_id=scope.production_id, actor_id=actor.actor_id,
+                    idempotency_key=request.headers.get("Idempotency-Key"),
+                    operation="plugin.legacy_import.confirm", payload=payload,
+                    if_match=request.headers.get("If-Match"),
+                )
+            if prior is not None:
+                response = current_app.response_class(
+                    current_app.json.dumps(prior.response_body), status=prior.response_status, mimetype="application/json",
+                )
+                if prior.response_etag:
+                    response.headers["ETag"] = prior.response_etag
+                return response
+        except ConfigurationError as error:
+            return {"code": error.code, **(error.details or {})}, error.status
+        with sessions() as session:
+            preview = preview_legacy_import(session, scope.production_id)
+        if preview.get("status") != "ready_for_explicit_review":
+            return {"code": "legacy_import_blocked", "reason": preview.get("reason")}, 409
+        connection_row = StorageConnection.query.filter_by(
+            id=preview["connection_id"], production_id=scope.production_id,
+        ).one_or_none()
+        if connection_row is None or connection_row.account_mode != "my_drive":
+            return {"code": "existing_root_not_supported"}, 409
+        adapter = _storage_adapter(connection_row, allow_unconfigured=True)
+        try:
+            capabilities = adapter.verify_root_candidate(preview["root_id"])
+        except PermissionFailure:
+            return {"code": "root_unverified"}, 403
+        except Exception:
+            return {"code": "provider_unavailable"}, 503
+        expected_status = payload["source_revision"]
+        if expected_status != preview.get("source_revision"):
+            return {"code": "stale_legacy_revision"}, 409
+        try:
+            with sessions() as session:
+                body, status, etag = import_legacy_configuration(
+                    session, production_id=scope.production_id, actor_id=actor.actor_id,
+                    payload=payload, idempotency_key=request.headers.get("Idempotency-Key"),
+                    if_match=request.headers.get("If-Match"), capabilities=capabilities,
+                )
+            response = current_app.response_class(
+                current_app.json.dumps(body), status=status, mimetype="application/json",
+            )
+            response.headers["ETag"] = etag
+            return response
+        except ConfigurationError as error:
+            return {"code": error.code, **(error.details or {})}, error.status
 
 
 class ProductionOverview(MethodView):
@@ -2142,6 +2407,9 @@ from .integrations.http import (  # noqa: E402 - route declarations stay after l
 routes = [
     ("/productions/<production_id>/drive/connections", NativeDriveConnections),
     ("/productions/<production_id>/drive/connections/<connection_id>/roots", NativeDriveRoots),
+    ("/productions/<production_id>/drive/configuration", NativeDriveConfiguration),
+    ("/productions/<production_id>/drive/activation", NativeDriveActivation),
+    ("/productions/<production_id>/drive/legacy-import", NativeDriveLegacyImport),
     ("/productions/<production_id>/drive/status", NativeDriveStatus),
     ("/productions/<production_id>/drive/authorizations", NativeDriveAuthorization),
     ("/integrations/v1/drive-connections/authorizations", DriveAuthorizationResource),

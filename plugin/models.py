@@ -456,6 +456,7 @@ class ProductionDriveAuthority(db.Model):
     activation_epoch = db.Column(Integer, nullable=False, default=0)
     connection_id = db.Column(UUIDType(binary=False), ForeignKey("plugin_vfx_files_storage_connection.id"))
     root_id = db.Column(String(255))
+    desired_config = db.Column(JSONB)
     activation_enabled = db.Column(Boolean, nullable=False, default=False)
     updated_by = db.Column(UUIDType(binary=False))
     updated_at = db.Column(DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now())

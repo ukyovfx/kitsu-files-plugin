@@ -20,6 +20,7 @@ def preview_legacy_import(session, production_id):
     from ..models import (
         DriveCredential,
         KitsuSyncDesiredConfiguration,
+        ProductionDriveAuthority,
         SharedTemplateConfiguration,
     )
     from .configuration import ConfigurationError, validate_desired_config
@@ -40,6 +41,15 @@ def preview_legacy_import(session, production_id):
             "writes_performed": False,
             "drive_operations_performed": False,
         }
+
+    authority = session.scalar(select(ProductionDriveAuthority).where(
+        ProductionDriveAuthority.production_id == production_id,
+    ))
+    if (
+        authority is None or authority.owner != "legacy_kitsusync"
+        or authority.state != "legacy_import_required"
+    ):
+        return _blocked("legacy_authority_not_pending", production_id=str(production_id))
 
     if (
         isinstance(legacy.config_revision, bool)
@@ -158,6 +168,149 @@ def preview_legacy_import(session, production_id):
         "writes_performed": False,
         "drive_operations_performed": False,
     }
+
+
+def import_legacy_configuration(
+    session, *, production_id, actor_id, payload, idempotency_key, if_match, capabilities,
+):
+    """Explicitly transfer one verified legacy configuration into Plugin ownership.
+
+    The legacy configuration, OAuth credential, root, bindings, jobs and history
+    stay in place. The existing execution template is only disabled and
+    revision-fenced. No provider mutation is performed.
+    """
+    import re
+
+    from ..models import (
+        DriveCredential,
+        KitsuSyncDesiredConfiguration,
+        ProductionDriveAuthority,
+        SharedTemplateConfiguration,
+        StorageConnection,
+    )
+    from .configuration import (
+        ConfigurationError,
+        _lock_production,
+        _remember,
+        _request_hash,
+        _response_receipt,
+    )
+    from .storage_authority import production_drive_authority_status
+
+    try:
+        production_id = UUID(str(production_id))
+        actor_id = UUID(str(actor_id))
+    except (TypeError, ValueError, AttributeError):
+        raise ConfigurationError(400, "invalid_event") from None
+    if (
+        not isinstance(payload, dict)
+        or set(payload) != {"contract_version", "source_revision", "confirm"}
+        or payload.get("contract_version") != "1.0"
+        or not isinstance(payload.get("source_revision"), int)
+        or isinstance(payload.get("source_revision"), bool)
+        or payload["source_revision"] < 1
+        or payload.get("confirm") is not True
+    ):
+        raise ConfigurationError(400, "invalid_event")
+    if not isinstance(idempotency_key, str) or not 16 <= len(idempotency_key) <= 128:
+        raise ConfigurationError(400, "invalid_event", details={"field": "Idempotency-Key"})
+    expected_revision = payload["source_revision"]
+    if not isinstance(if_match, str) or not re.fullmatch(r'"legacy-[1-9][0-9]*"', if_match):
+        raise ConfigurationError(400, "invalid_event", details={"field": "If-Match"})
+    if int(if_match[8:-1]) != expected_revision:
+        raise ConfigurationError(400, "invalid_event", details={"field": "If-Match"})
+    operation = "plugin.legacy_import.confirm"
+    request_hash = _request_hash(operation, payload, if_match, None)
+
+    with session.begin():
+        _lock_production(session, production_id)
+        prior = _response_receipt(session, production_id, actor_id, idempotency_key, operation, request_hash)
+        if prior is not None:
+            return prior.response_body, prior.response_status, prior.response_etag
+
+        authority = session.scalar(select(ProductionDriveAuthority).where(
+            ProductionDriveAuthority.production_id == production_id,
+        ).with_for_update())
+        if (
+            authority is None or authority.owner != "legacy_kitsusync"
+            or authority.state != "legacy_import_required"
+        ):
+            raise ConfigurationError(409, "legacy_import_not_pending")
+
+        legacy = session.scalar(select(KitsuSyncDesiredConfiguration).where(
+            KitsuSyncDesiredConfiguration.production_id == production_id,
+        ).with_for_update())
+        if legacy is None or legacy.config_revision != expected_revision:
+            raise ConfigurationError(409, "stale_legacy_revision")
+
+        try:
+            legacy_connection_id = UUID(str((legacy.desired_config or {}).get("connection_id", "")))
+        except (TypeError, ValueError, AttributeError):
+            raise ConfigurationError(409, "legacy_import_blocked") from None
+        connection = session.scalar(select(StorageConnection).where(
+            StorageConnection.production_id == production_id,
+            StorageConnection.id == legacy_connection_id,
+        ).with_for_update())
+        if connection is None or connection.account_mode != "my_drive":
+            raise ConfigurationError(409, "existing_root_not_supported")
+        credential = session.scalar(select(DriveCredential).where(
+            DriveCredential.production_id == production_id,
+            DriveCredential.connection_id == connection.id,
+        ).with_for_update())
+        template = session.scalar(select(SharedTemplateConfiguration).where(
+            SharedTemplateConfiguration.production_id == production_id,
+            SharedTemplateConfiguration.storage_connection_id == connection.id,
+        ).with_for_update())
+
+        if (
+            capabilities is None or not capabilities.root_visible
+            or capabilities.root_id != connection.allowed_root_id
+            or not capabilities.can_add_children
+        ):
+            raise ConfigurationError(409, "root_not_writable")
+        preview = preview_legacy_import(session, production_id)
+        if preview.get("status") != "ready_for_explicit_review":
+            raise ConfigurationError(409, "legacy_import_blocked", details={"reason": preview.get("reason")})
+        if credential is None or credential.state != "active" or template is None:
+            raise ConfigurationError(409, "legacy_import_blocked")
+
+        desired = dict(legacy.desired_config)
+        desired.pop("activation", None)
+        new_revision = max(authority.config_revision, legacy.config_revision) + 1
+        new_epoch = max(authority.activation_epoch, legacy.notification_epoch) + 1
+        desired["activation"] = {
+            "enabled": False,
+            "activated_at": None,
+            "notification_epoch": new_epoch,
+        }
+        authority.owner = "plugin"
+        authority.state = "configured"
+        authority.config_revision = new_revision
+        authority.activation_epoch = new_epoch
+        authority.connection_id = connection.id
+        authority.root_id = connection.allowed_root_id
+        authority.desired_config = desired
+        authority.activation_enabled = False
+        authority.updated_by = actor_id
+        template.enabled = False
+        template.version = new_revision
+        template.updated_by = actor_id
+        session.flush()
+
+        body = production_drive_authority_status(session, production_id)
+        body.update({
+            "contract_version": "1.0",
+            "import_status": "imported_inactive",
+            "source_revision": expected_revision,
+            "legacy_source_preserved": True,
+            "template_preserved": True,
+            "credentials_decrypted": False,
+            "drive_operations_performed": False,
+        })
+        etag = f'"plugin-{new_revision}"'
+        _remember(session, production_id, actor_id, idempotency_key, operation, request_hash, 200, etag, body)
+        session.flush()
+    return body, 200, etag
 
 
 def _blocked(reason, **evidence):

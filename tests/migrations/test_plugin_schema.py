@@ -15,6 +15,7 @@ DRIVE_OAUTH_MIGRATION = ROOT / "plugin/migrations/versions/0013_encrypted_drive_
 EVENT_OUTBOX_BINDING_MIGRATION = ROOT / "plugin/migrations/versions/0014_event_outbox_connection_binding.py"
 PRODUCTION_DRIVE_AUTHORITY_MIGRATION = ROOT / "plugin/migrations/versions/0015_production_drive_authority.py"
 OAUTH_RETURN_SURFACE_MIGRATION = ROOT / "plugin/migrations/versions/0016_oauth_return_surface.py"
+PLUGIN_DRIVE_CONFIGURATION_MIGRATION = ROOT / "plugin/migrations/versions/0017_plugin_owned_drive_configuration.py"
 
 
 def test_plugin_tables_are_namespaced_and_nullable_folder_identity_is_avoided():
@@ -230,3 +231,14 @@ def test_oauth_return_surface_migration_preserves_pending_legacy_callbacks():
     assert "return_surface IN ('kitsusync','kitsu_plugin')" in source
     assert "schema_epoch = 15" in source and "schema_epoch = 14" in source
     assert "Native OAuth return intents exist" in source
+
+
+def test_plugin_owned_configuration_migration_adds_nullable_durable_authority_without_legacy_copy():
+    source = PLUGIN_DRIVE_CONFIGURATION_MIGRATION.read_text()
+    assert 'revision = "vxf_0017"' in source
+    assert 'down_revision = "vxf_0016"' in source
+    assert '"plugin_vfx_files_production_drive_authority"' in source
+    assert 'sa.Column("desired_config", postgresql.JSONB(astext_type=sa.Text()), nullable=True)' in source
+    assert "INSERT INTO" not in source and "UPDATE plugin_vfx_files_kitsusync_desired_config" not in source
+    assert "schema_epoch = 16" in source and "schema_epoch = 15" in source
+    assert "Plugin-owned Drive configuration exists" in source

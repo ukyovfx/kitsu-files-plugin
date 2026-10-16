@@ -61,6 +61,40 @@ describe('Files API', () => {
     await expect(api.selectDriveRoot('prod-1', 'conn-1', 'root-1', -1, 'key')).rejects.toThrow('revision')
   })
 
+  it('saves native Drive configuration, activates explicitly, and confirms legacy import with exact revisions', async () => {
+    const client = { request: vi.fn()
+      .mockResolvedValueOnce(response({ configured: true, config_revision: 2 }))
+      .mockResolvedValueOnce(response({ csrf_token: 'config-csrf' }))
+      .mockResolvedValueOnce(response({ config_revision: 3 }))
+      .mockResolvedValueOnce(response({ csrf_token: 'activate-csrf' }))
+      .mockResolvedValueOnce(response({ activation: { enabled: true } }))
+      .mockResolvedValueOnce(response({ status: 'ready_for_explicit_review', source_revision: 7 }))
+      .mockResolvedValueOnce(response({ csrf_token: 'import-csrf' }))
+      .mockResolvedValueOnce(response({ import_status: 'imported_inactive' })) }
+    const api = createFilesApi(client)
+    const config = {
+      contract_version: '1.0',
+      template_selection: { selections: [] },
+      sync_policy: { mode: 'future_only', scope: {}, notify_new_deliveries: false },
+    }
+    await api.saveDriveConfiguration('prod-1', config, 2, 'native-config-save-0001')
+    await api.setDriveActivation('prod-1', true, 3, 'native-activate-save-0001')
+    await api.getLegacyDriveImportPreview('prod-1')
+    await api.confirmLegacyDriveImport('prod-1', 7, 'legacy-import-confirm-0001')
+    const save = client.request.mock.calls[1]
+    expect(save[1]).toBe('plugins/vfx_files/productions/prod-1/drive/configuration')
+    expect(save[2].headers['If-Match']).toBe('"2"')
+    expect(JSON.parse(save[2].body)).toEqual(config)
+    const activation = client.request.mock.calls[3]
+    expect(activation[1]).toBe('plugins/vfx_files/productions/prod-1/drive/activation')
+    expect(activation[2].headers['If-Match']).toBe('"3"')
+    expect(JSON.parse(activation[2].body)).toEqual({ contract_version: '1.0', enabled: true })
+    const legacyImport = client.request.mock.calls[6]
+    expect(legacyImport[1]).toBe('plugins/vfx_files/productions/prod-1/drive/legacy-import')
+    expect(legacyImport[2].headers['If-Match']).toBe('"legacy-7"')
+    expect(JSON.parse(legacyImport[2].body)).toEqual({ contract_version: '1.0', source_revision: 7, confirm: true })
+  })
+
   it('fetches a CSRF token and submits an idempotent handoff response', async () => {
     const client = { request: vi.fn()
       .mockResolvedValueOnce(response({ csrf_token: 'signed-token' }))

@@ -5,6 +5,12 @@ const props = defineProps({ productionId: { type: String, default: '' }, api: { 
 const status = ref(null)
 const connections = ref([])
 const roots = ref([])
+const configuration = ref(null)
+const legacyPreview = ref(null)
+const confirmLegacyImport = ref(false)
+const selectedScopes = ref({ assets: false, sequences: false, shots: true, tasks: true })
+const notifyNewDeliveries = ref(false)
+const syncMode = ref('new_production')
 const selectedConnectionId = ref('')
 const selectedRootId = ref('')
 const loading = ref(true)
@@ -24,6 +30,22 @@ async function load() {
   error.value = ''
   try {
     status.value = await props.api.getDriveAuthorityStatus(props.productionId)
+    configuration.value = await props.api.getDriveConfiguration(props.productionId)
+    legacyPreview.value = status.value.owner === 'legacy_kitsusync'
+      ? await props.api.getLegacyDriveImportPreview(props.productionId)
+      : null
+    confirmLegacyImport.value = false
+    if (configuration.value.configured) {
+      const selections = configuration.value.template_selection?.selections || []
+      selectedScopes.value = {
+        assets: selections.some((item) => item.scope === 'asset'),
+        sequences: selections.some((item) => item.scope === 'sequence'),
+        shots: selections.some((item) => item.scope === 'shot'),
+        tasks: selections.some((item) => item.scope === 'task'),
+      }
+      notifyNewDeliveries.value = configuration.value.sync_policy?.notify_new_deliveries === true
+      syncMode.value = configuration.value.sync_policy?.mode || 'new_production'
+    }
     connections.value = []
     roots.value = []
     selectedConnectionId.value = ''
@@ -92,6 +114,97 @@ async function verifyRoot() {
   }
 }
 
+const canSaveConfiguration = computed(() =>
+  status.value?.owner === 'plugin' && status.value?.state === 'configured'
+  && !status.value?.activation_enabled
+  && selectedScopes.value.tasks
+  && (selectedScopes.value.assets || selectedScopes.value.shots)
+  && (!selectedScopes.value.sequences || selectedScopes.value.shots)
+)
+
+function configPayload() {
+  const scopes = ['production']
+  if (selectedScopes.value.assets) scopes.push('asset')
+  if (selectedScopes.value.shots) scopes.push('shot')
+  if (selectedScopes.value.sequences) scopes.push('sequence')
+  if (selectedScopes.value.tasks && (selectedScopes.value.assets || selectedScopes.value.shots)) scopes.push('task')
+  const selections = scopes.map((scope) => ({
+    scope,
+    template_id: `vfx-files.${scope}.default`,
+    revision: 1,
+    overrides: {},
+  }))
+  return {
+    contract_version: '1.0',
+    template_selection: { selections },
+    sync_policy: {
+      mode: syncMode.value,
+      scope: {
+        episodes: false,
+        sequences: selectedScopes.value.sequences,
+        shots: selectedScopes.value.shots,
+        assets: selectedScopes.value.assets,
+        tasks: selectedScopes.value.tasks,
+      },
+      notify_new_deliveries: notifyNewDeliveries.value,
+    },
+  }
+}
+
+async function saveConfiguration() {
+  if (!canSaveConfiguration.value || busy.value) return
+  busy.value = true
+  error.value = ''
+  try {
+    configuration.value = await props.api.saveDriveConfiguration(
+      props.productionId, configPayload(), status.value.config_revision,
+      `native-config:${props.productionId}:${crypto.randomUUID()}`
+    )
+    status.value = await props.api.getDriveAuthorityStatus(props.productionId)
+  } catch (cause) {
+    error.value = cause.message || 'Drive settings could not be saved.'
+    if (cause.status === 409) await load()
+  } finally {
+    busy.value = false
+  }
+}
+
+async function setActivation(enabled) {
+  if (busy.value || !configuration.value?.configured) return
+  busy.value = true
+  error.value = ''
+  try {
+    configuration.value = await props.api.setDriveActivation(
+      props.productionId, enabled, status.value.config_revision,
+      `native-activation:${props.productionId}:${crypto.randomUUID()}`
+    )
+    status.value = await props.api.getDriveAuthorityStatus(props.productionId)
+  } catch (cause) {
+    error.value = cause.message || 'Drive activation could not be changed.'
+    if (cause.status === 409) await load()
+  } finally {
+    busy.value = false
+  }
+}
+
+async function importLegacyConfiguration() {
+  if (!confirmLegacyImport.value || legacyPreview.value?.status !== 'ready_for_explicit_review' || busy.value) return
+  busy.value = true
+  error.value = ''
+  try {
+    await props.api.confirmLegacyDriveImport(
+      props.productionId, legacyPreview.value.source_revision,
+      `legacy-import:${props.productionId}:${crypto.randomUUID()}`
+    )
+    await load()
+  } catch (cause) {
+    error.value = cause.message || 'The legacy configuration could not be imported.'
+    if (cause.status === 409) await load()
+  } finally {
+    busy.value = false
+  }
+}
+
 onMounted(load)
 </script>
 
@@ -125,6 +238,22 @@ onMounted(load)
         <p v-if="legacyOwned" class="notice" role="status">
           This Production has a KitsuSync-managed configuration. Ownership will not change automatically; an approved migration is required.
         </p>
+        <template v-if="legacyOwned && legacyPreview">
+          <dl v-if="legacyPreview.status === 'ready_for_explicit_review'" class="drive-status">
+            <div><dt>Legacy configuration revision</dt><dd>{{ legacyPreview.source_revision }}</dd></div>
+            <div><dt>Current root</dt><dd>{{ legacyPreview.root_verification === 'stored_identity_match_only' ? 'Stored identity match; awaiting live root check' : legacyPreview.root_id }}</dd></div>
+            <div><dt>Current activation</dt><dd>{{ legacyPreview.source_activation_enabled ? 'Active' : 'Inactive' }}</dd></div>
+            <div><dt>After import</dt><dd>Plugin-owned, inactive, with fresh activation epoch</dd></div>
+          </dl>
+          <p v-else class="muted" role="status">Legacy import preview: {{ legacyPreview.reason || legacyPreview.status }}. The existing configuration remains under KitsuSync ownership.</p>
+          <label v-if="legacyPreview.status === 'ready_for_explicit_review'" class="legacy-confirm">
+            <input v-model="confirmLegacyImport" type="checkbox" :disabled="busy">
+            I approve transferring this Production to Files Plugin ownership. Import keeps Drive sync inactive until it is reviewed and explicitly activated.
+          </label>
+          <button v-if="legacyPreview.status === 'ready_for_explicit_review'" class="button primary" :disabled="busy || !confirmLegacyImport" @click="importLegacyConfiguration">
+            {{ busy ? 'Verifying and importing…' : 'Import configuration and keep inactive' }}
+          </button>
+        </template>
         <template v-else-if="status.state === 'unconfigured'">
           <button class="button primary" :disabled="!canConnect || busy" @click="connect">
             {{ busy ? 'Opening Google…' : 'Connect Google Drive' }}
@@ -155,7 +284,30 @@ onMounted(load)
             </select>
           </label>
           <button class="button secondary" :disabled="busy || status.activation_enabled || !selectedRootId || selectedRootId === status.root_id" @click="verifyRoot">Verify root change</button>
-          <p class="muted">The root is selected and verified. Template configuration and explicit storage activation are still required before Drive synchronization can run.</p>
+          <p class="muted">The verified root is the Production folder. Files Plugin stores credentials on the server and uses the existing Drive scope.</p>
+          <fieldset class="drive-options" :disabled="busy || status.activation_enabled">
+            <legend>Folder templates and synchronization scope</legend>
+            <label><input v-model="selectedScopes.shots" type="checkbox"> Shots</label>
+            <label><input v-model="selectedScopes.assets" type="checkbox"> Assets</label>
+            <label><input v-model="selectedScopes.sequences" type="checkbox" :disabled="!selectedScopes.shots"> Sequences</label>
+            <label><input v-model="selectedScopes.tasks" type="checkbox" :disabled="!selectedScopes.shots && !selectedScopes.assets"> Tasks</label>
+            <label><input v-model="notifyNewDeliveries" type="checkbox"> Notify KitsuSync about new deliveries</label>
+            <label class="drive-field">Synchronization mode
+              <select v-model="syncMode">
+                <option value="new_production">New Production</option>
+                <option value="future_only">Future changes only</option>
+                <option value="adopt_existing">Adopt existing hierarchy</option>
+              </select>
+            </label>
+          </fieldset>
+          <div class="drive-actions">
+            <button class="button primary" :disabled="busy || !canSaveConfiguration" @click="saveConfiguration">
+              {{ busy ? 'Saving…' : 'Save Drive settings' }}
+            </button>
+            <button v-if="status.activation_enabled" class="button secondary" :disabled="busy" @click="setActivation(false)">Deactivate Drive sync</button>
+            <button v-else class="button primary" :disabled="busy || !configuration?.configured || !canSaveConfiguration" @click="setActivation(true)">Activate Drive sync</button>
+          </div>
+          <p class="muted">Activation verifies the saved Production root again. Changing settings requires deactivation and creates a fresh activation epoch.</p>
         </template>
         <p v-else class="muted">Drive setup is unavailable in the current state. No Drive files or permissions have been changed.</p>
       </template>
@@ -176,4 +328,9 @@ onMounted(load)
 .drive-back { justify-self: start; text-decoration: none; }
 .drive-field { display: grid; gap: 6px; color: var(--muted); font-size: 11px; }
 .drive-field select { min-width: 0; padding: 9px 10px; color: var(--text); background: var(--surface); border: 1px solid var(--border); border-radius: 7px; }
+.drive-options { display: grid; gap: 10px; padding: 14px; border: 1px solid var(--border); border-radius: 8px; }
+.drive-options label { display: flex; align-items: center; gap: 8px; color: var(--text); font-size: 12px; }
+.drive-options .drive-field { display: grid; align-items: start; }
+.drive-actions { display: flex; flex-wrap: wrap; gap: 10px; }
+.legacy-confirm { display: flex; align-items: flex-start; gap: 9px; color: var(--text); font-size: 12px; line-height: 1.5; }
 </style>

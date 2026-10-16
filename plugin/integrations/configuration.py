@@ -159,6 +159,13 @@ def _response_receipt(session, production_id, actor_id, idempotency_key, operati
     return prior
 
 
+def get_operation_receipt(session, *, production_id, actor_id, idempotency_key, operation, payload, if_match):
+    """Return a matching durable result before repeating external verification."""
+    key = _valid_idempotency_key(idempotency_key)
+    request_hash = _request_hash(operation, payload, if_match, None)
+    return _response_receipt(session, production_id, actor_id, key, operation, request_hash)
+
+
 def _lock_production(session, production_id):
     # The transaction-scoped lock also serializes first creation, where there
     # is not yet a desired-config row on which SELECT FOR UPDATE can lock.
@@ -170,12 +177,27 @@ def _lock_production(session, production_id):
 
 
 def _assert_kitsusync_is_legacy_owner(session, production_id):
-    """Fence the legacy writer as soon as the Plugin claims a Production."""
-    from ..models import ProductionDriveAuthority
+    """Fence Plugin-owned rows and persist explicit ownership for legacy writes."""
+    from ..models import KitsuSyncDesiredConfiguration, ProductionDriveAuthority
 
     authority = session.get(ProductionDriveAuthority, production_id)
-    if authority is not None and authority.owner == "plugin":
-        _fail(409, "plugin_authority_active")
+    if authority is not None:
+        if authority.owner != "legacy_kitsusync" or authority.state != "legacy_import_required":
+            _fail(409, "plugin_authority_active" if authority.owner == "plugin" else "drive_authority_unavailable")
+        return
+    legacy = session.get(KitsuSyncDesiredConfiguration, production_id)
+    authority = ProductionDriveAuthority(
+        production_id=production_id,
+        owner="legacy_kitsusync",
+        state="legacy_import_required",
+        config_revision=0,
+        activation_epoch=max(0, legacy.notification_epoch) if legacy is not None else 0,
+        connection_id=None,
+        root_id=None,
+        activation_enabled=False,
+    )
+    session.add(authority)
+    session.flush()
 
 
 def _check_connection(session, production_id, connection_id, drive):
@@ -201,11 +223,7 @@ def _check_connection(session, production_id, connection_id, drive):
 
 
 def _persist_execution_template(session, *, production_id, actor_id, desired, config_revision, enabled):
-    """Persist the Plugin-owned execution snapshot in the config transaction.
-
-    KitsuSync remains the desired-state authority. The SharedTemplate row is a
-    fenced execution snapshot consumed by the existing Preview/Worker path.
-    """
+    """Persist the existing fenced execution snapshot in the config transaction."""
     from ..models import SharedTemplateConfiguration
     from .template_materialization import ROOT_BINDING, TREE_ROOT_ID, materialize_template_selection
 
@@ -259,12 +277,183 @@ def _remember(session, production_id, actor_id, key, operation, request_hash, st
 
 
 def get_desired_config(session, production_id: UUID):
-    from ..models import KitsuSyncDesiredConfiguration
+    from .storage_authority import current_configuration_record
 
-    row = session.get(KitsuSyncDesiredConfiguration, production_id)
+    row = current_configuration_record(session, production_id)
     if row is None:
         _fail(404, "connection_not_found")
     return _configuration_payload(row), f'"{row.config_revision}"'
+
+
+def _plugin_configuration_response(authority, body):
+    from types import SimpleNamespace
+
+    row = SimpleNamespace(
+        production_id=authority.production_id,
+        config_revision=authority.config_revision,
+        notification_epoch=authority.activation_epoch,
+        desired_config=body,
+    )
+    response = _configuration_payload(row)
+    response.update({"configured": True, "owner": "plugin", "state": "configured"})
+    response.get("drive", {}).pop("owner_subject", None)
+    return response
+
+
+def put_plugin_desired_config(
+    session, *, production_id: UUID, actor_id: UUID, payload: object,
+    idempotency_key: str, if_match: str | None,
+):
+    """Save native Kitsu template/scope settings under Plugin ownership."""
+    from ..models import ProductionDriveAuthority
+    from .storage_authority import selected_storage_connection
+
+    if not isinstance(payload, dict) or set(payload) != {"contract_version", "template_selection", "sync_policy"}:
+        _fail(400, "invalid_event", field="desired_config")
+    if payload.get("contract_version") != "1.0":
+        _fail(400, "unsupported_contract_version")
+    key = _valid_idempotency_key(idempotency_key)
+    if not isinstance(if_match, str) or not re.fullmatch(r'"(?:0|[1-9][0-9]*)"', if_match):
+        _fail(400, "invalid_event", field="If-Match")
+    expected = int(if_match[1:-1])
+    operation = "plugin_desired_config.put"
+    request_hash = _request_hash(operation, payload, if_match, None)
+    with session.begin():
+        _lock_production(session, production_id)
+        prior = _response_receipt(session, production_id, actor_id, key, operation, request_hash)
+        if prior is not None:
+            return prior.response_body, prior.response_status, prior.response_etag
+        authority = session.scalar(select(ProductionDriveAuthority).where(
+            ProductionDriveAuthority.production_id == production_id,
+        ).with_for_update())
+        if authority is None or authority.owner != "plugin" or authority.state != "configured":
+            _fail(409, "drive_authority_unavailable")
+        if authority.config_revision != expected:
+            _fail(409, "stale_config", expected_revision=expected, actual_revision=authority.config_revision)
+        if authority.activation_enabled:
+            _fail(409, "deactivate_before_config_change")
+        connection = selected_storage_connection(session, production_id)
+        if connection is None or connection.id != authority.connection_id or connection.allowed_root_id != authority.root_id:
+            _fail(409, "connection_not_ready")
+        desired = {
+            "contract_version": "1.0",
+            "connection_id": str(connection.id),
+            "drive": {
+                "account_mode": connection.account_mode,
+                "drive_id": connection.drive_id,
+                "owner_subject": connection.owner_subject,
+                "root_id": connection.allowed_root_id,
+                "root_state": "verified",
+            },
+            "template_selection": payload["template_selection"],
+            "sync_policy": payload["sync_policy"],
+        }
+        desired = validate_desired_config(desired)
+        authority.config_revision += 1
+        authority.activation_epoch += 1
+        desired["activation"] = {
+            "enabled": False, "activated_at": None,
+            "notification_epoch": authority.activation_epoch,
+        }
+        authority.desired_config = desired
+        authority.updated_by = actor_id
+        _persist_execution_template(
+            session, production_id=production_id, actor_id=actor_id,
+            desired=desired, config_revision=authority.config_revision, enabled=False,
+        )
+        body = _plugin_configuration_response(authority, desired)
+        etag = f'"{authority.config_revision}"'
+        _remember(session, production_id, actor_id, key, operation, request_hash, 200, etag, body)
+        session.flush()
+    return body, 200, etag
+
+
+def set_plugin_activation(
+    session, *, production_id: UUID, actor_id: UUID, enabled: bool,
+    payload: object, idempotency_key: str, if_match: str | None, capabilities=None,
+):
+    """Activate or deactivate the Plugin-owned Production with fresh fencing."""
+    from ..models import ProductionDriveAuthority, SharedTemplateConfiguration
+    from .storage_authority import selected_storage_connection
+
+    if not isinstance(enabled, bool):
+        _fail(400, "invalid_event")
+    if not isinstance(payload, dict) or set(payload) != {"contract_version"} or payload.get("contract_version") != "1.0":
+        _fail(400, "unsupported_contract_version" if isinstance(payload, dict) and payload.get("contract_version") != "1.0" else "invalid_event")
+    key = _valid_idempotency_key(idempotency_key)
+    if not isinstance(if_match, str) or not re.fullmatch(r'"[1-9][0-9]*"', if_match):
+        _fail(400, "invalid_event", field="If-Match")
+    expected = int(if_match[1:-1])
+    operation = "plugin.activation.enable" if enabled else "plugin.activation.disable"
+    request_hash = _request_hash(operation, payload, if_match, None)
+    with session.begin():
+        _lock_production(session, production_id)
+        prior = _response_receipt(session, production_id, actor_id, key, operation, request_hash)
+        if prior is not None:
+            return prior.response_body, prior.response_status, prior.response_etag
+        authority = session.scalar(select(ProductionDriveAuthority).where(
+            ProductionDriveAuthority.production_id == production_id,
+        ).with_for_update())
+        if authority is None or authority.owner != "plugin" or authority.state != "configured":
+            _fail(409, "drive_authority_unavailable")
+        if authority.config_revision != expected:
+            _fail(409, "stale_config", expected_revision=expected, actual_revision=authority.config_revision)
+        desired = authority.desired_config
+        if not isinstance(desired, dict):
+            _fail(409, "configuration_required")
+        if enabled:
+            connection = selected_storage_connection(session, production_id)
+            if connection is None or connection.id != authority.connection_id or connection.allowed_root_id != authority.root_id:
+                _fail(409, "connection_not_ready")
+            if (
+                capabilities is None or not capabilities.root_visible
+                or capabilities.root_id != authority.root_id or not capabilities.can_add_children
+            ):
+                _fail(409, "root_not_writable")
+            policy = desired.get("sync_policy", {})
+            if not isinstance(policy, dict) or policy.get("mode") not in {"new_production", "adopt_existing", "future_only"}:
+                _fail(409, "invalid_event", field="sync_policy.mode")
+            try:
+                from .template_materialization import validate_sync_template_scope
+                validate_sync_template_scope(
+                    desired.get("template_selection", {}).get("selections"),
+                    policy.get("scope", {}), allow_empty=False,
+                )
+            except (TypeError, ValueError):
+                _fail(409, "invalid_event", field="sync_policy.scope")
+            template = session.scalar(select(SharedTemplateConfiguration).where(
+                SharedTemplateConfiguration.production_id == production_id,
+                SharedTemplateConfiguration.storage_connection_id == connection.id,
+                SharedTemplateConfiguration.allowed_root_id == authority.root_id,
+            ).with_for_update())
+            if template is None:
+                _fail(409, "configuration_required")
+        else:
+            template = session.scalar(select(SharedTemplateConfiguration).where(
+                SharedTemplateConfiguration.production_id == production_id,
+            ).with_for_update())
+
+        authority.activation_epoch += 1
+        authority.config_revision += 1
+        authority.activation_enabled = enabled
+        authority.updated_by = actor_id
+        desired = dict(desired)
+        desired["activation"] = {
+            "enabled": enabled,
+            "activated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z") if enabled else None,
+            "notification_epoch": authority.activation_epoch,
+        }
+        authority.desired_config = desired
+        if template is not None:
+            template.enabled = enabled
+            template.version = authority.config_revision
+            template.updated_by = actor_id
+        session.flush()
+        body = _plugin_configuration_response(authority, desired)
+        etag = f'"{authority.config_revision}"'
+        _remember(session, production_id, actor_id, key, operation, request_hash, 200, etag, body)
+        session.flush()
+    return body, 200, etag
 
 
 def put_desired_config(session, *, production_id: UUID, actor_id: UUID, payload: object, idempotency_key: str,

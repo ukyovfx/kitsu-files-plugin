@@ -42,6 +42,30 @@ export function createFilesApi(client) {
       return readJson(await client.request('GET', `${ROOT}/productions/${encodeURIComponent(productionId)}/drive/status`))
     },
 
+    async getDriveConfiguration(productionId) {
+      if (!productionId) throw new TypeError('A Production ID is required')
+      return readJson(await client.request('GET', `${ROOT}/productions/${encodeURIComponent(productionId)}/drive/configuration`))
+    },
+
+    async getLegacyDriveImportPreview(productionId) {
+      if (!productionId) throw new TypeError('A Production ID is required')
+      return readJson(await client.request('GET', `${ROOT}/productions/${encodeURIComponent(productionId)}/drive/legacy-import`))
+    },
+
+    async confirmLegacyDriveImport(productionId, sourceRevision, idempotencyKey) {
+      if (!productionId || !Number.isInteger(sourceRevision) || sourceRevision < 1 || !idempotencyKey) {
+        throw new TypeError('A Production, legacy revision and idempotency key are required')
+      }
+      return readJson(await mutation('POST', `${ROOT}/productions/${encodeURIComponent(productionId)}/drive/legacy-import`, {
+        headers: {
+          'Content-Type': 'application/json',
+          'Idempotency-Key': idempotencyKey,
+          'If-Match': `\"legacy-${sourceRevision}\"`
+        },
+        body: JSON.stringify({ contract_version: '1.0', source_revision: sourceRevision, confirm: true })
+      }))
+    },
+
     async listDriveConnections(productionId) {
       if (!productionId) throw new TypeError('A Production ID is required')
       return readJson(await client.request('GET', `${ROOT}/productions/${encodeURIComponent(productionId)}/drive/connections`))
@@ -73,6 +97,34 @@ export function createFilesApi(client) {
           'If-Match': `"${configRevision}"`
         },
         body: JSON.stringify({ contract_version: '1.0', root_id: rootId })
+      }))
+    },
+
+    async saveDriveConfiguration(productionId, payload, configRevision, idempotencyKey) {
+      if (!productionId || !Number.isInteger(configRevision) || configRevision < 0 || !idempotencyKey) {
+        throw new TypeError('A Production, revision and idempotency key are required')
+      }
+      return readJson(await mutation('POST', `${ROOT}/productions/${encodeURIComponent(productionId)}/drive/configuration`, {
+        headers: {
+          'Content-Type': 'application/json',
+          'Idempotency-Key': idempotencyKey,
+          'If-Match': `"${configRevision}"`
+        },
+        body: JSON.stringify(payload)
+      }))
+    },
+
+    async setDriveActivation(productionId, enabled, configRevision, idempotencyKey) {
+      if (!productionId || typeof enabled !== 'boolean' || !Number.isInteger(configRevision) || configRevision < 1 || !idempotencyKey) {
+        throw new TypeError('A Production, activation state, revision and idempotency key are required')
+      }
+      return readJson(await mutation('POST', `${ROOT}/productions/${encodeURIComponent(productionId)}/drive/activation`, {
+        headers: {
+          'Content-Type': 'application/json',
+          'Idempotency-Key': idempotencyKey,
+          'If-Match': `"${configRevision}"`
+        },
+        body: JSON.stringify({ contract_version: '1.0', enabled })
       }))
     },
 

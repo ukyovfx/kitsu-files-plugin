@@ -169,11 +169,30 @@ def select_native_root(session, *, production_id: UUID, actor_id: UUID, connecti
         authority.config_revision += 1
         if root_or_connection_changed:
             authority.activation_epoch += 1
+            if isinstance(authority.desired_config, dict):
+                desired = dict(authority.desired_config)
+                desired["connection_id"] = str(connection.id)
+                desired["drive"] = {
+                    "account_mode": connection.account_mode,
+                    "drive_id": connection.drive_id,
+                    "owner_subject": connection.owner_subject,
+                    "root_id": connection.allowed_root_id,
+                    "root_state": "verified",
+                }
+                desired["activation"] = {
+                    "enabled": False, "activated_at": None,
+                    "notification_epoch": authority.activation_epoch,
+                }
+                authority.desired_config = desired
             templates = session.scalars(select(SharedTemplateConfiguration).where(
                 SharedTemplateConfiguration.production_id == production_id,
             ).with_for_update()).all()
             for template in templates:
                 template.enabled = False
+                template.storage_connection_id = connection_id
+                template.allowed_root_id = payload["root_id"]
+                template.version = authority.config_revision
+                template.updated_by = actor_id
         authority.activation_enabled = False
         authority.updated_by = actor_id
         session.flush()

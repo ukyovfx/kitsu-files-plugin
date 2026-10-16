@@ -105,8 +105,10 @@ def start_snapshot(
     expires_at: datetime,
 ):
     """Reserve an upload only against current desired configuration."""
-    Desired, Snapshot, _Page, _Idempotency = _get_models()
-    config = session.scalar(select(Desired).where(Desired.production_id == production_id).with_for_update())
+    _Desired, Snapshot, _Page, _Idempotency = _get_models()
+    from .storage_authority import current_configuration_record
+
+    config = current_configuration_record(session, production_id, lock=True)
     if config is None or config.config_revision != config_revision:
         raise StaleSnapshot("Snapshot configuration revision is stale")
     if not isinstance(source_etag, str) or not 1 <= len(source_etag) <= 200:
@@ -198,7 +200,9 @@ def complete_snapshot(
     verified_objects = verifier.complete()
     validate_snapshot_production(verified_objects, str(snapshot.production_id))
     if snapshot.state == "uploading":
-        config = session.scalar(select(Desired).where(Desired.production_id == snapshot.production_id).with_for_update())
+        from .storage_authority import current_configuration_record
+
+        config = current_configuration_record(session, snapshot.production_id, lock=True)
         if config is None or config.config_revision != config_revision:
             snapshot.state = "rejected"
             session.flush()

@@ -243,7 +243,9 @@ def _models():
 
 def _require_current_config(session, production_id, config_revision, *, require_active=True):
     _FolderBinding, _Job, Desired, _Snapshot, _Page, _Preview, _Template, Connection = _models()
-    config = session.scalar(select(Desired).where(Desired.production_id == production_id).with_for_update())
+    from .storage_authority import current_configuration_record
+
+    config = current_configuration_record(session, production_id, lock=True)
     if config is None or config.config_revision != config_revision:
         raise SyncOperationError(409, "stale_config")
     require_supported_sync_mode(config.desired_config)
