@@ -105,7 +105,7 @@ def _retry_delay(attempts: int) -> int:
     return min(MAX_RETRY_SECONDS, 5 * (2 ** min(max(attempts - 1, 0), 10)))
 
 
-def _valid_acceptance(status, response, event_id):
+def _valid_acceptance(status, response, event_id, event_type=None):
     if status != 202 or not isinstance(response, dict) or set(response) != {"contract_version", "results"}:
         return None
     results = response.get("results")
@@ -118,6 +118,13 @@ def _valid_acceptance(status, response, event_id):
         return None
     if result.get("code") is not None and (not isinstance(result["code"], str) or len(result["code"]) > 80):
         return None
+    if event_type in {
+        "storage_authority.deactivation_requested", "storage_authority.activation_requested",
+    }:
+        if result["outcome"] == "accepted" and result.get("code") != "activation_barrier_complete":
+            return None
+        if result["outcome"] == "duplicate" and result.get("code") != "duplicate_event":
+            return None
     return result
 
 
@@ -160,7 +167,7 @@ def dispatch_one(repository, receiver, config: EventDeliveryConfig, *, worker_id
         )
         return ("retry" if retry else "quarantined") if finished else "lease_lost"
 
-    result = _valid_acceptance(status, response, row.event_id)
+    result = _valid_acceptance(status, response, row.event_id, row.payload.get("event_type"))
     if result is not None:
         if result["outcome"] == "quarantined":
             return "quarantined" if repository.finish(

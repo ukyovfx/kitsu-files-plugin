@@ -25,6 +25,24 @@ def _event(event_id=None, epoch=4):
     }
 
 
+def _authority_event(event_type, *, event_id=None):
+    previous_epoch = 4
+    next_epoch = previous_epoch + 1
+    activating = event_type == "storage_authority.activation_requested"
+    return {
+        "contract_version": "1.0",
+        "producer_id": "vfx-files-plugin",
+        "event_id": str(event_id or uuid4()),
+        "event_type": event_type,
+        "occurred_at": "2026-10-17T00:00:00Z",
+        "production_id": str(uuid4()),
+        "activation_epoch": next_epoch if activating else previous_epoch,
+        "config_revision": 5,
+        "previous_activation_epoch": previous_epoch,
+        "new_activation_epoch": next_epoch,
+    }
+
+
 class FakeOutbox:
     def __init__(self, payload, *, current=True):
         self.row = type("Row", (), {
@@ -146,6 +164,49 @@ def test_matching_duplicate_is_success_but_receiver_quarantine_is_terminal():
     }))
     assert dispatch_one(quarantined, quarantine_receiver, _config(), worker_id=uuid4()) == "quarantined"
     assert quarantined.finalized == [("quarantined", "receiver_quarantined", None)]
+
+
+def test_authority_transition_requires_durable_barrier_ack_not_generic_202_acceptance():
+    for event_type in ("storage_authority.activation_requested", "storage_authority.deactivation_requested"):
+        for outcome, code in (("accepted", None), ("accepted", "accepted"), ("duplicate", None), ("duplicate", "accepted")):
+            payload = _authority_event(event_type)
+            outbox = FakeOutbox(payload)
+            receiver = FakeReceiver((202, {
+                "contract_version": "1.0",
+                "results": [{"event_id": payload["event_id"], "outcome": outcome, "code": code}],
+            }))
+            assert dispatch_one(outbox, receiver, _config(), worker_id=uuid4()) == "retry"
+            assert outbox.finalized[0][0] == "retry"
+
+        payload = _authority_event(event_type)
+        completed = FakeOutbox(payload)
+        receiver = FakeReceiver((202, {
+            "contract_version": "1.0",
+            "results": [{
+                "event_id": payload["event_id"], "outcome": "accepted",
+                "code": "activation_barrier_complete",
+            }],
+        }))
+        assert dispatch_one(completed, receiver, _config(), worker_id=uuid4()) == "delivered"
+        assert completed.finalized[0][0] == "delivered"
+
+        payload = _authority_event(event_type)
+        replayed = FakeOutbox(payload)
+        receiver = FakeReceiver((202, {
+            "contract_version": "1.0",
+            "results": [{"event_id": payload["event_id"], "outcome": "duplicate", "code": "duplicate_event"}],
+        }))
+        assert dispatch_one(replayed, receiver, _config(), worker_id=uuid4()) == "delivered"
+        assert replayed.finalized[0][0] == "delivered"
+
+        payload = _authority_event(event_type)
+        quarantined = FakeOutbox(payload)
+        receiver = FakeReceiver((202, {
+            "contract_version": "1.0",
+            "results": [{"event_id": payload["event_id"], "outcome": "quarantined", "code": "invalid_event"}],
+        }))
+        assert dispatch_one(quarantined, receiver, _config(), worker_id=uuid4()) == "quarantined"
+        assert quarantined.finalized[0][0] == "quarantined"
 
 
 def test_transient_failure_retries_with_bounded_backoff_and_auth_failure_quarantines():
