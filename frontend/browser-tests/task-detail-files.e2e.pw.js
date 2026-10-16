@@ -79,7 +79,15 @@ test('native Task detail Files tab stays scoped to the Kitsu Task and Production
 
   let frame = await openFilesTab(productionId, taskId)
   expect(await hasContext(productionId, taskId)).toBe(true)
-  await expect(frame.getByText(/Working files/i)).toBeVisible()
+  await expect(frame.getByRole('tab', { name: 'Files', exact: true })).toBeVisible()
+  await expect(frame.getByRole('tab', { name: 'Working', exact: true })).toBeVisible()
+  await expect(frame.getByRole('tab', { name: 'Publish', exact: true })).toBeVisible()
+  await expect(frame.getByRole('tab', { name: 'Department Handoff', exact: true })).toBeVisible()
+  await frame.getByRole('tab', { name: 'Share', exact: true }).click()
+  await expect(frame.getByText(/not enabled yet/i)).toBeVisible()
+  await frame.getByRole('tab', { name: 'Received Files', exact: true }).click()
+  await expect(frame.getByText(/not enabled yet/i)).toBeVisible()
+  await frame.getByRole('tab', { name: 'Files', exact: true }).click()
   await manager.page.screenshot({ path: 'test-results/issue5-task-detail-files.png', fullPage: true })
 
   frame = await openFilesTab(productionId, secondTaskId)
@@ -96,7 +104,7 @@ test('native Task detail Files tab stays scoped to the Kitsu Task and Production
     await artistA.page.getByRole('button', { name: /VFXComp/ }).click()
     await artistA.page.getByRole('tab', { name: 'VFX Files', exact: true }).click()
     const panel = artistA.page.frameLocator('iframe[title="VFX Files"]')
-    await expect(panel.locator('.files-page[data-mode="task"] .task-context-header')).toHaveCount(0)
+    await panel.getByRole('tab', { name: 'Working', exact: true }).click()
     return panel
   }
   let artistAFrame = await artistADrawer()
@@ -126,6 +134,7 @@ test('native Task detail Files tab stays scoped to the Kitsu Task and Production
   await artistB.page.getByRole('button', { name: /VFXComp/ }).click()
   await artistB.page.getByRole('tab', { name: 'VFX Files', exact: true }).click()
   const artistBFrame = artistB.page.frameLocator('iframe[title="VFX Files"]')
+  await artistBFrame.getByRole('tab', { name: 'Working', exact: true }).click()
   const artistBFile = artistBFrame.getByRole('listitem').filter({ hasText: workingVersion }).getByRole('link', { name: filename, exact: true })
   await expect(artistBFile).toBeVisible()
   const artistBResponse = await artistB.page.request.get(new URL(await artistBFile.getAttribute('href'), origin).toString())
@@ -138,6 +147,7 @@ test('native Task detail Files tab stays scoped to the Kitsu Task and Production
   const latestPublishVersion = Math.max(0, ...priorPublishOverview.publishes.filter(row => row.task_id === secondTaskId).map(row => row.version))
   const nextPublishVersion = `v${String(latestPublishVersion + 1).padStart(3, '0')}`
   console.log('Selecting completed native drawer file for Publish')
+  await artistBFrame.getByRole('tab', { name: 'Publish', exact: true }).click()
   await artistBFrame.getByLabel('Completed Working File').selectOption({ label: `${workingVersion.replace('w', 'v')} · working · ${filename}` })
   await artistBFrame.getByLabel('Output family').selectOption({ label: 'Synthetic Main' })
   await artistBFrame.getByRole('button', { name: 'Publish Working File' }).click()
@@ -162,7 +172,7 @@ test('native Task detail Files tab stays scoped to the Kitsu Task and Production
   await supervisor.page.getByRole('button', { name: /VFXComp/ }).click()
   await supervisor.page.getByRole('tab', { name: 'VFX Files', exact: true }).click()
   const supervisorFrame = supervisor.page.frameLocator('iframe[title="VFX Files"]')
-  await expect(supervisorFrame.locator('.files-page[data-mode="task"] .task-context-header')).toHaveCount(0)
+  await supervisorFrame.getByRole('tab', { name: 'Publish', exact: true }).click()
   const latestPublishRow = supervisorFrame.getByRole('row', { name: new RegExp(`${secondTaskId} Synthetic Main ${nextPublishVersion} passed`) })
   const approvalButton = latestPublishRow.getByRole('button', { name: 'Approve exact Publish' })
   await expect(approvalButton).toBeVisible()

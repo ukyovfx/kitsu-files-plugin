@@ -1,10 +1,11 @@
 <script setup>
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import HandoffPanel from './components/HandoffPanel.vue'
 import PublishList from './components/PublishList.vue'
 import PublishWorkflow from './components/PublishWorkflow.vue'
 import OutputPackagePanel from './components/OutputPackagePanel.vue'
 import UploadPanel from './components/UploadPanel.vue'
+import { taskSections } from './taskNavigation.js'
 import { createRequestGeneration } from './taskContext.js'
 import { safeTaskFolderLinks } from './taskFolderLinks.js'
 
@@ -18,6 +19,7 @@ const taskId = computed(() => props.context.taskId || null)
 const taskMode = computed(() => Boolean(taskId.value))
 const scopeKey = computed(() => `${productionId.value || ''}:${taskId.value || ''}`)
 const folderState = ref(null)
+const activeTaskSection = ref('files')
 const verifiedFolderLinks = computed(() => safeTaskFolderLinks(folderState.value?.folders))
 const driveSettingsHref = computed(() => {
   const query = new URLSearchParams({ production_id: productionId.value || '', drive_settings: '1' })
@@ -68,7 +70,22 @@ async function load() {
   }
 }
 
-watch(scopeKey, () => load())
+watch(scopeKey, () => {
+  activeTaskSection.value = 'files'
+  load()
+})
+
+function onTaskSectionKeydown(event, index) {
+  if (!['ArrowLeft', 'ArrowRight'].includes(event.key)) return
+  event.preventDefault()
+  const direction = event.key === 'ArrowRight' ? 1 : -1
+  const nextIndex = (index + direction + taskSections.length) % taskSections.length
+  const tablist = event.currentTarget?.closest('[role="tablist"]')
+  activeTaskSection.value = taskSections[nextIndex].id
+  nextTick(() => {
+    tablist?.querySelectorAll('[role="tab"]')[nextIndex]?.focus()
+  })
+}
 
 async function respond(handoff, target, feedback = '') {
   busyId.value = handoff.id
@@ -119,18 +136,51 @@ onUnmounted(() => requests.invalidate())
     <div v-if="taskMode && error" class="notice" role="alert"><span class="notice-dot"></span>{{ error }}</div>
     <div v-if="taskMode && loading" class="loading-state" role="status">Loading Task files…</div>
     <template v-else-if="taskMode && overview">
-      <section v-if="taskId" class="panel task-folders" aria-label="Task shared folders">
-        <div class="panel-heading"><div><p class="eyebrow">Kitsu Task context</p><h2>Shared folders</h2></div></div>
-        <p v-if="folderState?.error" class="upload-error" role="alert">{{ folderState.error }}</p>
-        <p v-else-if="verifiedFolderLinks.length" class="folder-links"><a v-for="folder in verifiedFolderLinks" :key="folder.scope_key" :href="folder.url" target="_blank" rel="noopener noreferrer">Open {{ folder.name }}</a></p>
-        <p v-else class="muted">No verified Task folder bindings are ready yet. Production Drive configuration is managed in VFX Files Plugin settings.</p>
+      <nav class="task-navigation" role="tablist" aria-label="Task Files sections">
+        <button
+          v-for="(section, index) in taskSections"
+          :key="section.id"
+          class="task-navigation-item"
+          type="button"
+          role="tab"
+          :id="`task-tab-${section.id}`"
+          :aria-selected="activeTaskSection === section.id"
+          :tabindex="activeTaskSection === section.id ? 0 : -1"
+          aria-controls="task-section-panel"
+          :data-availability="section.enabled ? 'ready' : 'gated'"
+          @click="activeTaskSection = section.id"
+          @keydown="onTaskSectionKeydown($event, index)"
+        >{{ section.label }}</button>
+      </nav>
+
+      <div id="task-section-panel" role="tabpanel" :aria-labelledby="`task-tab-${activeTaskSection}`" tabindex="0">
+      <section v-if="activeTaskSection === 'files'" class="task-section" aria-label="Files for this Task">
+        <section v-if="taskId" class="panel task-folders" aria-label="Task shared folders">
+          <div class="panel-heading"><div><h2>Task folders</h2></div></div>
+          <p v-if="folderState?.error" class="upload-error" role="alert">{{ folderState.error }}</p>
+          <p v-else-if="verifiedFolderLinks.length" class="folder-links"><a v-for="folder in verifiedFolderLinks" :key="folder.scope_key" :href="folder.url" target="_blank" rel="noopener noreferrer">Open {{ folder.name }}</a></p>
+          <p v-else class="muted">No verified Task folder bindings are ready yet. Folder setup is managed in VFX Files Plugin settings.</p>
+        </section>
+        <OutputPackagePanel :tasks="overview.tasks" :publishes="overview.publishes" :fixed-task-id="taskId" :api="api" @changed="load" />
       </section>
-      <UploadPanel :enabled="overview.upload_ready" :tasks="overview.tasks" :fixed-task-id="taskId" :api="api" @uploaded="load" />
-      <OutputPackagePanel :tasks="overview.tasks" :publishes="overview.publishes" :fixed-task-id="taskId" :api="api" @changed="load" />
-      <PublishWorkflow :production-id="productionId" :tasks="overview.tasks" :publishes="overview.publishes" :fixed-task-id="taskId" :api="api" @changed="load" />
-      <div class="content-grid">
+
+      <section v-else-if="activeTaskSection === 'working'" class="task-section" aria-label="Working files for this Task">
+        <UploadPanel :enabled="overview.upload_ready" :tasks="overview.tasks" :fixed-task-id="taskId" :api="api" @uploaded="load" />
+      </section>
+
+      <section v-else-if="activeTaskSection === 'publish'" class="task-section" aria-label="Publish for this Task">
+        <PublishWorkflow :production-id="productionId" :tasks="overview.tasks" :publishes="overview.publishes" :fixed-task-id="taskId" :api="api" @changed="load" />
         <PublishList :publishes="overview.publishes" :actor-id="overview.actor_id" :role="overview.role" :busy-id="busyId" @approve="approve" />
+      </section>
+
+      <section v-else-if="activeTaskSection === 'handoffs'" class="task-section" aria-label="Department handoffs for this Task">
         <HandoffPanel :handoffs="receivedHandoffs" :busy-id="busyId" @respond="respond" />
+      </section>
+
+      <section v-else class="task-section panel gated-task-section" :aria-label="`${activeTaskSection === 'share' ? 'Share' : 'Received Files'} availability`">
+        <h2>{{ activeTaskSection === 'share' ? 'Share a Drive reference' : 'Received Files' }}</h2>
+        <p class="muted">This Task-scoped feature is not enabled yet. It will remain unavailable until the authenticated reference-sharing API and receiver compatibility gate are verified. No Drive files are copied, moved, or shared by changing permissions.</p>
+      </section>
       </div>
     </template>
   </main>

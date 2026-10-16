@@ -11,9 +11,22 @@ button { font: inherit; }
 .admin-entry > p:not(.eyebrow) { max-width: 620px; color: var(--muted); font-size: 13px; line-height: 1.6; }
 .files-page[data-mode='task'] .summary-grid,
 .files-page[data-mode='task'] .page-footer { display: none; }
-.files-page[data-mode='task'] .task-folders { margin-top: 10px; }
-.files-page[data-mode='task'] .upload-panel { margin-top: 10px; }
-.files-page[data-mode='task'] .publish-workflow { margin-top: 10px; }
+.files-page[data-mode='task'] { font-size: 13px; line-height: 1.45; }
+.files-page[data-mode='task'] .task-navigation { display: flex; gap: 4px; margin: 0 -12px 12px; padding: 0 12px; overflow-x: auto; border-bottom: 1px solid var(--border); }
+.files-page[data-mode='task'] .task-navigation-item { flex: 0 0 auto; padding: 8px 10px 7px; border: 0; border-bottom: 2px solid transparent; background: transparent; color: var(--muted); cursor: pointer; white-space: nowrap; }
+.files-page[data-mode='task'] .task-navigation-item:hover { color: var(--text); }
+.files-page[data-mode='task'] .task-navigation-item:focus-visible { outline: 2px solid #397d78; outline-offset: -2px; }
+.files-page[data-mode='task'] .task-navigation-item[aria-current='page'] { border-bottom-color: #397d78; color: var(--text); }
+.files-page[data-mode='task'] .task-section { display: grid; gap: 10px; }
+.files-page[data-mode='task'] .task-section .panel { border-radius: 3px; background: transparent; }
+.files-page[data-mode='task'] .task-folders { margin: 0; padding-bottom: 10px; }
+.files-page[data-mode='task'] .task-folders .panel-heading { padding: 10px 12px 6px; }
+.files-page[data-mode='task'] .task-folders p { padding: 0 12px; }
+.files-page[data-mode='task'] .upload-panel { margin: 0; padding: 12px; border-radius: 3px; background: var(--panel); }
+.files-page[data-mode='task'] .publish-workflow { margin-top: 0; }
+.files-page[data-mode='task'] .gated-task-section { align-content: start; gap: 8px; padding: 14px; }
+.files-page[data-mode='task'] .gated-task-section h2 { font-size: 14px; }
+.files-page[data-mode='task'] .gated-task-section p { max-width: 680px; }
 .page-header { display: flex; align-items: center; gap: 18px; padding-bottom: 30px; border-bottom: 1px solid var(--border); }
 .brand-mark { display: grid; width: 48px; height: 48px; place-items: center; border: 1px solid #397b80; border-radius: 15px; background: linear-gradient(145deg, #22525c, #1c343d); color: #b4f1e1; font-size: 14px; font-weight: 700; letter-spacing: .08em; }
 .heading-copy { flex: 1; }

@@ -1,6 +1,6 @@
 # Kitsu Task Detail Files Extension Feasibility
 
-Status: local Kitsu hook and plugin-side Task context are implemented and passed authenticated browser UAT on a pinned disposable host. The Kitsu source branch remains unpublished and is not upstream accepted. Human visual UAT is still required.
+Status: the Plugin Task-context baseline previously passed authenticated browser UAT on a pinned disposable host. The Task-section navigation update in this PR has frontend tests/build evidence only; its installed-host browser run is still pending. The Kitsu source branch remains unpublished and is not upstream accepted. Human visual UAT is still required.
 
 ## Pinned source examined
 
@@ -26,13 +26,15 @@ The Files frontend parses Task/Entity context and passes the Task ID to the exis
 
 The plugin's existing Working upload/history/download, Publish/QC/Approval, authorized folder browser and Handoff panels are mounted through the Task-scoped iframe context. The Task context removes manual Task reselection. The user-visible `Open in Google Drive` links use only provider IDs returned by the authorized, root-checked Task listing; a link does not grant Drive access or change sharing. Authenticated Playwright on the pinned disposable host verified the actual Task drawer, Task and Production switching, Artist A upload, Artist A and Artist B byte-verified downloads, Publish/QC completion, Supervisor exact Publish approval, and Artist A denial on a different Production. The browser preview is `frontend/test-results/issue5-task-detail-files.png`; screenshots and this synthetic browser run are not human visual acceptance.
 
-## Option A UX alignment (current draft)
+## Option A UX alignment (current draft, 2026-10-17)
 
-The embedded Task mode is the artist workflow. When a Kitsu Task ID is present, the Plugin shows the selected entity and Task Type context, omits the Production dashboard and overview cards, and supplies the selected Task to Working, Output Package delivery, Publish and Handoff workflows. The source Task is not reselected in the embedded panel. The Production-level Plugin frontend now acts as an administration gateway and does not fetch or display artist file operations without Task context; its settings link depends on the native Drive settings route from PR #11.
+The embedded Task mode is the artist workflow. When a Kitsu Task ID is present, the Plugin omits the Production dashboard and exposes Task-scoped Files, Working, Publish, Share, Received Files, and Department Handoff sections inside the Kitsu iframe. The source Task is not reselected in the embedded panel. Existing Working, authorized browsing/package, Publish, and Handoff components receive the selected Task and use the existing server-side Task/Production authorization. The Production-level Plugin frontend is an administration gateway and does not fetch or display artist file operations without Task context; its settings link depends on the native Drive settings route from PR #11.
+
+Share and Received Files are visible Task-context sections but remain unavailable in this build. The general original Drive reference-sharing and incoming-reference API/receiver contract is not implemented. Do not enable those actions or imply they alter Drive access. Keep `file_share.created` v1.1 behind the existing compatibility/security gates. The Task sections use a compact tab strip and flat, responsive iframe presentation aligned to Kitsu's Task detail styling; installed-host visual acceptance is still required.
 
 The Task-detail hook discovers plugins through `frontend_task_enabled`; the separate Project-plugin menu continues to use `frontend_project_enabled`. VFX Files sets Task discovery on and ordinary Project discovery off. Its separate Production settings/diagnostics page uses `frontend_project_admin_enabled`, which the Kitsu hook exposes only to a manager in that Production. Both flags require an upstream Zou metadata/model/API change: pinned Kitsu 1.0.70 / Zou 1.0.94 only persists and returns `frontend_project_enabled` and `frontend_studio_enabled`, and ignores the new flags. The local Kitsu hook is unpublished. Do not claim this UX is available on stock Kitsu until Zou metadata support and the Kitsu hook are reviewed, adopted, and authenticated visual UAT passes.
 
-The Task view's Share / Received Files surface remains package-version based. It does not yet provide a general original Drive file-or-folder reference picker. Do not imply that the current package delivery flow covers every Share use case or that it changes Drive ACLs.
+The current Publish/package flow is not general reference sharing. Share and Received Files do not yet provide an original Drive file-or-folder reference picker or an incoming-reference list. No copy, move, or ACL mutation is available through these sections.
 
 ## Existing Task-scoped operation surface at plugin baseline `cc6fd4dc06293f48978e048208877bc900399af8`
 
