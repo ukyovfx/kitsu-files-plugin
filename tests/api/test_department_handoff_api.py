@@ -12,6 +12,8 @@ pytest.importorskip("flask_jwt_extended")
 
 @pytest.fixture
 def department_handoff_http(authenticated_plugin_client, synthetic_upload_task, zou_db_factory):
+    from sqlalchemy import select
+
     from zou.app.models.department import Department
     from zou.app.models.entity import Entity
     from zou.app.models.person import DepartmentLink, Person
@@ -64,7 +66,12 @@ def department_handoff_http(authenticated_plugin_client, synthetic_upload_task, 
         session.flush()
         recipient_id, department_id, recipient_task_id = recipient.id, department.id, target_task.id
         source_entity_type_id = session.get(Entity, entity_id).entity_type_id
-        recipient_token = create_access_token_for_raw_person(recipient)
+    # The test factory session that inserted the synthetic recipient is not
+    # Zou's scoped session. Its token helper calls person.save(), so reload
+    # the row into Zou's own session before creating the authenticated client.
+    with app.app_context():
+        recipient_for_token = Person.query.filter_by(id=recipient_id).one()
+        recipient_token = create_access_token_for_raw_person(recipient_for_token)
 
     recipient_client = app.test_client()
     recipient_client.set_cookie(
@@ -85,7 +92,30 @@ def department_handoff_http(authenticated_plugin_client, synthetic_upload_task, 
         "department_id": department_id, "recipient_task_id": recipient_task_id,
         "Handoff": Handoff, "HandoffEvent": HandoffEvent,
     }
-    # The pinned host preserves append-only Handoff and Publish audit evidence.
+    with zou_db_factory.begin() as session:
+        if session.scalar(select(Handoff.id).where(Handoff.publish_id == publish_id).limit(1)) is not None:
+            # Preserve the completed Publish and recipient graph together with
+            # its append-only handoff history in the disposable host.
+            return
+        session.execute(Publish.__table__.delete().where(Publish.id == publish_id))
+        session.execute(TaskPersonLink.__table__.delete().where(TaskPersonLink.task_id == recipient_task_id))
+        session.execute(ProjectTaskTypeLink.__table__.delete().where(
+            ProjectTaskTypeLink.task_type_id == task_type.id,
+        ))
+        session.execute(DepartmentLink.__table__.delete().where(
+            DepartmentLink.department_id == department_id,
+        ))
+        session.execute(ProjectPersonLink.__table__.delete().where(
+            ProjectPersonLink.project_id == production_id,
+            ProjectPersonLink.person_id == recipient_id,
+        ))
+        target_task_ids = session.scalars(
+            select(Task.id).where(Task.task_type_id == task_type.id)
+        ).all()
+        if target_task_ids:
+            session.execute(Task.__table__.delete().where(Task.id.in_(target_task_ids)))
+        session.execute(TaskType.__table__.delete().where(TaskType.id == task_type.id))
+        session.execute(Department.__table__.delete().where(Department.id == department_id))
 
 
 def test_department_handoff_http_options_create_replay_inbox_and_revocation(
@@ -93,6 +123,8 @@ def test_department_handoff_http_options_create_replay_inbox_and_revocation(
 ):
     from sqlalchemy import func, select
     from zou.app.models.person import DepartmentLink
+    from zou.app.models.project import ProjectPersonLink
+    from zou.app.models.task import TaskPersonLink
 
     data = department_handoff_http
     sender, recipient = data["sender"], data["recipient"]
@@ -111,7 +143,10 @@ def test_department_handoff_http_options_create_replay_inbox_and_revocation(
             target.write(data["artifact"])
             return len(data["artifact"]), data["artifact_sha256"]
 
-    monkeypatch.setattr("plugin.resources._storage_adapter", lambda _connection: FakeStorage())
+    # The HTTP route is registered from Zou's installed plugin package, while
+    # this repository's `plugin.resources` module contains the same source for
+    # direct test imports. Patch the runtime module that owns the route.
+    monkeypatch.setattr("vfx_files.resources._storage_adapter", lambda _connection: FakeStorage())
     publish_id = data["publish_id"]
     target_task_id = data["recipient_task_id"]
     production_id = data["production_id"]
@@ -159,7 +194,7 @@ def test_department_handoff_http_options_create_replay_inbox_and_revocation(
     assert handoff["sender_note"] == body["note"]
     assert [event["type"] for event in handoff["events"]] == ["created"]
     download = recipient.get(f"/plugins/vfx_files/handoffs/{created.json['id']}/download")
-    assert download.status_code == 200
+    assert download.status_code == 200, download.get_data(as_text=True)
     assert download.data == data["artifact"]
     assert download.headers["Cache-Control"] == "no-store"
 
@@ -185,6 +220,32 @@ def test_department_handoff_http_options_create_replay_inbox_and_revocation(
         session.add(DepartmentLink(
             department_id=data["department_id"], person_id=data["recipient_id"],
         ))
+    for model, filters, replacement in (
+        (TaskPersonLink, {"task_id": data["recipient_task_id"], "person_id": data["recipient_id"]}, TaskPersonLink(
+            task_id=data["recipient_task_id"], person_id=data["recipient_id"],
+        )),
+        (ProjectPersonLink, {"project_id": data["production_id"], "person_id": data["recipient_id"]}, ProjectPersonLink(
+            project_id=data["production_id"], person_id=data["recipient_id"], role="user",
+        )),
+    ):
+        delete_membership = model.__table__.delete()
+        for column, value in filters.items():
+            delete_membership = delete_membership.where(getattr(model, column) == value)
+        with zou_db_factory.begin() as session:
+            session.execute(delete_membership)
+        revoked = recipient.post(
+            f"/plugins/vfx_files/handoffs/{created.json['id']}/respond",
+            json={"target": "accepted"},
+            headers={
+                "Origin": "https://kitsu.test",
+                "X-VFX-Files-CSRF": recipient.get("/plugins/vfx_files/csrf-token").json["csrf_token"],
+                "Idempotency-Key": f"response-after-{model.__tablename__}:{uuid4()}",
+            },
+        )
+        assert revoked.status_code == 403
+        assert recipient.get(f"/plugins/vfx_files/handoffs/{created.json['id']}/download").status_code == 403
+        with zou_db_factory.begin() as session:
+            session.add(replacement)
     accepted = recipient.post(
         f"/plugins/vfx_files/handoffs/{created.json['id']}/respond",
         json={"target": "needs_fix", "feedback": "Please include the missing slate."},
@@ -223,6 +284,10 @@ def test_department_handoff_rejects_cross_production_and_empty_inbox(department_
         foreign_production = Project(
             name=f"Foreign {uuid4()}", team=[session.get(Person, data["sender_id"])],
         )
+        unrelated_department = Department(name=f"Unrelated {uuid4().hex[:8]}", color="#64748B")
+        session.add(unrelated_department)
+        session.flush()
+        unrelated_department_id = unrelated_department.id
         session.add(foreign_production)
         session.flush()
         foreign_entity = Entity(
@@ -232,6 +297,7 @@ def test_department_handoff_rejects_cross_production_and_empty_inbox(department_
         )
         session.add(foreign_entity)
         session.flush()
+        foreign_entity_id = foreign_entity.id
         session.add(ProjectTaskTypeLink(
             project_id=foreign_production.id, task_type_id=task_type.id,
         ))
@@ -240,7 +306,9 @@ def test_department_handoff_rejects_cross_production_and_empty_inbox(department_
             task_type_id=task_type.id, entity_id=foreign_entity.id,
         )
         session.add(foreign_task)
+        session.flush()
         foreign_task_id = foreign_task.id
+        foreign_production_id = foreign_production.id
 
     wrong_production = data["sender"].post(
         f"/plugins/vfx_files/publishes/{data['publish_id']}/handoffs",
@@ -250,7 +318,17 @@ def test_department_handoff_rejects_cross_production_and_empty_inbox(department_
         },
         headers={**data["headers"], "Idempotency-Key": f"foreign:{uuid4()}"},
     )
-    assert wrong_production.status_code == 403
+    assert wrong_production.status_code == 403, wrong_production.get_data(as_text=True)
+
+    wrong_department = data["sender"].post(
+        f"/plugins/vfx_files/publishes/{data['publish_id']}/handoffs",
+        json={
+            "recipient_department_id": str(unrelated_department_id),
+            "recipient_task_id": str(data["recipient_task_id"]),
+        },
+        headers={**data["headers"], "Idempotency-Key": f"wrong-department:{uuid4()}"},
+    )
+    assert wrong_department.status_code == 403, wrong_department.get_data(as_text=True)
 
     with zou_db_factory.begin() as session:
         session.execute(DepartmentLink.__table__.delete().where(
@@ -271,6 +349,19 @@ def test_department_handoff_rejects_cross_production_and_empty_inbox(department_
         headers={**data["headers"], "Idempotency-Key": f"empty:{uuid4()}"},
     )
     assert no_recipient.status_code == 409
+    with zou_db_factory.begin() as session:
+        session.execute(ProjectTaskTypeLink.__table__.delete().where(
+            ProjectTaskTypeLink.project_id == foreign_production_id,
+            ProjectTaskTypeLink.task_type_id == task_type.id,
+        ))
+        session.execute(Task.__table__.delete().where(Task.id == foreign_task_id))
+        session.execute(Entity.__table__.delete().where(Entity.id == foreign_entity_id))
+        session.execute(Department.__table__.delete().where(Department.id == unrelated_department_id))
+        foreign = session.get(Project, foreign_production_id)
+        if foreign is not None:
+            foreign.team.clear()
+            session.flush()
+            session.delete(foreign)
 
 
 def test_lighting_compositing_editorial_department_handoff_chain(department_handoff_http, zou_db_factory):
@@ -287,9 +378,9 @@ def test_lighting_compositing_editorial_department_handoff_chain(department_hand
     with zou_db_factory.begin() as session:
         source = session.get(Task, data["source_task_id"])
         source_type = session.get(TaskType, source.task_type_id)
-        lighting = Department(name="Lighting", color="#64748B")
-        compositing = Department(name="Compositing", color="#64748B")
-        editorial = Department(name="Editorial", color="#64748B")
+        lighting = Department(name=f"Lighting {uuid4().hex[:8]}", color="#64748B")
+        compositing = Department(name=f"Compositing {uuid4().hex[:8]}", color="#64748B")
+        editorial = Department(name=f"Editorial {uuid4().hex[:8]}", color="#64748B")
         session.add_all([lighting, compositing, editorial])
         session.flush()
         source_type.department_id = lighting.id
@@ -331,18 +422,32 @@ def test_lighting_compositing_editorial_department_handoff_chain(department_hand
             "editorial": (editorial.id, editorial_task.id, None),
         }
 
-    def create_and_respond(publish_id, department_id, recipient_task_id, response, feedback=None):
+    def create_and_respond(
+        publish_id, department_id, recipient_task_id, response, feedback=None,
+        designated_person=True,
+    ):
         key = f"chain:{uuid4()}"
+        payload = {
+            "recipient_department_id": str(department_id),
+            "recipient_task_id": str(recipient_task_id),
+        }
+        if designated_person:
+            payload["recipient_person_id"] = str(data["recipient_id"])
         created = data["sender"].post(
             f"/plugins/vfx_files/publishes/{publish_id}/handoffs",
-            json={
-                "recipient_department_id": str(department_id),
-                "recipient_task_id": str(recipient_task_id),
-                "recipient_person_id": str(data["recipient_id"]),
-            },
+            json=payload,
             headers={**data["headers"], "Idempotency-Key": key},
         )
         assert created.status_code == 201, created.get_data(as_text=True)
+        inbox = data["recipient"].get(
+            f"/plugins/vfx_files/overview?production_id={data['production_id']}&task_id={recipient_task_id}"
+        )
+        assert inbox.status_code == 200, inbox.get_data(as_text=True)
+        row = next(item for item in inbox.json["handoffs"] if item["id"] == created.json["id"])
+        assert row["can_respond"] is True
+        assert row["response_ownership"] == (
+            "designated_person" if designated_person else "first_authorized_responder"
+        )
         responded = data["recipient"].post(
             f"/plugins/vfx_files/handoffs/{created.json['id']}/respond",
             json={"target": response, "feedback": feedback},
@@ -358,6 +463,7 @@ def test_lighting_compositing_editorial_department_handoff_chain(department_hand
 
     first = create_and_respond(
         data["publish_id"], *stages["compositing"][:2], "accepted",
+        designated_person=False,
     )
     second = create_and_respond(
         stages["compositing"][2], *stages["editorial"][:2], "needs_fix",

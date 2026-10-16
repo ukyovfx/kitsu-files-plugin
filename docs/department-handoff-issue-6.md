@@ -20,10 +20,11 @@ Department routing passes an immutable reference to the selected completed Publi
 |---|---|
 | Department/Task/Production and role predicates | PASS — targeted pytest |
 | Inbox visibility predicate | PASS — targeted pytest |
-| Migration additive/data-preserving source contract | PASS — targeted pytest |
-| HTTP/PostgreSQL create, replay, response, revocation, verified download, cross-Production and no-recipient regressions | NOT TESTED — test module skips unless the pinned Zou plugin host is installed |
-| Frontend Vitest | PASS — see PR check evidence |
-| Frontend production build | PASS — see PR check evidence |
+| Pinned Kitsu 1.0.70 / Zou 1.0.94 / PostgreSQL API and concurrency suite | PASS — 34 tests: Department HTTP options/create/replay/inbox/download, current membership and Task revocation, Needs Fix history, unauthorized Department, cross-Production denial, no-recipient denial, Lighting → Compositing → Editorial, person-Handoff regression, concurrent creates/responses and migration/compatibility checks |
+| `vxf_0017` install and schema epoch | PASS — fresh disposable PostgreSQL install advanced from `vxf_0016` to `vxf_0017`; `plugin_vfx_files_state.schema_epoch=16` |
+| Installed Kitsu page smoke | PASS — synthetic Manager login, Production → Assets → VFX Files, same-origin iframe and authenticated overview returned 200 |
+| Fixture-browser acceptance | PASS — 4 passed; 4 installed-host workflows were skipped by the fixture run because the host variables are opt-in |
+| Frontend Vitest / build / npm audit | PASS — 21 tests; Vite build succeeded; 0 audit findings |
 | Live Production, Staging, Google Drive or Discord | NOT TESTED — out of scope |
 
-The API integration tests use synthetic people, Departments, Tasks and Publish records. They require `VFX_FILES_TEST_PLUGIN_FOLDER` and the repository's pinned Kitsu/Zou PostgreSQL test host; they are not fixture-browser or live-server proof.
+The API tests use synthetic identities, Departments, Tasks and Publish records against the pinned PostgreSQL host through Zou's installed plugin package. The browser smoke used the same isolated installed Kitsu/Zou unit. The browser-fixture skips are not counted as host E2E evidence. No Worker change was required for Department Handoff; Worker processing was not part of this Handoff-specific acceptance.
