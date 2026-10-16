@@ -26,6 +26,20 @@ def department_handoff_http(authenticated_plugin_client, synthetic_upload_task, 
 
     client = authenticated_plugin_client
     app = client.vfx_app
+    # Validate the authenticated harness before inserting the Department
+    # graph. If the test cookie/configuration is invalid, fixture setup must
+    # fail before it can leave a recipient Task behind without reaching yield.
+    csrf_response = client.get("/plugins/vfx_files/csrf-token")
+    csrf_payload = csrf_response.get_json(silent=True)
+    assert (
+        csrf_response.status_code == 200
+        and isinstance(csrf_payload, dict)
+        and isinstance(csrf_payload.get("csrf_token"), str)
+    ), (
+        "Kitsu CSRF fixture was unavailable before Department setup: "
+        f"status={csrf_response.status_code}, "
+        f"response_keys={sorted(csrf_payload) if isinstance(csrf_payload, dict) else []}"
+    )
     production_id, entity_type_id, _source_type_id, entity_id, source_task_id, _connection_id, sender_id = synthetic_upload_task
     suffix = uuid4().hex[:10]
     publish_id = uuid4()
@@ -79,7 +93,7 @@ def department_handoff_http(authenticated_plugin_client, synthetic_upload_task, 
     )
     headers = {
         "Origin": "https://kitsu.test",
-        "X-VFX-Files-CSRF": client.get("/plugins/vfx_files/csrf-token").json["csrf_token"],
+        "X-VFX-Files-CSRF": csrf_payload["csrf_token"],
         "Idempotency-Key": f"department-handoff:{suffix}",
     }
     yield {
