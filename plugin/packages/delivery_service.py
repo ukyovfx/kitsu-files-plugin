@@ -37,21 +37,13 @@ def create_package_delivery(
     if not idempotency_key or len(idempotency_key) > 255:
         raise ValueError("A bounded delivery idempotency key is required")
     with session_factory.begin() as session:
-        prior_event = session.scalar(select(OutputPackageDeliveryEvent).where(
-            OutputPackageDeliveryEvent.idempotency_key == idempotency_key,
-        ))
-        if prior_event is not None:
-            delivery = session.get(OutputPackageDelivery, prior_event.delivery_id)
-            if (
-                delivery is None or prior_event.actor_id != sender_id
-                or prior_event.event_type not in {"delivered", "revised"}
-                or delivery.idempotency_key != idempotency_key
-                or delivery.package_id != package_id
-                or delivery.recipient_task_id != recipient_task_id
-                or delivery.recipient_task_type_id != recipient_task_type_id
-            ):
-                raise PackageDeliveryConflict("Delivery idempotency key conflicts with the requested delivery")
-            return _result(delivery, replayed=True)
+        replay = _replay_create_request(
+            session, idempotency_key=idempotency_key, package_id=package_id,
+            recipient_task_id=recipient_task_id,
+            recipient_task_type_id=recipient_task_type_id, sender_id=sender_id,
+        )
+        if replay is not None:
+            return replay
 
         from zou.app.models.project import ProjectTaskTypeLink
         from zou.app.models.task import Task
@@ -67,6 +59,16 @@ def create_package_delivery(
         recipient = session.scalar(select(Task).where(
             Task.id == recipient_task_id,
         ).with_for_update())
+        # Another request using this key may have committed while we waited on
+        # the package/recipient lock. Re-read after serialization so the loser
+        # returns the committed result instead of a spurious stream conflict.
+        replay = _replay_create_request(
+            session, idempotency_key=idempotency_key, package_id=package_id,
+            recipient_task_id=recipient_task_id,
+            recipient_task_type_id=recipient_task_type_id, sender_id=sender_id,
+        )
+        if replay is not None:
+            return replay
         source = session.get(Task, package.task_id)
         recipient_type = session.get(TaskType, recipient.task_type_id) if recipient is not None else None
         if (
@@ -122,6 +124,10 @@ def create_package_delivery(
         session.add(OutputPackageDeliveryEvent(
             delivery_id=delivery.id, actor_id=sender_id, event_type=history_type,
             feedback=None, idempotency_key=idempotency_key,
+            request_operation="delivery_create", request_package_id=package.id,
+            request_recipient_task_id=recipient.id,
+            request_recipient_task_type_id=recipient.task_type_id,
+            request_revision=delivery.delivery_revision,
         ))
         session.flush()
         from ..integrations.event_producers import append_file_delivery_event
@@ -190,3 +196,31 @@ def _result(delivery, *, replayed=False):
         state=delivery.state,
         replayed=replayed,
     )
+
+
+def _replay_create_request(
+    session, *, idempotency_key, package_id, recipient_task_id,
+    recipient_task_type_id, sender_id,
+):
+    prior_event = session.scalar(select(OutputPackageDeliveryEvent).where(
+        OutputPackageDeliveryEvent.idempotency_key == idempotency_key,
+    ))
+    if prior_event is None:
+        return None
+    delivery = session.get(OutputPackageDelivery, prior_event.delivery_id)
+    # Legacy rows have no request identity. Never infer it from the mutable
+    # delivery stream, which may now point at a later package/revision.
+    if (
+        delivery is None or prior_event.actor_id != sender_id
+        or prior_event.event_type not in {"delivered", "revised"}
+        or prior_event.request_operation != "delivery_create"
+        or prior_event.request_package_id is None
+        or prior_event.request_recipient_task_id is None
+        or prior_event.request_recipient_task_type_id is None
+        or prior_event.request_revision is None
+        or prior_event.request_package_id != package_id
+        or prior_event.request_recipient_task_id != recipient_task_id
+        or prior_event.request_recipient_task_type_id != recipient_task_type_id
+    ):
+        raise PackageDeliveryConflict("Delivery idempotency key conflicts with the requested delivery")
+    return _result(delivery, replayed=True)

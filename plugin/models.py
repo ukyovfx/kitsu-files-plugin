@@ -588,4 +588,11 @@ class OutputPackageDeliveryEvent(db.Model):
     event_type = db.Column(String(24), nullable=False)
     feedback = db.Column(Text)
     idempotency_key = db.Column(String(255), nullable=False, unique=True)
+    # Immutable identity of the original delivery-create request. Existing
+    # events stay NULL because their request cannot be reconstructed safely.
+    request_operation = db.Column(String(32))
+    request_package_id = db.Column(UUIDType(binary=False), ForeignKey("plugin_vfx_files_output_package.id"))
+    request_recipient_task_id = db.Column(UUIDType(binary=False))
+    request_recipient_task_type_id = db.Column(UUIDType(binary=False))
+    request_revision = db.Column(Integer)
     created_at = db.Column(DateTime(timezone=True), nullable=False, server_default=func.now())

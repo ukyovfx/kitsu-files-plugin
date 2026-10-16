@@ -6,6 +6,8 @@ import json
 import os
 import subprocess
 import sys
+import time
+from concurrent.futures import ThreadPoolExecutor
 from uuid import UUID, uuid4
 
 
@@ -25,7 +27,9 @@ def _run_worker_until_ready(ready, *, attempts=30):
             except (ValueError, AttributeError):
                 state = None
             if state == "idle":
-                break
+                # An independent polling Worker may have claimed the job
+                # between this readiness check and the one-shot child claim.
+                time.sleep(0.2)
     assert ready(), "durable job did not reach its expected persisted state"
 
 import pytest
@@ -38,7 +42,7 @@ def test_task_api_to_worker_creates_immutable_package_copy_and_verified_download
     authenticated_plugin_client, synthetic_upload_task, zou_db_factory, monkeypatch, tmp_path,
 ):
     from sqlalchemy import select
-    from plugin.models import KitsuSyncDesiredConfiguration, KitsuSyncEventOutbox, OutputPackage, OutputPackageDelivery, OutputPackageDeliveryEvent, OutputPackageFile, OutputPackagePointer
+    from plugin.models import ApprovalEvent, KitsuSyncDesiredConfiguration, KitsuSyncEventOutbox, OutputPackage, OutputPackageDelivery, OutputPackageDeliveryEvent, OutputPackageFile, OutputPackagePointer
     from plugin.models import WorkingRevision
     from plugin.storage.fake import PersistentFakeStorage
     from zou.app.models.output_type import OutputType
@@ -398,6 +402,56 @@ def test_task_api_to_worker_creates_immutable_package_copy_and_verified_download
     replayed = send(package_id, delivery_key)
     assert replayed.status_code == 200, replayed.get_data(as_text=True)
     assert replayed.json["id"] == delivery_id
+
+    # Rows predating vxf_0016 have no provable original request identity and
+    # must not be inferred from the current mutable delivery stream.
+    legacy_key = f"legacy-delivery:{uuid4()}"
+    with zou_db_factory.begin() as session:
+        session.add(OutputPackageDeliveryEvent(
+            delivery_id=UUID(delivery_id), actor_id=actor_id,
+            event_type="delivered", feedback=None, idempotency_key=legacy_key,
+        ))
+    assert send(package_id, legacy_key).status_code == 409
+
+    # A same-key concurrent create must serialize to one delivery and one
+    # business event, with the losing request receiving the durable replay.
+    with zou_db_factory.begin() as session:
+        parallel_recipient = Task(
+            name=f"fx-parallel-{uuid4().hex[:8]}", project_id=production_id,
+            task_type_id=recipient_type_id, entity_id=entity_id,
+        )
+        session.add(parallel_recipient)
+        session.flush()
+        parallel_recipient_id = parallel_recipient.id
+    parallel_key = f"delivery-concurrent:{uuid4()}"
+
+    def send_parallel_create():
+        parallel_client = app.test_client()
+        parallel_client.set_cookie(app.config.get("JWT_ACCESS_COOKIE_NAME", "access_token_cookie"), client.vfx_files_token)
+        parallel_headers = {
+            "Origin": origin,
+            "X-VFX-Files-CSRF": parallel_client.get("/plugins/vfx_files/csrf-token").json["csrf_token"],
+            "Idempotency-Key": parallel_key,
+        }
+        return parallel_client.post(
+            f"/plugins/vfx_files/output-packages/{package_id}/deliveries",
+            json={"recipient_task_id": str(parallel_recipient_id), "recipient_task_type_id": str(recipient_type_id)},
+            headers=parallel_headers,
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        concurrent_results = list(pool.map(lambda _index: send_parallel_create(), range(2)))
+    assert sorted(result.status_code for result in concurrent_results) == [200, 201]
+    assert len({result.json["id"] for result in concurrent_results}) == 1
+    assert sum(bool(result.json["replayed"]) for result in concurrent_results) == 1
+    with zou_db_factory() as session:
+        from sqlalchemy import func
+        assert session.scalar(select(func.count()).select_from(OutputPackageDelivery).where(
+            OutputPackageDelivery.recipient_task_id == parallel_recipient_id,
+        )) == 1
+        assert session.scalar(select(func.count()).select_from(OutputPackageDeliveryEvent).where(
+            OutputPackageDeliveryEvent.idempotency_key == parallel_key,
+        )) == 1
     key_conflict = client.post(
         f"/plugins/vfx_files/output-packages/{package_id}/deliveries",
         json={"recipient_task_id": str(cross_production_task_id), "recipient_task_type_id": str(recipient_type_id)},
@@ -469,11 +523,13 @@ def test_task_api_to_worker_creates_immutable_package_copy_and_verified_download
             manifest_sha256=publish_two_manifest_sha256, manifest_bytes=b"synthetic second Publish manifest",
             native_output_file_id=uuid4(), native_revision=2, qc_state="passed",
         ))
-    approval_two_id = approve_publish(
-        zou_db_factory, actor_id=uuid4(), actor_role="supervisor", publish_id=publish_two_id,
-        policy_id="synthetic-review-v1", policy_sha256="a" * 64,
-        idempotency_key=f"synthetic-approval:{publish_two_id}",
+    approval_two = client.post(
+        f"/plugins/vfx_files/publishes/{publish_two_id}/approvals",
+        json={"policy_id": "synthetic-review-v1", "policy_sha256": "a" * 64},
+        headers={**headers, "Idempotency-Key": f"synthetic-approval:{publish_two_id}"},
     )
+    assert approval_two.status_code == 201, approval_two.get_data(as_text=True)
+    approval_two_id = UUID(approval_two.json["approval_id"])
     link_two = client.post(
         f"/plugins/vfx_files/output-packages/{version_two.json['id']}/publication-binding",
         json={"publish_id": str(publish_two_id)},
@@ -489,17 +545,145 @@ def test_task_api_to_worker_creates_immutable_package_copy_and_verified_download
     assert accepted.status_code == 200, accepted.get_data(as_text=True)
     assert accepted.json["state"] == "accepted"
 
-    from plugin.approvals.service import revoke_approval
-    revoke_approval(
-        zou_db_factory, actor_id=uuid4(), actor_role="supervisor", approval_id=approval_two_id,
-        reason="Synthetic verification of pointer revocation",
-        idempotency_key=f"synthetic-revoke:{publish_two_id}",
+    version_three = client.post(
+        f"/plugins/vfx_files/tasks/{task_id}/output-packages",
+        json={
+            "output_type_id": selected_output_type_id, "package_type": "final-exr",
+            "frame_start": 1001, "frame_end": 1001,
+            "source_working_revision_id": working_revision["id"],
+            "files": [{"provider_object_id": working_file["provider_object_id"], "frame_number": 1001, "file_format": "exr", "color_space": "ACEScg"}],
+        },
+        headers={**headers, "Idempotency-Key": f"output-package:{uuid4()}"},
     )
+    assert version_three.status_code == 202, version_three.get_data(as_text=True)
+    _run_worker_until_ready(lambda: any(
+        row["id"] == version_three.json["id"] and row["state"] == "completed"
+        for row in client.get(f"/plugins/vfx_files/tasks/{task_id}/output-packages?limit=10&offset=0").json
+    ))
+    third_delivery = send(version_three.json["id"], f"delivery-revision:{uuid4()}")
+    assert third_delivery.status_code == 201, third_delivery.get_data(as_text=True)
+    assert third_delivery.json["revision"] == 3
+    third_acceptance = respond("accepted", f"response:{uuid4()}")
+    assert third_acceptance.status_code == 200, third_acceptance.get_data(as_text=True)
+    assert third_acceptance.json["state"] == "accepted"
+
+    # Replaying the original create request after multiple stream transitions
+    # still identifies the original immutable request, not mutable current
+    # delivery fields. It must not append another history/outbox row.
+    with zou_db_factory() as session:
+        history_before_replay = session.scalar(select(func.count()).select_from(OutputPackageDeliveryEvent).where(
+            OutputPackageDeliveryEvent.delivery_id == UUID(delivery_id),
+        ))
+        outbox_before_replay = session.scalar(select(func.count()).select_from(KitsuSyncEventOutbox).where(
+            KitsuSyncEventOutbox.production_id == production_id,
+            KitsuSyncEventOutbox.event_type.like("file_delivery.%"),
+        ))
+    original_replay = send(package_id, delivery_key)
+    assert original_replay.status_code == 200, original_replay.get_data(as_text=True)
+    assert original_replay.json["replayed"] is True
+    assert original_replay.json["id"] == delivery_id
+    assert original_replay.json["package_id"] == version_three.json["id"]
+    with zou_db_factory() as session:
+        assert session.scalar(select(func.count()).select_from(OutputPackageDeliveryEvent).where(
+            OutputPackageDeliveryEvent.delivery_id == UUID(delivery_id),
+        )) == history_before_replay
+        assert session.scalar(select(func.count()).select_from(KitsuSyncEventOutbox).where(
+            KitsuSyncEventOutbox.production_id == production_id,
+            KitsuSyncEventOutbox.event_type.like("file_delivery.%"),
+        )) == outbox_before_replay
+    changed_request_replay = send(version_two.json["id"], delivery_key)
+    assert changed_request_replay.status_code == 409
+
+    revoke_route = f"/plugins/vfx_files/publishes/{publish_two_id}/approvals/{approval_two_id}/revoke"
+    missing_revoke_fields = client.post(
+        revoke_route, json={"reason": " "}, headers={**headers, "Idempotency-Key": ""},
+    )
+    assert missing_revoke_fields.status_code == 400
+    no_origin_revoke = client.post(
+        revoke_route, json={"reason": "Synthetic verification of pointer revocation"},
+        headers={"Idempotency-Key": f"synthetic-revoke:{publish_two_id}"},
+    )
+    assert no_origin_revoke.status_code == 403
+    no_csrf_revoke = client.post(
+        revoke_route, json={"reason": "Synthetic verification of pointer revocation"},
+        headers={"Origin": origin, "Idempotency-Key": f"no-csrf-revoke:{publish_two_id}"},
+    )
+    assert no_csrf_revoke.status_code == 403
+    denied_revoke = recipient_client.post(
+        revoke_route, json={"reason": "Unauthorized synthetic revocation"},
+        headers={**recipient_headers, "Idempotency-Key": f"unauthorized-revoke:{publish_two_id}"},
+    )
+    assert denied_revoke.status_code == 403
+    from zou.app.models.person import Person
+    from zou.app.models.project import ProjectPersonLink
+    from zou.app.services.persons_service import create_access_token_for_raw_person
+    with app.app_context(), zou_db_factory.begin() as session:
+        foreign_manager = Person(
+            first_name="Synthetic", last_name=f"Foreign Manager {uuid4().hex[:8]}",
+            email=f"foreign-manager-{uuid4().hex}@example.invalid", role="user", active=True,
+        )
+        session.add(foreign_manager)
+        session.flush()
+        foreign_manager_id = foreign_manager.id
+        session.add(ProjectPersonLink(
+            project_id=other_production_id, person_id=foreign_manager_id, role="manager",
+        ))
+    with app.app_context():
+        foreign_person = app.extensions["sqlalchemy"].session.get(Person, foreign_manager_id)
+        foreign_token = create_access_token_for_raw_person(foreign_person)
+    foreign_client = app.test_client()
+    foreign_client.set_cookie(app.config.get("JWT_ACCESS_COOKIE_NAME", "access_token_cookie"), foreign_token)
+    foreign_headers = {
+        "Origin": origin,
+        "X-VFX-Files-CSRF": foreign_client.get("/plugins/vfx_files/csrf-token").json["csrf_token"],
+        "Idempotency-Key": f"cross-production-revoke:{publish_two_id}",
+    }
+    cross_production_revoke = foreign_client.post(
+        revoke_route,
+        json={"reason": "Cross-Production revocation attempt"},
+        headers=foreign_headers,
+    )
+    assert cross_production_revoke.status_code == 403
+    wrong_publish_identity = client.post(
+        f"/plugins/vfx_files/publishes/{publish_id}/approvals/{approval_two_id}/revoke",
+        json={"reason": "Approval belongs to another Publish"},
+        headers={**headers, "Idempotency-Key": f"wrong-publish-revoke:{publish_two_id}"},
+    )
+    assert wrong_publish_identity.status_code == 404
+    revoke_key = f"synthetic-revoke:{publish_two_id}"
+    revoked = client.post(
+        revoke_route, json={"reason": "Synthetic verification of pointer revocation"},
+        headers={**headers, "Idempotency-Key": revoke_key},
+    )
+    assert revoked.status_code == 200, revoked.get_data(as_text=True)
+    revoke_replay = client.post(
+        revoke_route, json={"reason": "Synthetic verification of pointer revocation"},
+        headers={**headers, "Idempotency-Key": revoke_key},
+    )
+    assert revoke_replay.status_code == 200, revoke_replay.get_data(as_text=True)
+    assert revoke_replay.json["revocation_id"] == revoked.json["revocation_id"]
+    duplicate_revoke = client.post(
+        revoke_route, json={"reason": "Second revocation request"},
+        headers={**headers, "Idempotency-Key": f"duplicate-revoke:{publish_two_id}"},
+    )
+    assert duplicate_revoke.status_code == 409
     revoked_package = client.get(f"/plugins/vfx_files/tasks/{task_id}/output-packages?limit=10&offset=0")
     assert revoked_package.status_code == 200
     assert revoked_package.json[0]["id"] == version_two.json["id"]
     assert revoked_package.json[0]["latest_published"] is True
     assert revoked_package.json[0]["latest_approved"] is False
+
+    with zou_db_factory() as session:
+        publish_pointer = session.get(PublishPointer, (task_id, output_family_id))
+        package_pointer = session.get(OutputPackagePointer, (task_id, UUID(str(output_type_id)), "final-exr"))
+        revocations = session.scalars(select(ApprovalEvent).where(
+            ApprovalEvent.reverses_event_id == approval_two_id,
+        )).all()
+        assert publish_pointer.latest_published_id == publish_two_id
+        assert publish_pointer.latest_approved_id == publish_id
+        assert package_pointer.latest_published_id == UUID(version_two.json["id"])
+        assert package_pointer.latest_approved_id == UUID(package_id)
+        assert len(revocations) == 1
 
     with zou_db_factory.begin() as session:
         delivery = session.get(OutputPackageDelivery, UUID(delivery_id))

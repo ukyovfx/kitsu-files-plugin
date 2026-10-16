@@ -48,17 +48,38 @@ def approve_publish(session_factory, *, actor_id: UUID, actor_role: str, publish
 def revoke_approval(session_factory, *, actor_id: UUID, actor_role: str, approval_id: UUID, reason: str, idempotency_key: str):
     if actor_role not in ("admin", "manager", "supervisor"):
         raise ApprovalDenied("Approval role is not authorized")
-    if not reason.strip():
-        raise ValueError("Revocation reason is required")
+    if not isinstance(reason, str) or not reason.strip() or len(reason) > 2000:
+        raise ValueError("A bounded revocation reason is required")
+    if not isinstance(idempotency_key, str) or not idempotency_key.strip() or len(idempotency_key) > 128:
+        raise ValueError("A bounded revocation idempotency key is required")
+    reason = reason.strip()
     with session_factory.begin() as session:
         prior = session.scalar(select(ApprovalEvent).where(ApprovalEvent.idempotency_key == idempotency_key))
         if prior is not None:
-            if prior.reverses_event_id == approval_id and prior.actor_id == actor_id:
+            if (
+                prior.reverses_event_id == approval_id and prior.actor_id == actor_id
+                and prior.event_type == "revoked" and prior.reason == reason
+            ):
                 return prior.id
             raise PublishConflict("Revocation idempotency key is already used")
-        original = session.scalar(select(ApprovalEvent).where(ApprovalEvent.id == approval_id, ApprovalEvent.event_type == "approved"))
+        # Lock the approval before checking for a prior revocation. Concurrent
+        # requests with different keys then serialize on this immutable source
+        # event and cannot append two revocations.
+        original = session.scalar(select(ApprovalEvent).where(
+            ApprovalEvent.id == approval_id, ApprovalEvent.event_type == "approved",
+        ).with_for_update())
         if original is None:
             raise PublishConflict("Approval event does not exist")
+        # The same idempotency key may have committed while this transaction
+        # waited for the source approval lock.
+        prior = session.scalar(select(ApprovalEvent).where(ApprovalEvent.idempotency_key == idempotency_key))
+        if prior is not None:
+            if (
+                prior.reverses_event_id == approval_id and prior.actor_id == actor_id
+                and prior.event_type == "revoked" and prior.reason == reason
+            ):
+                return prior.id
+            raise PublishConflict("Revocation idempotency key is already used")
         revoked = session.scalar(select(ApprovalEvent).where(ApprovalEvent.reverses_event_id == approval_id))
         if revoked is not None:
             raise PublishConflict("Approval was already revoked")

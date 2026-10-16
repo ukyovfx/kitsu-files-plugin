@@ -1390,6 +1390,70 @@ class PublishApproval(MethodView):
         return {"approval_id": str(approval_id), "latest_approved_id": str(pointer.latest_approved_id) if pointer and pointer.latest_approved_id else None}, 201
 
 
+class PublishApprovalRevoke(MethodView):
+    @jwt_required()
+    def post(self, publish_id, approval_id):
+        _require_enabled()
+        _assert_compatible()
+        from .approvals.service import ApprovalDenied, revoke_approval
+        try:
+            _require_mutation_origin()
+            parsed_publish_id = UUID(str(publish_id))
+            parsed_approval_id = UUID(str(approval_id))
+            from .models import ApprovalEvent, Publish, PublishPointer
+            row = Publish.query.filter_by(id=parsed_publish_id).one_or_none()
+            if row is None:
+                abort(404)
+            approval = ApprovalEvent.query.filter_by(
+                id=parsed_approval_id, publish_id=row.id, event_type="approved",
+            ).one_or_none()
+            if approval is None:
+                abort(404)
+            from zou.app.models.task import Task
+            task = Task.query.filter_by(id=row.task_id).one_or_none()
+            if task is None:
+                abort(404)
+
+            actor = _request_actor(str(task.project_id))
+            scope = _resolve_scope(actor, str(task.project_id), str(task.id))
+            authorize(actor, Capability.APPROVE, scope)
+            from .compat import authorize_task_mutation
+            if not authorize_task_mutation(actor, task.id, "approve"):
+                abort(403)
+
+            payload = request.get_json(silent=False) or {}
+            if not isinstance(payload, dict) or set(payload) != {"reason"} or not isinstance(payload.get("reason"), str):
+                abort(400)
+            key = request.headers.get("Idempotency-Key", "").strip()
+            if not key or len(key) > 128:
+                abort(400)
+
+            from sqlalchemy.orm import sessionmaker
+            db_ext = current_app.extensions["sqlalchemy"]
+            sessions = sessionmaker(bind=db_ext.engine, expire_on_commit=False)
+            revocation_id = revoke_approval(
+                sessions, actor_id=actor.actor_id, actor_role=actor.project_role,
+                approval_id=parsed_approval_id, reason=payload["reason"],
+                idempotency_key=key,
+            )
+            pointer = PublishPointer.query.filter_by(
+                task_id=task.id, output_family_id=row.output_family_id,
+            ).one_or_none()
+        except (PermissionDenied, NotFound):
+            abort(403)
+        except (ValueError, TypeError) as error:
+            abort(400, description=str(error))
+        except ApprovalDenied as error:
+            abort(403, description=str(error))
+        except PublishConflict as error:
+            abort(409, description=str(error))
+        return {
+            "approval_id": str(parsed_approval_id),
+            "revocation_id": str(revocation_id),
+            "latest_approved_id": str(pointer.latest_approved_id) if pointer and pointer.latest_approved_id else None,
+        }, 200
+
+
 class HandoffCreate(MethodView):
     @jwt_required()
     def post(self, publish_id):
@@ -2288,6 +2352,7 @@ routes = [
     ("/mutation-probe", MutationProbe),
     ("/handoffs/<handoff_id>/respond", HandoffResponse),
     ("/publishes/<publish_id>/approvals", PublishApproval),
+    ("/publishes/<publish_id>/approvals/<approval_id>/revoke", PublishApprovalRevoke),
     ("/publishes/<publish_id>/handoffs", HandoffCreate),
     ("/productions/<production_id>/output-families", OutputFamilies),
     ("/productions/<production_id>/output-families/<family_id>/activate", OutputFamilyActivation),
