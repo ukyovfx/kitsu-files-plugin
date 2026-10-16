@@ -24,3 +24,37 @@ assessment implications in Google's scope guide. FakeStorage and synthetic
 identity tests do not establish real Drive compatibility.
 
 No Google consent or Drive API request was made while preparing this note.
+
+## Redirect-based Picker feasibility for Kitsu web OAuth
+
+Google's [desktop/mobile Picker guide](https://developers.google.com/workspace/drive/picker/guides/desktop-mobile-picker)
+documents an authorization redirect using `trigger_onepick=true`, optional
+`allow_folder_selection=true`, and a callback containing `picked_file_ids`
+and an authorization `code`. It says the code must be exchanged for a token.
+Google's [web-server OAuth guide](https://developers.google.com/identity/protocols/oauth2/web-server)
+supports authorization-code redirects and server-side code exchange, so the
+callback transport and server-side exchange pattern are compatible in
+principle with a web-server OAuth client when its exact redirect URI is
+registered.
+
+That does **not** establish that the desktop/mobile one-pick Picker flow is
+supported with Kitsu's web OAuth client. Google's [web Picker guide](https://developers.google.com/workspace/drive/picker/guides/web-picker)
+describes the JavaScript Picker and requires an OAuth access token to build a
+Picker for private files. The one-pick guide is platform-qualified for desktop
+and mobile; it does not explicitly confirm the same experience for a Kitsu web
+app. In addition, its desktop/mobile authorization instructions say only
+`drive.file` is permitted and it cannot be combined with another scope. Kitsu's
+current server-side flow requests `openid` plus `drive.file`, and uses the OIDC
+`sub` to bind My Drive ownership. Dropping `openid` would remove that identity
+proof; adding it to the one-pick request conflicts with the documented scope
+restriction. A second unbound identity flow is not an acceptable substitute.
+
+Therefore do not implement `trigger_onepick` in Kitsu until Google confirms web
+client compatibility and the My Drive owner-binding design is resolved. If
+revisited, retain the existing single-use state, Production/actor/connection
+binding, PKCE verifier encryption, fixed callback, server-only code exchange,
+encrypted credential storage, exact scope checks, and Kitsu CSRF/admin checks
+for initiation. The callback must validate `picked_file_ids` as untrusted input
+and re-verify the selected folder server-side before binding it. Do not log or
+redirect the authorization code, and never return access or refresh tokens to
+the browser. No real OAuth request was made.
