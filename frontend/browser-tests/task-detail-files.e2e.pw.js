@@ -37,7 +37,11 @@ test('native Task detail Files tab stays scoped to the Kitsu Task and Production
   const manager = await login('manager')
   const contextResponse = await manager.page.request.get(`${origin}/api/data/user/context`)
   const contextData = await contextResponse.json()
-  expect(contextData.plugins).toContainEqual(expect.objectContaining({ plugin_id: 'vfx_files', frontend_project_enabled: true }))
+  expect(contextData.plugins).toContainEqual(expect.objectContaining({
+    plugin_id: 'vfx_files',
+    frontend_task_enabled: true,
+    frontend_project_enabled: false
+  }))
   const overviewResponse = await manager.page.request.get(`${origin}/api/plugins/vfx_files/overview?production_id=${productionId}&task_id=${taskId}`)
   const overviewData = await overviewResponse.json()
   expect(overviewData.upload_ready).toBe(true)
