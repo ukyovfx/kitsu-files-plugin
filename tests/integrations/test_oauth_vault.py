@@ -27,7 +27,7 @@ SETTINGS = {
 
 @pytest.fixture
 def oauth_db(monkeypatch, tmp_path):
-    sqlalchemy = pytest.importorskip("sqlalchemy")
+    pytest.importorskip("sqlalchemy")
     from sqlalchemy import Boolean, DateTime, Integer, JSON, LargeBinary, String, Uuid, UniqueConstraint, create_engine
     from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 
@@ -87,6 +87,16 @@ def oauth_db(monkeypatch, tmp_path):
         notification_epoch: Mapped[int] = mapped_column(Integer)
         desired_config: Mapped[dict] = mapped_column(JSON)
 
+    class ProductionDriveAuthority(Base):
+        __tablename__ = "production_drive_authority"
+        production_id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
+        owner: Mapped[str] = mapped_column(String)
+        state: Mapped[str] = mapped_column(String)
+        config_revision: Mapped[int] = mapped_column(Integer)
+        activation_epoch: Mapped[int] = mapped_column(Integer)
+        connection_id: Mapped[UUID | None] = mapped_column(Uuid, nullable=True)
+        activation_enabled: Mapped[bool] = mapped_column(Boolean)
+
     class Job(Base):
         __tablename__ = "job"
         id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
@@ -123,6 +133,7 @@ def oauth_db(monkeypatch, tmp_path):
     models = ModuleType("plugin.models")
     for model in (
         StorageConnection, DriveCredential, DriveAuthorizationIntent, KitsuSyncDesiredConfiguration,
+        ProductionDriveAuthority,
         Job, KitsuSyncManagementIdempotency, KitsuSyncHierarchySnapshot, KitsuSyncHierarchySnapshotPage,
     ):
         setattr(models, model.__name__, model)
@@ -599,6 +610,11 @@ def test_invalid_refresh_fails_closed_without_leaking_provider_body(oauth_db):
             notification_epoch=4,
             desired_config={"contract_version": "1.0", "activation": {"enabled": True, "activated_at": "synthetic"}},
         ))
+        session.add(models.ProductionDriveAuthority(
+            production_id=PRODUCTION, owner="plugin", state="configured",
+            config_revision=3, activation_epoch=8, connection_id=connection_id,
+            activation_enabled=True,
+        ))
         session.commit()
     with sessions() as session:
         credential = session.get(models.DriveCredential, connection_id)
@@ -617,9 +633,13 @@ def test_invalid_refresh_fails_closed_without_leaking_provider_body(oauth_db):
     with sessions() as session:
         credential = session.get(models.DriveCredential, connection_id)
         connection = session.get(models.StorageConnection, connection_id)
+        authority = session.get(models.ProductionDriveAuthority, PRODUCTION)
         desired = session.get(models.KitsuSyncDesiredConfiguration, PRODUCTION)
         assert credential.state == "reauth_required"
         assert connection.enabled is False
+        assert authority.activation_enabled is False
+        assert authority.activation_epoch == 9
+        assert authority.config_revision == 4
         assert desired.config_revision == 7
         assert desired.notification_epoch == 5
         assert desired.desired_config["activation"]["enabled"] is False

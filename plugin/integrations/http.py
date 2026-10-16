@@ -425,6 +425,8 @@ class DriveConnectionRevokeResource(MethodView):
                     return jsonify(connection_status(connection, credential)), 202
                 connection.enabled = False
                 credential.state = "revoking"
+                from .storage_authority import fence_plugin_authority_after_credential_failure
+                fence_plugin_authority_after_credential_failure(session, production_id, parsed)
                 desired = session.get(KitsuSyncDesiredConfiguration, production_id)
                 if desired is not None:
                     desired_body = dict(desired.desired_config)

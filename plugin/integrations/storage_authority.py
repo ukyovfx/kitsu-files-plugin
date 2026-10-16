@@ -60,6 +60,33 @@ def selected_storage_connection(session, production_id):
     return _legacy_selected_storage_connection(session, production_id)
 
 
+def fence_plugin_authority_after_credential_failure(session, production_id, connection_id):
+    """Disable and advance a matching Plugin authority after grant loss.
+
+    Call inside the same transaction that marks the encrypted credential
+    unusable. The epoch bump prevents queued events from becoming current if
+    the connection is later reauthorized.
+    """
+    from ..models import ProductionDriveAuthority
+
+    try:
+        connection_uuid = UUID(str(connection_id))
+    except (TypeError, ValueError, AttributeError):
+        return False
+    authority = session.scalar(select(ProductionDriveAuthority).where(
+        ProductionDriveAuthority.production_id == production_id,
+    ).with_for_update())
+    if (
+        authority is None or authority.owner != "plugin" or authority.state != "configured"
+        or authority.connection_id != connection_uuid
+    ):
+        return False
+    authority.activation_enabled = False
+    authority.activation_epoch += 1
+    authority.config_revision += 1
+    return True
+
+
 def effective_drive_authority(session, production_id, *, lock_legacy=False):
     """Return the effective Drive owner, root and activation fence.
 

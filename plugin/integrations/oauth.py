@@ -393,6 +393,10 @@ class DatabaseDriveTokenProvider:
                     connection = session.get(StorageConnection, self.connection_id)
                     if connection is not None:
                         connection.enabled = False
+                    from .storage_authority import fence_plugin_authority_after_credential_failure
+                    fence_plugin_authority_after_credential_failure(
+                        session, credential.production_id, self.connection_id,
+                    )
                     from ..models import KitsuSyncDesiredConfiguration
                     desired = session.get(KitsuSyncDesiredConfiguration, credential.production_id)
                     if desired is not None and desired.desired_config.get("activation", {}).get("enabled"):

@@ -154,6 +154,31 @@ def test_legacy_authority_is_not_silently_promoted_to_plugin_owner():
     assert authority.state == "legacy_import_required"
 
 
+def test_credential_failure_fences_only_the_matching_plugin_authority():
+    from plugin.integrations.storage_authority import fence_plugin_authority_after_credential_failure
+
+    production_id, connection_id = uuid4(), uuid4()
+    authority = SimpleNamespace(
+        production_id=production_id, owner="plugin", state="configured",
+        config_revision=7, activation_epoch=12, connection_id=connection_id,
+        activation_enabled=True,
+    )
+
+    class Session:
+        def scalar(self, statement):
+            assert statement._for_update_arg is not None
+            return authority
+
+    session = Session()
+    assert fence_plugin_authority_after_credential_failure(session, production_id, connection_id)
+    assert authority.activation_enabled is False
+    assert authority.activation_epoch == 13
+    assert authority.config_revision == 8
+    assert not fence_plugin_authority_after_credential_failure(session, production_id, uuid4())
+    authority.owner = "legacy_kitsusync"
+    assert not fence_plugin_authority_after_credential_failure(session, production_id, connection_id)
+
+
 def test_plugin_authority_status_is_sanitized_and_reports_legacy_gate():
     from plugin.integrations.storage_authority import production_drive_authority_status
 
