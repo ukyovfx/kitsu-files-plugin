@@ -10,6 +10,7 @@ from flask import abort, current_app, request, send_file
 from flask.views import MethodView
 from flask_jwt_extended import get_jwt_identity, jwt_required
 from werkzeug.exceptions import ServiceUnavailable
+from werkzeug.utils import secure_filename
 
 from .authz import Actor, Capability, NotFound, PermissionDenied, assert_compatible_host, authorize, issue_csrf_token, resolve_request_scope, verify_csrf_token
 from .compat import HOST_ZOU_VERSION, SCHEMA_EPOCH, WORKER_BUILD, assert_runtime_host, current_actor_role
@@ -48,6 +49,48 @@ def _resolve_scope(actor, production_id, task_id=None):
         lambda project_id: Project.query.filter_by(id=project_id).one_or_none(),
         lambda resolved_task_id: Task.query.filter_by(id=resolved_task_id).one_or_none(),
     )
+
+
+def _department_recipients_for_task(task, department_id, excluded_actor_id=None):
+    """Resolve current response candidates from Zou UUID memberships and role rows."""
+    from zou.app.models.person import DepartmentLink, Person
+    from zou.app.models.project import ProjectPersonLink
+    from zou.app.models.task import TaskPersonLink
+
+    from .compat import authorize_task_mutation
+    from .handoffs.targets import department_recipient_is_current_member
+
+    links = TaskPersonLink.query.filter_by(task_id=task.id).all()
+    eligible = []
+    for link in links:
+        if excluded_actor_id is not None and link.person_id == excluded_actor_id:
+            continue
+        person = Person.query.filter_by(id=link.person_id).one_or_none()
+        membership = ProjectPersonLink.query.filter_by(
+            project_id=task.project_id, person_id=link.person_id,
+        ).one_or_none()
+        department_member = DepartmentLink.query.filter_by(
+            department_id=department_id, person_id=link.person_id,
+        ).one_or_none() is not None
+        global_role = getattr(getattr(person, "role", None), "code", getattr(person, "role", None)) if person is not None else None
+        project_role = "admin" if global_role == "admin" else (
+            getattr(membership.role, "code", membership.role) if membership is not None else None
+        )
+        if person is None or not department_recipient_is_current_member(
+            actor_id=link.person_id, designated_person_id=None,
+            active=bool(getattr(person, "active", False)),
+            project_member=membership is not None,
+            department_member=department_member,
+            task_assignee=True,
+            project_role=project_role,
+        ):
+            continue
+        candidate = Actor(actor_id=link.person_id, project_role=project_role)
+        if not authorize_task_mutation(candidate, task.id, "handoff"):
+            continue
+        eligible.append(person)
+    eligible.sort(key=lambda person: (person.last_name or "", person.first_name or "", str(person.id)))
+    return eligible
 
 
 def _require_mutation_origin(allowed_mimetypes=("application/json",)):
@@ -1074,16 +1117,36 @@ class TaskPublishOptions(MethodView):
             abort(403)
         except (ValueError, TypeError):
             abort(404)
+        department_targets = []
+        from zou.app.models.department import Department
+        for target in targets:
+            target_type = target_types.get(target.task_type_id)
+            if target_type is None or target_type.department_id is None:
+                continue
+            department = Department.query.filter_by(id=target_type.department_id).one_or_none()
+            if department is None:
+                continue
+            eligible_people = _department_recipients_for_task(target, department.id, actor.actor_id)
+            department_targets.append({
+                "task_id": str(target.id),
+                "task_name": target.name,
+                "task_type_id": str(target_type.id),
+                "task_type_name": target_type.name,
+                "department_id": str(department.id),
+                "department_name": department.name,
+                "eligible_recipient_count": len(eligible_people),
+                "eligible_recipients": [{
+                    "id": str(person.id),
+                    "name": f"{person.first_name} {person.last_name}".strip(),
+                } for person in eligible_people],
+            })
         return {
             "task_id": str(task.id),
             "actor_id": str(actor.actor_id),
             "role": actor.project_role,
             "families": [{"id": str(row.id), "name": row.name, "family_key": row.family_key} for row in families],
             "recipients": [{"id": str(row.id), "name": f"{row.first_name} {row.last_name}".strip()} for row in assignees if row.id != actor.actor_id],
-            "department_targets": [
-                {"task_id": str(target.id), "task_type_id": str(target.task_type_id), "department_id": str(target_types[target.task_type_id].department_id), "task_type_name": target_types[target.task_type_id].name}
-                for target in targets if target.task_type_id in target_types and target_types[target.task_type_id].department_id is not None
-            ],
+            "department_targets": department_targets,
         }
 
 
@@ -1114,10 +1177,14 @@ class ProductionOverview(MethodView):
         except PermissionDenied:
             abort(403)
         from sqlalchemy import or_
-        from .models import Handoff, Job, OutputFamilyMapping, Publish, PublishPointer, UploadSession
+        from .models import Handoff, HandoffEvent, Job, OutputFamilyMapping, Publish, PublishPointer, UploadSession, WorkingRevisionFile
         from zou.app.models.entity import Entity
-        from zou.app.models.task import Task
+        from zou.app.models.task import Task, TaskPersonLink
         from zou.app.models.task_type import TaskType
+        from zou.app.models.department import Department
+        from zou.app.models.person import Person
+        from zou.app.models.project import ProjectPersonLink, ProjectTaskTypeLink
+        db_ext = current_app.extensions["sqlalchemy"]
 
         if scope.task_id is not None:
             task_rows = [Task.query.filter_by(id=scope.task_id).one()]
@@ -1146,6 +1213,12 @@ class ProductionOverview(MethodView):
             ).all()
         }
         publishes = Publish.query.filter(Publish.task_id.in_(task_ids)).order_by(Publish.created_at.desc()).limit(200).all()
+        source_file_ids = {row.source_revision_file_id for row in publishes if row.source_revision_file_id}
+        publish_source_files = {
+            row.id: row for row in WorkingRevisionFile.query.filter(
+                WorkingRevisionFile.id.in_(source_file_ids),
+            ).all()
+        } if source_file_ids else {}
         jobs = Job.query.filter_by(job_type="publish_artifact").order_by(Job.created_at.desc()).limit(500).all()
         publish_jobs = {str(job.payload.get("publish_id")): job for job in jobs if job.payload.get("publish_id")}
         pointers = {
@@ -1167,6 +1240,7 @@ class ProductionOverview(MethodView):
                 "qc_state": publish.qc_state,
                 "created_by": str(publish.created_by),
                 "manifest_sha256": publish.manifest_sha256,
+                "source_file_name": publish_source_files.get(publish.source_revision_file_id).file_name if publish.source_revision_file_id in publish_source_files else None,
                 "byte_count": publish.byte_count,
                 "sha256": publish.sha256,
                 "provider_artifact_id": publish.provider_artifact_id if publish.state == "completed" else None,
@@ -1177,7 +1251,114 @@ class ProductionOverview(MethodView):
                 "latest_published": bool(pointer and pointer.latest_published_id == publish.id),
                 "latest_approved": bool(pointer and pointer.latest_approved_id == publish.id),
             })
-        handoffs = Handoff.query.filter(or_(Handoff.task_id.in_(task_ids), Handoff.recipient_task_id.in_(task_ids))).order_by(Handoff.created_at.desc()).limit(200).all()
+        handoff_candidates = Handoff.query.filter(or_(Handoff.task_id.in_(task_ids), Handoff.recipient_task_id.in_(task_ids))).order_by(Handoff.created_at.desc()).limit(200).all()
+        handoff_rows = []
+        for handoff in handoff_candidates:
+            source_task = Task.query.filter_by(id=handoff.task_id).one_or_none()
+            destination_task = Task.query.filter_by(id=handoff.recipient_task_id or handoff.task_id).one_or_none()
+            source_visible = source_task is not None and source_task.id in task_ids
+            destination_visible = destination_task is not None and destination_task.id in task_ids
+            can_respond = False
+            destination_department = None
+            destination_type = None
+            if handoff.recipient_department_id is not None and destination_task is not None:
+                destination_type = TaskType.query.filter_by(id=destination_task.task_type_id).one_or_none()
+                destination_department = Department.query.filter_by(id=handoff.recipient_department_id).one_or_none()
+                from .handoffs.targets import department_recipient_is_current_member, department_target_matches
+                matching_target = bool(
+                    source_task is not None and destination_type is not None and destination_department is not None
+                    and department_target_matches(
+                        source_project_id=source_task.project_id, source_entity_id=source_task.entity_id,
+                        target_project_id=destination_task.project_id, target_entity_id=destination_task.entity_id,
+                        target_department_id=destination_type.department_id,
+                        requested_department_id=handoff.recipient_department_id,
+                        department_exists=True,
+                        task_type_in_project=ProjectTaskTypeLink.query.filter_by(
+                            project_id=destination_task.project_id, task_type_id=destination_task.task_type_id,
+                        ).one_or_none() is not None,
+                    )
+                )
+                if matching_target and destination_visible and handoff.sender_id != actor.actor_id:
+                    eligible_ids = {
+                        person.id for person in _department_recipients_for_task(
+                            destination_task, handoff.recipient_department_id, actor.actor_id if handoff.sender_id == actor.actor_id else None,
+                        )
+                    }
+                    can_respond = actor.actor_id in eligible_ids and (
+                        handoff.recipient_person_id is None or handoff.recipient_person_id == actor.actor_id
+                    )
+            elif handoff.recipient_id is not None and destination_task is not None:
+                person = db_ext.session.get(Person, actor.actor_id)
+                can_respond = bool(
+                    destination_visible and handoff.recipient_id == actor.actor_id
+                    and handoff.sender_id != actor.actor_id
+                    and person is not None and getattr(person, "active", True)
+                    and ProjectPersonLink.query.filter_by(project_id=destination_task.project_id, person_id=actor.actor_id).one_or_none() is not None
+                    and TaskPersonLink.query.filter_by(task_id=destination_task.id, person_id=actor.actor_id).one_or_none() is not None
+                )
+                from .compat import authorize_task_mutation
+                can_respond = can_respond and authorize_task_mutation(actor, destination_task.id, "handoff")
+            from .handoffs.targets import handoff_is_visible_to_actor
+            visible = handoff_is_visible_to_actor(
+                actor_id=actor.actor_id,
+                sender_id=handoff.sender_id,
+                recipient_id=handoff.recipient_id,
+                recipient_task_id=handoff.recipient_task_id,
+                source_task_visible=source_visible,
+                recipient_task_visible=destination_visible,
+                recipient_is_currently_eligible=can_respond,
+            )
+            if visible:
+                handoff_rows.append((handoff, source_task, destination_task, destination_department, destination_type, can_respond))
+        handoff_ids = [row[0].id for row in handoff_rows]
+        events_by_handoff = {}
+        event_rows = HandoffEvent.query.filter(HandoffEvent.handoff_id.in_(handoff_ids)).order_by(HandoffEvent.created_at, HandoffEvent.id).all() if handoff_ids else []
+        for event in event_rows:
+            events_by_handoff.setdefault(event.handoff_id, []).append(event)
+        event_actor_ids = {event.actor_id for event in event_rows}
+        event_people = {person.id: person for person in Person.query.filter(Person.id.in_(event_actor_ids)).all()} if event_actor_ids else {}
+        publish_ids = {row[0].publish_id for row in handoff_rows}
+        handoff_publishes = {row.id: row for row in Publish.query.filter(Publish.id.in_(publish_ids)).all()} if publish_ids else {}
+        handoff_source_ids = {
+            publish.source_revision_file_id for publish in handoff_publishes.values()
+            if publish.source_revision_file_id
+        }
+        handoff_source_files = {
+            row.id: row for row in WorkingRevisionFile.query.filter(
+                WorkingRevisionFile.id.in_(handoff_source_ids),
+            ).all()
+        } if handoff_source_ids else {}
+        handoff_payload = []
+        for handoff, source_task, destination_task, destination_department, destination_type, can_respond in handoff_rows:
+            publish = handoff_publishes.get(handoff.publish_id)
+            designated_person = db_ext.session.get(Person, handoff.recipient_person_id) if handoff.recipient_person_id else None
+            handoff_payload.append({
+                "id": str(handoff.id), "task_id": str(handoff.task_id),
+                "source_task_name": source_task.name if source_task else None,
+                "source_task_type_name": task_type_names.get(source_task.task_type_id) if source_task else None,
+                "publish_id": str(handoff.publish_id), "publish_version": publish.version if publish else None,
+                "publish_state": publish.state if publish else None,
+                "publish_sha256": publish.sha256 if publish else None,
+                "publish_source_file_name": handoff_source_files.get(publish.source_revision_file_id).file_name if publish and publish.source_revision_file_id in handoff_source_files else None,
+                "sender_id": str(handoff.sender_id), "sender_note": handoff.sender_note,
+                "recipient_id": str(handoff.recipient_id) if handoff.recipient_id else None,
+                "recipient_department_id": str(handoff.recipient_department_id) if handoff.recipient_department_id else None,
+                "recipient_department_name": destination_department.name if destination_department else None,
+                "recipient_task_id": str(handoff.recipient_task_id) if handoff.recipient_task_id else None,
+                "recipient_task_name": destination_task.name if handoff.recipient_task_id and destination_task else None,
+                "recipient_task_type_name": task_type_names.get(destination_task.task_type_id) if handoff.recipient_task_id and destination_task else None,
+                "recipient_person_id": str(handoff.recipient_person_id) if handoff.recipient_person_id else None,
+                "recipient_person_name": f"{designated_person.first_name} {designated_person.last_name}".strip() if designated_person else None,
+                "state": handoff.state, "can_respond": can_respond, "can_download": visible,
+                "response_ownership": "designated_person" if handoff.recipient_person_id else "first_authorized_responder",
+                "created_at": handoff.created_at.isoformat() if handoff.created_at else None,
+                "events": [{
+                    "id": str(event.id), "actor_id": str(event.actor_id),
+                    "actor_name": f"{event_people[event.actor_id].first_name} {event_people[event.actor_id].last_name}".strip() if event.actor_id in event_people else None,
+                    "type": event.event_type, "feedback": event.feedback,
+                    "created_at": event.created_at.isoformat() if event.created_at else None,
+                } for event in events_by_handoff.get(handoff.id, [])],
+            })
         uploads = UploadSession.query.filter(UploadSession.task_id.in_(task_ids)).order_by(UploadSession.created_at.desc()).limit(500).all()
         try:
             storage_connection = _production_storage_connection(scope.production_id)
@@ -1209,7 +1390,7 @@ class ProductionOverview(MethodView):
                 "failure_code": row.failure_code,
             } for row in uploads],
             "publishes": publish_rows,
-            "handoffs": [{"id": str(row.id), "task_id": str(row.task_id), "publish_id": str(row.publish_id), "sender_id": str(row.sender_id), "recipient_id": str(row.recipient_id) if row.recipient_id else None, "recipient_department_id": str(row.recipient_department_id) if row.recipient_department_id else None, "recipient_task_id": str(row.recipient_task_id) if row.recipient_task_id else None, "recipient_person_id": str(row.recipient_person_id) if row.recipient_person_id else None, "state": row.state} for row in handoffs],
+            "handoffs": handoff_payload,
         }
 
 
@@ -1237,6 +1418,7 @@ class HandoffResponse(MethodView):
         except (PermissionDenied, ValueError, TypeError, AttributeError):
             abort(403)
         from .handoffs.service import HandoffDenied, transition_handoff
+        from .publishes.checkpoints import PublishConflict
         from sqlalchemy.orm import sessionmaker
         db_ext = current_app.extensions["sqlalchemy"]
         from .models import Handoff
@@ -1272,6 +1454,7 @@ class HandoffResponse(MethodView):
                     project_member=ProjectPersonLink.query.filter_by(project_id=task.project_id, person_id=actor_id).one_or_none() is not None,
                     department_member=DepartmentLink.query.filter_by(department_id=handoff.recipient_department_id, person_id=actor_id).one_or_none() is not None,
                     task_assignee=TaskPersonLink.query.filter_by(task_id=task.id, person_id=actor_id).one_or_none() is not None,
+                    project_role=actor.project_role,
                 )
                 if not target_matches or not member:
                     abort(403)
@@ -1290,6 +1473,13 @@ class HandoffResponse(MethodView):
             if not authorize_task_mutation(actor, task.id, "handoff"):
                 abort(403)
             payload = request.get_json(silent=False) or {}
+            if not isinstance(payload, dict) or set(payload) - {"target", "feedback"}:
+                abort(400)
+            if payload.get("target") not in {"accepted", "needs_fix"} or (
+                payload.get("feedback") is not None
+                and (not isinstance(payload.get("feedback"), str) or len(payload["feedback"]) > 2000)
+            ):
+                abort(400)
             idempotency_key = request.headers.get("Idempotency-Key", "").strip()
             if not idempotency_key or len(idempotency_key) > 128:
                 abort(400)
@@ -1300,6 +1490,13 @@ class HandoffResponse(MethodView):
                 destination = session.get(Task, record.recipient_task_id)
                 destination_type = session.get(TaskType, destination.task_type_id) if destination is not None else None
                 person = session.get(Person, responder_id)
+                project_membership = session.query(ProjectPersonLink).filter_by(
+                    project_id=destination.project_id, person_id=responder_id,
+                ).one_or_none() if destination is not None else None
+                global_role = getattr(getattr(person, "role", None), "code", getattr(person, "role", None)) if person is not None else None
+                project_role = "admin" if global_role == "admin" else (
+                    getattr(project_membership.role, "code", project_membership.role) if project_membership is not None else None
+                )
                 return bool(
                     source is not None and destination is not None and destination_type is not None
                     and department_target_matches(
@@ -1315,9 +1512,15 @@ class HandoffResponse(MethodView):
                     and department_recipient_is_current_member(
                         actor_id=responder_id, designated_person_id=record.recipient_person_id,
                         active=bool(person is not None and getattr(person, "active", True)),
-                        project_member=session.get(ProjectPersonLink, (destination.project_id, responder_id)) is not None,
-                        department_member=session.get(DepartmentLink, (responder_id, record.recipient_department_id)) is not None,
-                        task_assignee=session.get(TaskPersonLink, (destination.id, responder_id)) is not None,
+                        project_member=project_membership is not None,
+                        department_member=session.query(DepartmentLink).filter_by(
+                            department_id=record.recipient_department_id,
+                            person_id=responder_id,
+                        ).one_or_none() is not None,
+                        task_assignee=session.query(TaskPersonLink).filter_by(
+                            task_id=destination.id, person_id=responder_id,
+                        ).one_or_none() is not None,
+                        project_role=project_role,
                     )
                 )
 
@@ -1336,9 +1539,144 @@ class HandoffResponse(MethodView):
             abort(403)
         except HandoffDenied:
             abort(403)
+        except PublishConflict as error:
+            abort(409, description=str(error))
         except (ValueError, TypeError):
             abort(400)
-        return {"id": str(result.id), "state": result.state, "publish_id": str(result.publish_id)}
+        return {"id": str(result.id), "state": result.state, "publish_id": str(result.publish_id), "replayed": result.replayed}, 200 if result.replayed else 201
+
+
+class HandoffPublishDownload(MethodView):
+    @jwt_required()
+    def get(self, handoff_id):
+        _require_enabled()
+        _assert_compatible()
+        try:
+            handoff_uuid = UUID(str(handoff_id))
+            actor_id = UUID(str(get_jwt_identity()))
+        except (ValueError, TypeError, AttributeError):
+            abort(404)
+        from .models import Handoff, Publish, WorkingRevisionFile
+        from zou.app.models.department import Department
+        from zou.app.models.person import Person
+        from zou.app.models.project import ProjectPersonLink, ProjectTaskTypeLink
+        from zou.app.models.task import Task, TaskPersonLink
+        from zou.app.models.task_type import TaskType
+
+        handoff = Handoff.query.filter_by(id=handoff_uuid).one_or_none()
+        if handoff is None:
+            abort(404)
+        source_task = Task.query.filter_by(id=handoff.task_id).one_or_none()
+        destination_task = Task.query.filter_by(
+            id=handoff.recipient_task_id or handoff.task_id,
+        ).one_or_none()
+        publish = Publish.query.filter_by(id=handoff.publish_id).one_or_none()
+        if source_task is None or destination_task is None or publish is None:
+            abort(404)
+
+        try:
+            from .compat import authorize_task_read
+            actor = _request_actor(str(source_task.project_id))
+            if source_task.project_id != destination_task.project_id:
+                abort(403)
+            if actor.actor_id == handoff.sender_id:
+                if not authorize_task_read(actor, source_task.id):
+                    abort(403)
+            elif handoff.recipient_department_id is not None:
+                task_type = TaskType.query.filter_by(id=destination_task.task_type_id).one_or_none()
+                department = Department.query.filter_by(id=handoff.recipient_department_id).one_or_none()
+                from .handoffs.targets import department_target_matches
+                if (
+                    task_type is None or department is None
+                    or not department_target_matches(
+                        source_project_id=source_task.project_id,
+                        source_entity_id=source_task.entity_id,
+                        target_project_id=destination_task.project_id,
+                        target_entity_id=destination_task.entity_id,
+                        target_department_id=task_type.department_id,
+                        requested_department_id=handoff.recipient_department_id,
+                        department_exists=True,
+                        task_type_in_project=ProjectTaskTypeLink.query.filter_by(
+                            project_id=destination_task.project_id,
+                            task_type_id=destination_task.task_type_id,
+                        ).one_or_none() is not None,
+                    )
+                ):
+                    abort(403)
+                eligible = _department_recipients_for_task(
+                    destination_task, handoff.recipient_department_id, handoff.sender_id,
+                )
+                if (
+                    actor.actor_id not in {person.id for person in eligible}
+                    or (handoff.recipient_person_id is not None and handoff.recipient_person_id != actor.actor_id)
+                ):
+                    abort(403)
+            elif handoff.recipient_id == actor.actor_id:
+                person = Person.query.filter_by(id=actor.actor_id).one_or_none()
+                if (
+                    person is None or not getattr(person, "active", True)
+                    or ProjectPersonLink.query.filter_by(
+                        project_id=destination_task.project_id, person_id=actor.actor_id,
+                    ).one_or_none() is None
+                    or TaskPersonLink.query.filter_by(
+                        task_id=destination_task.id, person_id=actor.actor_id,
+                    ).one_or_none() is None
+                ):
+                    abort(403)
+                from .compat import authorize_task_mutation
+                if not authorize_task_mutation(actor, destination_task.id, "handoff"):
+                    abort(403)
+            else:
+                abort(403)
+
+            scope = _resolve_scope(actor, str(source_task.project_id), str(source_task.id))
+            authorize(actor, Capability.READ, scope)
+            if actor.actor_id == handoff.sender_id and not authorize_task_read(actor, source_task.id):
+                abort(403)
+            if publish.task_id != source_task.id or publish.state != "completed":
+                abort(409, description="Handoff Publish is no longer a completed immutable artifact")
+            connection = _production_storage_connection(source_task.project_id)
+            adapter = _storage_adapter(connection)
+            if (
+                publish.storage_connection_id is None
+                or publish.storage_connection_id != connection.id
+                or not publish.provider_artifact_id
+                or publish.byte_count is None
+                or not publish.sha256
+            ):
+                abort(404)
+            obj = adapter.get(publish.provider_artifact_id)
+            if obj is None or obj.trashed or obj.parent_id is None:
+                abort(404)
+            adapter.assert_parent_within_root(obj.parent_id)
+            if not adapter.verify(publish.provider_artifact_id, publish.byte_count, publish.sha256):
+                abort(409, description="Published artifact failed integrity verification")
+            stream = tempfile.SpooledTemporaryFile(max_size=8 * 1024 * 1024, mode="w+b")
+            try:
+                count, digest = adapter.download_to(publish.provider_artifact_id, stream)
+                if count != publish.byte_count or digest != publish.sha256:
+                    abort(409, description="Downloaded Publish failed integrity verification")
+                stream.seek(0)
+                source_file = WorkingRevisionFile.query.filter_by(
+                    id=publish.source_revision_file_id,
+                ).one_or_none() if publish.source_revision_file_id else None
+                safe_name = secure_filename(source_file.file_name)[:150] if source_file else ""
+                download_name = f"publish-v{publish.version:03d}-{safe_name or str(publish.id) + '.bin'}"
+                response = send_file(
+                    stream,
+                    mimetype="application/octet-stream",
+                    as_attachment=True,
+                    download_name=download_name,
+                    conditional=False,
+                )
+                response.headers["Cache-Control"] = "no-store"
+                response.call_on_close(stream.close)
+                return response
+            except Exception:
+                stream.close()
+                raise
+        except (PermissionDenied, NotFound):
+            abort(403)
 
 
 class PublishApproval(MethodView):
@@ -1470,6 +1808,7 @@ class HandoffCreate(MethodView):
         from zou.app.models.task_type import TaskType
         from zou.app.models.department import Department
         from .handoffs.service import HandoffDenied, create_handoff
+        from .publishes.checkpoints import PublishConflict
         from sqlalchemy.orm import sessionmaker
         db_ext = current_app.extensions["sqlalchemy"]
         task = Task.query.filter_by(id=row.task_id).one_or_none()
@@ -1484,13 +1823,29 @@ class HandoffCreate(MethodView):
             if not authorize_task_mutation(actor, task.id, "handoff"):
                 abort(403)
             payload = request.get_json(silent=False) or {}
+            if not isinstance(payload, dict) or set(payload) - {"recipient_id", "recipient_department_id", "recipient_task_id", "recipient_person_id", "note"}:
+                abort(400)
             recipient_id = recipient_department_id = recipient_task_id = recipient_person_id = None
+            sender_note = payload.get("note")
+            if sender_note is not None and (not isinstance(sender_note, str) or len(sender_note) > 2000):
+                abort(400)
             if payload.get("recipient_id"):
+                if any(payload.get(key) for key in ("recipient_department_id", "recipient_task_id", "recipient_person_id")) or sender_note is not None:
+                    abort(400)
                 recipient_id = UUID(str(payload.get("recipient_id")))
                 recipient = db_ext.session.get(Person, recipient_id)
                 is_task_assignee = TaskPersonLink.query.filter_by(task_id=task.id, person_id=recipient_id).one_or_none() is not None
-                is_project_member = ProjectPersonLink.query.filter_by(project_id=task.project_id, person_id=recipient_id).one_or_none() is not None
-                if recipient is None or not getattr(recipient, "active", True) or not (is_task_assignee and is_project_member):
+                membership = ProjectPersonLink.query.filter_by(project_id=task.project_id, person_id=recipient_id).one_or_none()
+                global_role = getattr(getattr(recipient, "role", None), "code", getattr(recipient, "role", None)) if recipient is not None else None
+                project_role = "admin" if global_role == "admin" else (
+                    getattr(membership.role, "code", membership.role) if membership is not None else None
+                )
+                from .compat import authorize_task_mutation
+                if (
+                    recipient is None or not getattr(recipient, "active", True)
+                    or not is_task_assignee or membership is None
+                    or not authorize_task_mutation(Actor(actor_id=recipient_id, project_role=project_role), task.id, "handoff")
+                ):
                     abort(403)
             else:
                 recipient_department_id = UUID(str(payload.get("recipient_department_id", "")))
@@ -1507,15 +1862,12 @@ class HandoffCreate(MethodView):
                     task_type_in_project=ProjectTaskTypeLink.query.filter_by(project_id=target_task.project_id, task_type_id=target_task.task_type_id).one_or_none() is not None,
                 ):
                     abort(403)
+                eligible_people = _department_recipients_for_task(target_task, recipient_department_id, actor.actor_id)
+                if not eligible_people:
+                    abort(409, description="No currently authorized recipient is assigned to this Department Task")
                 if payload.get("recipient_person_id"):
                     recipient_person_id = UUID(str(payload["recipient_person_id"]))
-                    person = db_ext.session.get(Person, recipient_person_id)
-                    if (
-                        person is None or not getattr(person, "active", True)
-                        or ProjectPersonLink.query.filter_by(project_id=task.project_id, person_id=recipient_person_id).one_or_none() is None
-                        or DepartmentLink.query.filter_by(department_id=recipient_department_id, person_id=recipient_person_id).one_or_none() is None
-                        or TaskPersonLink.query.filter_by(task_id=recipient_task_id, person_id=recipient_person_id).one_or_none() is None
-                    ):
+                    if recipient_person_id not in {person.id for person in eligible_people}:
                         abort(403)
             key = request.headers.get("Idempotency-Key", "").strip()
             if not key or len(key) > 128:
@@ -1526,6 +1878,7 @@ class HandoffCreate(MethodView):
                 sender_id=actor.actor_id, recipient_id=recipient_id,
                 recipient_department_id=recipient_department_id, recipient_task_id=recipient_task_id,
                 recipient_person_id=recipient_person_id, idempotency_key=key,
+                sender_note=sender_note,
             )
         except (PermissionDenied, NotFound):
             abort(403)
@@ -1533,13 +1886,16 @@ class HandoffCreate(MethodView):
             abort(400, description=str(error))
         except HandoffDenied as error:
             abort(403, description=str(error))
+        except PublishConflict as error:
+            abort(409, description=str(error))
         return {
             "id": str(result.id), "state": result.state, "publish_id": str(result.publish_id),
             "recipient_id": str(recipient_id) if recipient_id else None,
             "recipient_department_id": str(recipient_department_id) if recipient_department_id else None,
             "recipient_task_id": str(recipient_task_id) if recipient_task_id else None,
             "recipient_person_id": str(recipient_person_id) if recipient_person_id else None,
-        }, 201
+            "replayed": result.replayed,
+        }, 200 if result.replayed else 201
 
 
 class TaskUploads(MethodView):
@@ -2352,6 +2708,7 @@ routes = [
     ("/overview", ProductionOverview),
     ("/mutation-probe", MutationProbe),
     ("/handoffs/<handoff_id>/respond", HandoffResponse),
+    ("/handoffs/<handoff_id>/download", HandoffPublishDownload),
     ("/publishes/<publish_id>/approvals", PublishApproval),
     ("/publishes/<publish_id>/approvals/<approval_id>/revoke", PublishApprovalRevoke),
     ("/publishes/<publish_id>/handoffs", HandoffCreate),

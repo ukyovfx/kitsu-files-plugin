@@ -16,6 +16,7 @@ DRIVE_OAUTH_MIGRATION = ROOT / "plugin/migrations/versions/0013_encrypted_drive_
 EVENT_OUTBOX_BINDING_MIGRATION = ROOT / "plugin/migrations/versions/0014_event_outbox_connection_binding.py"
 PACKAGE_PUBLICATION_MIGRATION = ROOT / "plugin/migrations/versions/0015_package_publication_binding.py"
 DELIVERY_REQUEST_IDENTITY_MIGRATION = ROOT / "plugin/migrations/versions/0016_delivery_request_identity.py"
+DEPARTMENT_HANDOFF_MIGRATION = ROOT / "plugin/migrations/versions/0017_department_handoff_notes.py"
 
 
 def test_plugin_tables_are_namespaced_and_nullable_folder_identity_is_avoided():
@@ -237,3 +238,14 @@ def test_delivery_request_identity_migration_preserves_unprovable_history():
     assert "WHERE request_operation IS NOT NULL OR request_package_id IS NOT NULL" in source
     assert "restore a consistent snapshot instead of downgrading" in source
     assert "schema_epoch = 15" in source and "schema_epoch = 14" in source
+
+
+def test_department_handoff_note_migration_is_additive_and_protects_note_data():
+    source = DEPARTMENT_HANDOFF_MIGRATION.read_text()
+    assert 'revision = "vxf_0017"' in source
+    assert 'down_revision = "vxf_0016"' in source
+    assert '"plugin_vfx_files_handoff"' in source
+    assert 'sa.Column("sender_note", sa.Text(), nullable=True)' in source
+    assert "WHERE sender_note IS NOT NULL" in source
+    assert "schema_epoch = 16" in source and "schema_epoch = 15" in source
+    assert "restore a consistent pre-migration snapshot instead of downgrading" in source

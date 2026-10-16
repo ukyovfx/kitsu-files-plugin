@@ -158,10 +158,11 @@ export function createFilesApi(client) {
       }))
     },
 
-    async createDepartmentHandoff(publishId, recipientDepartmentId, recipientTaskId, recipientPersonId = null) {
+    async createDepartmentHandoff(publishId, recipientDepartmentId, recipientTaskId, recipientPersonId = null, note = null) {
       if (!publishId || !recipientDepartmentId || !recipientTaskId) throw new TypeError('A Publish, receiving Department and receiving Task are required')
       const body = { recipient_department_id: recipientDepartmentId, recipient_task_id: recipientTaskId }
       if (recipientPersonId) body.recipient_person_id = recipientPersonId
+      if (note) body.note = note
       return readJson(await mutation('POST', `${ROOT}/publishes/${encodeURIComponent(publishId)}/handoffs`, {
         headers: { 'Content-Type': 'application/json', 'Idempotency-Key': `handoff:${crypto.randomUUID()}` },
         body: JSON.stringify(body)

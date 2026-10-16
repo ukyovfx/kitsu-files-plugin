@@ -414,6 +414,7 @@ class Handoff(db.Model):
     recipient_department_id = db.Column(UUIDType(binary=False))
     recipient_task_id = db.Column(UUIDType(binary=False))
     recipient_person_id = db.Column(UUIDType(binary=False))
+    sender_note = db.Column(Text)
     idempotency_key = db.Column(String(128), nullable=False, unique=True)
     state = db.Column(String(24), nullable=False, default="pending")
     created_at = db.Column(DateTime(timezone=True), nullable=False, server_default=func.now())

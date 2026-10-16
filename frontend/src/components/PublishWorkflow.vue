@@ -10,7 +10,10 @@ const selectedFamilyId = ref('')
 const selectedFileId = ref('')
 const selectedPublishId = ref('')
 const recipientId = ref('')
-const departmentTargets = ref([])
+const selectedDepartmentId = ref('')
+const selectedDepartmentTaskId = ref('')
+const recipientPersonId = ref('')
+const senderNote = ref('')
 const loading = ref(false)
 const busy = ref(false)
 const error = ref('')
@@ -21,6 +24,17 @@ const completedFiles = computed(() => revisions.value.revisions.flatMap((revisio
   : []))
 const completedPublishes = computed(() => props.publishes.filter((row) => row.task_id === taskId.value && row.state === 'completed'))
 const workingVersionLabel = (revision) => `v${String(revision.version).padStart(3, '0')}`
+const selectedPublish = computed(() => completedPublishes.value.find((row) => row.id === selectedPublishId.value) || null)
+const selectedPublishFiles = computed(() => {
+  const manifestNames = Array.isArray(selectedPublish.value?.manifest?.files)
+    ? selectedPublish.value.manifest.files.map((file) => file?.name).filter((name) => typeof name === 'string' && name.length)
+    : []
+  return manifestNames.length ? manifestNames : (selectedPublish.value?.source_file_name ? [selectedPublish.value.source_file_name] : [])
+})
+const departmentOptions = computed(() => [...new Map(options.value.department_targets.map((row) => [row.department_id, { id: row.department_id, name: row.department_name }])).values()])
+const departmentTaskOptions = computed(() => options.value.department_targets.filter((row) => row.department_id === selectedDepartmentId.value))
+const selectedDepartmentTask = computed(() => departmentTaskOptions.value.find((row) => row.task_id === selectedDepartmentTaskId.value) || null)
+const eligibleRecipients = computed(() => selectedDepartmentTask.value?.eligible_recipients || [])
 
 async function loadTask() {
   const requestId = ++taskRequest
@@ -30,7 +44,10 @@ async function loadTask() {
   selectedFileId.value = ''
   selectedPublishId.value = ''
   recipientId.value = ''
-  departmentTargets.value = []
+  selectedDepartmentId.value = ''
+  selectedDepartmentTaskId.value = ''
+  recipientPersonId.value = ''
+  senderNote.value = ''
   if (!taskId.value) return
   loading.value = true
   error.value = ''
@@ -42,7 +59,8 @@ async function loadTask() {
     selectedFamilyId.value = taskOptions.families[0]?.id || ''
     selectedPublishId.value = completedPublishes.value[0]?.id || ''
     recipientId.value = taskOptions.recipients[0]?.id || ''
-    departmentTargets.value = []
+    selectedDepartmentId.value = ''
+    selectedDepartmentTaskId.value = ''
   } catch (cause) {
     if (requestId === taskRequest) error.value = cause.message || 'Publish options could not be loaded.'
   } finally {
@@ -96,24 +114,21 @@ async function handoff() {
 }
 
 async function departmentHandoff() {
-  const targets = options.value.department_targets.filter((item) => departmentTargets.value.includes(item.task_id))
-  if (!targets.length) return
+  const target = selectedDepartmentTask.value
+  if (!target || !eligibleRecipients.value.length || !selectedPublish.value) return
   busy.value = true
   error.value = ''
   status.value = ''
   try {
-    let created = 0
-    let failed = 0
-    for (const target of targets) {
-      try {
-        await props.api.createDepartmentHandoff(selectedPublishId.value, target.department_id, target.task_id)
-        created += 1
-      } catch {
-        failed += 1
-      }
-    }
-    status.value = `Created or reused ${created} independent Department handoff(s).${failed ? ` ${failed} failed; refresh before retrying.` : ''}`
-    if (failed) error.value = 'Some recipients could not be reached. Successful handoffs remain persisted independently.'
+    const result = await props.api.createDepartmentHandoff(
+      selectedPublishId.value,
+      target.department_id,
+      target.task_id,
+      recipientPersonId.value || null,
+      senderNote.value.trim() || null,
+    )
+    status.value = `${result.replayed ? 'Existing' : 'Created'} handoff for ${target.department_name} / ${target.task_type_name} · Publish v${String(selectedPublish.value.version).padStart(3, '0')}.`
+    senderNote.value = ''
     await emit('changed')
   } catch (cause) {
     error.value = cause.message || 'Department handoff could not be queued.'
@@ -121,6 +136,12 @@ async function departmentHandoff() {
     busy.value = false
   }
 }
+
+watch(selectedDepartmentId, () => {
+  selectedDepartmentTaskId.value = departmentTaskOptions.value[0]?.task_id || ''
+  recipientPersonId.value = ''
+})
+watch(selectedDepartmentTaskId, () => { recipientPersonId.value = '' })
 </script>
 
 <template>
@@ -159,12 +180,35 @@ async function departmentHandoff() {
             <button class="button secondary" :disabled="busy || !selectedPublishId || !recipientId" @click="handoff">Create Handoff</button>
           </div>
         </template>
-        <div v-if="completedPublishes.length && options.department_targets?.length" class="workflow-row handoff-create">
-          <label class="workflow-field">Receiving Task Types / Departments
-            <select v-model="departmentTargets" multiple class="task-select" aria-label="Receiving Task Types"><option v-for="target in options.department_targets" :key="target.task_id" :value="target.task_id">{{ target.task_type_name }} · {{ target.task_id.slice(0, 8) }}</option></select>
-          </label>
-          <button class="button secondary" :disabled="busy || !selectedPublishId || !departmentTargets.length" @click="departmentHandoff">Distribute Publish</button>
-        </div>
+        <fieldset v-if="completedPublishes.length && options.department_targets?.length" class="department-handoff-form">
+          <legend>Send exact Publish to a Department</legend>
+          <div class="workflow-row handoff-create">
+            <label class="workflow-field">Completed Publish version
+              <select v-model="selectedPublishId" class="task-select" aria-label="Department Handoff Publish"><option v-for="row in completedPublishes" :key="row.id" :value="row.id">v{{ String(row.version).padStart(3, '0') }} · {{ row.id }}</option></select>
+            </label>
+            <label class="workflow-field">Receiving Department
+              <select v-model="selectedDepartmentId" class="task-select" aria-label="Receiving Department"><option value="">Choose Department</option><option v-for="department in departmentOptions" :key="department.id" :value="department.id">{{ department.name }}</option></select>
+            </label>
+            <label class="workflow-field">Receiving Task Type / Task
+              <select v-model="selectedDepartmentTaskId" class="task-select" aria-label="Receiving Task Type"><option value="">Choose Task</option><option v-for="target in departmentTaskOptions" :key="target.task_id" :value="target.task_id">{{ target.task_type_name }} · {{ target.task_name }}</option></select>
+            </label>
+            <label v-if="selectedDepartmentTask" class="workflow-field">Accountable person (optional)
+              <select v-model="recipientPersonId" class="task-select" aria-label="Accountable person"><option value="">Any eligible recipient (first response owns decision)</option><option v-for="person in eligibleRecipients" :key="person.id" :value="person.id">{{ person.name }}</option></select>
+            </label>
+            <p v-if="selectedDepartmentTask" class="muted recipient-eligibility" role="status">{{ selectedDepartmentTask.eligible_recipient_count }} currently eligible recipient(s) in this Production, Department and assigned Task.</p>
+            <label class="workflow-field">Handoff note (optional)
+              <textarea v-model="senderNote" class="feedback-input" aria-label="Handoff note" maxlength="2000" rows="2" placeholder="Context for the receiving Department"></textarea>
+            </label>
+          </div>
+          <div v-if="selectedPublish && selectedDepartmentTask" class="handoff-review" role="group" aria-label="Handoff confirmation summary">
+            <strong>Send to: {{ selectedDepartmentTask.department_name }} / {{ recipientPersonId ? eligibleRecipients.find((person) => person.id === recipientPersonId)?.name : 'any eligible recipient' }}</strong>
+            <span>Publish v{{ String(selectedPublish.version).padStart(3, '0') }} · {{ selectedPublish.id }} · SHA-256 {{ selectedPublish.sha256 || selectedPublish.manifest_sha256 }}</span>
+            <span v-if="selectedPublishFiles.length">Files: {{ selectedPublishFiles.join(', ') }}</span>
+            <span>Recipient access is checked through Kitsu when they open this exact Publish. This sends an immutable reference; it does not copy files or change Google Drive sharing.</span>
+          </div>
+          <button class="button secondary" :disabled="busy || !selectedPublishId || !selectedDepartmentTask || !eligibleRecipients.length" @click="departmentHandoff">{{ busy ? 'Sending…' : 'Confirm and Send Publish' }}</button>
+          <p v-if="selectedDepartmentTask && !eligibleRecipients.length" class="upload-error" role="alert">No currently authorized recipient is assigned to this Department Task. Handoff is disabled.</p>
+        </fieldset>
       </template>
       <p v-if="status" class="upload-result" role="status">{{ status }}</p>
       <p v-if="error" class="upload-error" role="alert">{{ error }}</p>

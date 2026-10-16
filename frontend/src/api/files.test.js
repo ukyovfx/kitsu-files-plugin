@@ -68,9 +68,9 @@ describe('Files API', () => {
     const client = { request: vi.fn()
       .mockResolvedValueOnce(response({ csrf_token: 'team-csrf' }))
       .mockResolvedValueOnce(response({ id: 'handoff-2', recipient_task_id: 'task-fx', state: 'pending' }, 201)) }
-    await createFilesApi(client).createDepartmentHandoff('publish-2', 'dept-fx', 'task-fx', 'artist-fx')
+    await createFilesApi(client).createDepartmentHandoff('publish-2', 'dept-fx', 'task-fx', 'artist-fx', 'Review frame 120')
     expect(client.request.mock.calls[1][1]).toBe('plugins/vfx_files/publishes/publish-2/handoffs')
-    expect(JSON.parse(client.request.mock.calls[1][2].body)).toEqual({ recipient_department_id: 'dept-fx', recipient_task_id: 'task-fx', recipient_person_id: 'artist-fx' })
+    expect(JSON.parse(client.request.mock.calls[1][2].body)).toEqual({ recipient_department_id: 'dept-fx', recipient_task_id: 'task-fx', recipient_person_id: 'artist-fx', note: 'Review frame 120' })
   })
 
   it('links an Output Package only through the authenticated exact-publication endpoint', async () => {
