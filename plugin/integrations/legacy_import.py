@@ -41,8 +41,26 @@ def preview_legacy_import(session, production_id):
             "drive_operations_performed": False,
         }
 
-    desired = dict(legacy.desired_config or {})
-    activation = desired.get("activation") or {}
+    if (
+        isinstance(legacy.config_revision, bool)
+        or not isinstance(legacy.config_revision, int)
+        or legacy.config_revision < 1
+        or not isinstance(legacy.desired_config, dict)
+    ):
+        return _blocked(
+            "legacy_configuration_invalid",
+            production_id=str(production_id),
+        )
+
+    desired = dict(legacy.desired_config)
+    activation = desired.get("activation", {})
+    if activation is None:
+        return _blocked(
+            "activation_state_invalid",
+            production_id=str(production_id),
+            source_revision=legacy.config_revision,
+        )
+    activation = activation or {}
     if not isinstance(activation, dict):
         return _blocked(
             "activation_state_invalid",
@@ -83,6 +101,7 @@ def preview_legacy_import(session, production_id):
 
     template = session.scalar(select(SharedTemplateConfiguration).where(
         SharedTemplateConfiguration.production_id == production_id,
+        SharedTemplateConfiguration.storage_connection_id == connection.id,
     ))
     if (
         template is None
