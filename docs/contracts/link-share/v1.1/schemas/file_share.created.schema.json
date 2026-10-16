@@ -141,8 +141,7 @@
         "object",
         "metadata",
         "inventory",
-        "access",
-        "route_disclosure"
+        "access"
       ],
       "properties": {
         "id": {
@@ -312,7 +311,28 @@
               ],
               "pattern": "^[a-f0-9]{64}$"
             }
-          }
+          },
+          "allOf": [
+            {
+              "if": {
+                "properties": {
+                  "status": {
+                    "const": "unavailable"
+                  }
+                },
+                "required": ["status"]
+              },
+              "then": {
+                "properties": {
+                  "name": {"type": "null"},
+                  "mime_type": {"type": "null"},
+                  "size_bytes": {"type": "null"},
+                  "modified_at": {"type": "null"},
+                  "sha256": {"type": "null"}
+                }
+              }
+            }
+          ]
         },
         "inventory": {
           "type": "object",
@@ -427,7 +447,66 @@
                     "maximum": 1000000000
                   }
                 }
-              }
+              },
+              "allOf": [
+                {
+                  "if": {
+                    "properties": {
+                      "status": {"const": "complete"}
+                    },
+                    "required": ["status"]
+                  },
+                  "then": {
+                    "required": [
+                      "frame_start",
+                      "frame_end",
+                      "missing_count",
+                      "duplicate_count"
+                    ],
+                    "properties": {
+                      "frame_start": {"type": "integer"},
+                      "frame_end": {"type": "integer"},
+                      "missing_count": {"type": "integer"},
+                      "duplicate_count": {"type": "integer"}
+                    }
+                  }
+                },
+                {
+                  "if": {
+                    "properties": {
+                      "status": {"const": "partial"}
+                    },
+                    "required": ["status"]
+                  },
+                  "then": {
+                    "required": [
+                      "missing_count",
+                      "duplicate_count"
+                    ],
+                    "properties": {
+                      "missing_count": {"type": "null"},
+                      "duplicate_count": {"type": "null"}
+                    }
+                  }
+                },
+                {
+                  "if": {
+                    "properties": {
+                      "status": {"const": "unavailable"}
+                    },
+                    "required": ["status"]
+                  },
+                  "then": {
+                    "properties": {
+                      "frame_start": {"type": "null"},
+                      "frame_end": {"type": "null"},
+                      "missing_count": {"type": "null"},
+                      "duplicate_count": {"type": "null"},
+                      "missing_samples": {"maxItems": 0}
+                    }
+                  }
+                }
+              ]
             }
           },
           "allOf": [
@@ -513,7 +592,6 @@
               "type": "string",
               "enum": [
                 "verified_service_only",
-                "verified_recipient",
                 "denied",
                 "unknown",
                 "not_checked"
@@ -531,7 +609,6 @@
               "type": "string",
               "enum": [
                 "plugin_service_identity",
-                "recipient_identity",
                 "none"
               ]
             },
@@ -570,28 +647,6 @@
               "if": {
                 "properties": {
                   "status": {
-                    "const": "verified_recipient"
-                  }
-                },
-                "required": [
-                  "status"
-                ]
-              },
-              "then": {
-                "properties": {
-                  "access_verified_at": {
-                    "type": "string"
-                  },
-                  "check_subject_type": {
-                    "const": "recipient_identity"
-                  }
-                }
-              }
-            },
-            {
-              "if": {
-                "properties": {
-                  "status": {
                     "enum": [
                       "denied",
                       "unknown",
@@ -608,7 +663,6 @@
                   "check_subject_type": {
                     "enum": [
                       "plugin_service_identity",
-                      "recipient_identity",
                       "none"
                     ]
                   }
@@ -616,42 +670,6 @@
               }
             }
           ]
-        },
-        "route_disclosure": {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "approved_by_id",
-            "approved_at",
-            "approval_id",
-            "route_id",
-            "policy_version"
-          ],
-          "properties": {
-            "approved_by_id": {
-              "type": "string",
-              "format": "uuid"
-            },
-            "approved_at": {
-              "type": "string",
-              "format": "date-time",
-              "maxLength": 40
-            },
-            "approval_id": {
-              "type": "string",
-              "format": "uuid"
-            },
-            "route_id": {
-              "type": "string",
-              "format": "uuid"
-            },
-            "policy_version": {
-              "type": "string",
-              "minLength": 1,
-              "maxLength": 64,
-              "pattern": "^[A-Za-z0-9._-]+$"
-            }
-          }
         }
       }
     }

@@ -1,4 +1,5 @@
 {
+  "contract_version": "1.1",
   "events": [
     {
       "contract_version": "1.1",
@@ -65,15 +66,9 @@
           "access_verified_at": "2026-10-16T04:11:43Z",
           "check_subject_type": "plugin_service_identity",
           "check_subject_id": "synthetic-connection-32"
-        },
-        "route_disclosure": {
-          "approved_by_id": "d482576c-57dc-416a-a833-6b8adcb77d06",
-          "approved_at": "2026-10-15T09:00:00Z",
-          "approval_id": "01a7a5a0-4e7f-4c6a-992d-3cff1aa91889",
-          "route_id": "cc0bb0f8-4f3d-4b14-aaca-59819c3741ac",
-          "policy_version": "drive-link-disclosure-1"
         }
       }
     }
-  ]
+  ],
+  "contract_version": "1.1"
 }

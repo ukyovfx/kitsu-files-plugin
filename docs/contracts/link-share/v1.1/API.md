@@ -23,7 +23,7 @@ Origin: https://kitsu.example.invalid
 }
 ```
 
-No URL, provider token, ACL instruction, filename-based identity, destination Drive ID, or copy/move operation is accepted from the browser. The server resolves the object ID through the configured KitsuSync-owned connection/root, proves object type and root ancestry, reads bounded metadata, verifies the source Task and each recipient Task against current Zou Production relationships, checks actor authorization, and checks current route disclosure consent. If any requested target is invalid, the operation's atomicity policy must be explicit; recommendation: validate all targets before persisting any target, then create the operation/targets transactionally. Provider verification failure creates no link notification.
+No URL, provider token, ACL instruction, filename-based identity, destination Drive ID, or copy/move operation is accepted from the browser. The server resolves the object ID through the configured KitsuSync-owned connection/root, proves object type and root ancestry, reads bounded metadata, and verifies the source Task and each recipient Task against current Zou Production relationships and actor authorization. KitsuSync alone owns current route disclosure consent and checks it at Inbox intake and actual Discord dispatch; a producer claim is never consent evidence. If any requested target is invalid, the operation's atomicity policy must be explicit; recommendation: validate all targets before persisting any target, then create the operation/targets transactionally. Provider verification failure creates no link notification.
 
 ## Plugin response (proposed)
 
@@ -52,41 +52,30 @@ Content-Type: application/json
 }
 ```
 
-`pending_capability` means the share record exists but no notification is sent until the receiver has explicitly advertised support for both event version 1.1 and `file_share.created`. If disclosure consent is absent/revoked, use `blocked_disclosure`. If provider access/root verification fails, reject the request (403/409/422 according to the established Plugin API error contract) and persist a sanitized audit finding where appropriate. Replaying the same Idempotency-Key with the same canonical request returns the same IDs and no duplicate event; a different request under that key returns 409.
+`blocked_receiver_version` means the share record exists but no notification is sent because an operator has not configured and verified the exact receiver contract pin. Sending is default-off and fails closed when the pin is absent, not `1.1`, or does not match the verified deployed receiver. The current KitsuSync PR #239/#240 heads support only `1.0` and do not accept `file_share.created`. If KitsuSync route disclosure consent is absent or revoked, use `blocked_disclosure`. If provider access/root verification fails, reject the request (403/409/422 according to the established Plugin API error contract) and persist a sanitized audit finding where appropriate. Replaying the same Idempotency-Key with the same canonical request returns the same IDs and no duplicate event; a different request under that key returns 409.
 
-## Capability check (proposed; requires KitsuSync agreement)
+## Receiver version pin (operator configuration; proposal only)
 
-The capability direction is Plugin → KitsuSync. The existing RS256 management bearer scheme described for KitsuSync → Plugin MUST NOT be assumed to authorize the reverse direction. Existing event HMAC is for Plugin → KitsuSync body intake and does not authenticate a capability response. Agree a response-authentication method and production binding before implementation. There is no unauthenticated fallback.
-
-```http
-GET /api/integrations/vfx-files/v1/capabilities HTTP/1.1
-```
-
-```json
-{
-  "contract_versions": ["1.0", "1.1"],
-  "event_types": ["file_delivery.created", "file_delivery.ready", "file_delivery.accepted", "file_delivery.needs_fix", "file_delivery.revised", "file_share.created"],
-  "max_batch_events": 100,
-  "production_id": "9cb8f70d-0b63-40b7-a73d-3237e6f50d3d",
-  "expires_at": "2026-10-16T04:20:00Z"
-}
-```
-
-Until response authentication, Production binding and freshness rules are agreed, the capability state is `unknown`; producer outbox delivery of 1.1 remains held. A successful HTTP status alone is not capability proof.
+Do not add or call an unauthenticated capabilities API. Before enabling the sender, an operator verifies the deployed KitsuSync revision against the reviewed 1.1 event schema/OpenAPI, configures the exact HTTPS receiver origin, and pins contract version `1.1` in the sender's existing deployment configuration. The HTTPS origin is verified by normal certificate and hostname validation; the contract pin is verified from the reviewed and deployed source/release records through existing deployment controls. The pin is not supplied by the Plugin event and is not inferred from an HTTP status or response body. If origin identity, deployed revision, or pin cannot be verified, the sender remains disabled. Dynamic negotiation is a separate future decision.
 
 ## KitsuSync event intake (existing route, candidate body)
 
-The endpoint path and HMAC framing remain the existing v1 ones. Keep the canonical v1 signature header names and required request envelope fields unchanged; the example below shows the candidate event-batch payload shape. KitsuSync must verify whether the existing body includes required top-level fields beyond `events` before adopting the batch schema.
+The endpoint path and HMAC framing remain the existing v1 ones. Exact required headers are `X-VFX-Key-Id`, `X-VFX-Timestamp`, `X-VFX-Nonce`, `X-VFX-Content-SHA256`, `X-VFX-Signature`, and `Idempotency-Key`; the last is 16–128 characters. The current KitsuSync 1.0 contract requires root `contract_version` plus `events`. The draft 1.1 batch likewise requires root `contract_version: "1.1"` plus `events`, and every event must be `1.1`. Current KitsuSync rejects 1.1 and therefore the sender must remain disabled until an exact 1.1 receiver is verified.
 
 ```http
 POST /api/integrations/vfx-files/v1/events HTTP/1.1
 Content-Type: application/json
-Idempotency-Key: vfxshare-batch-sha256-<64-lowercase-hex>
-<the exact existing v1 timestamp, nonce, key-id and signature headers>
+Idempotency-Key: vfxshare-batch-sha256-<stable-digest>
+X-VFX-Key-Id: <configured producer key id>
+X-VFX-Timestamp: <RFC 3339 timestamp>
+X-VFX-Nonce: <fresh 16–128 character nonce>
+X-VFX-Content-SHA256: <lowercase SHA-256 of exact raw request body>
+X-VFX-Signature: sha256=<lowercase HMAC-SHA256 hex>
 ```
 
 ```json
 {
+  "contract_version": "1.1",
   "events": [
     { "contract_version": "1.1", "event_type": "file_share.created", "event_id": "...", "...": "see strict event schema" },
     { "contract_version": "1.1", "event_type": "file_share.created", "event_id": "...", "...": "second recipient target" }
@@ -94,7 +83,7 @@ Idempotency-Key: vfxshare-batch-sha256-<64-lowercase-hex>
 }
 ```
 
-This abbreviated HTTP body is illustrative only; use the full [positive fixture](fixtures/positive/two-recipient-share.json) as the body example. The signature MUST cover exact raw body bytes according to the existing contract. `Idempotency-Key` is stable across retries, while the nonce, timestamp and signature are refreshed under the existing replay policy.
+This abbreviated HTTP body is illustrative only; use the full [positive fixture](fixtures/positive/two-recipient-share.json) as the body example. The signature MUST cover exact raw body bytes using `timestamp + LF + nonce + LF + lowercase body SHA-256 + LF + Idempotency-Key`. A retry keeps exact body bytes, event IDs, and the 16–128 character Idempotency-Key stable while rotating nonce, timestamp, and signature under replay protection.
 
 ## KitsuSync 202 response and completion
 
@@ -105,12 +94,12 @@ Content-Type: application/json
 
 ```json
 {
-  "contract_version": "1.1",
+  "contract_version": "1.0",
   "results": [
-    {"event_id":"22b904d7-3526-485b-8780-f1a6554518a9","status":"accepted"},
-    {"event_id":"f85e1407-bc24-4d91-aaff-085fa35d3257","status":"duplicate"}
+    {"event_id":"22b904d7-3526-485b-8780-f1a6554518a9","outcome":"accepted","code":null},
+    {"event_id":"f85e1407-bc24-4d91-aaff-085fa35d3257","outcome":"duplicate","code":null}
   ]
 }
 ```
 
-Durable Inbox acceptance/deduplication is not webhook delivery. The plugin should query the separately agreed journal/status API or expose `inbox_accepted` until a receiver confirmation is available. Do not mark `delivered` from HTTP 202.
+This is the unchanged KitsuSync 1.0 OpenAPI 202 response shape. A 1.0 request retains it unchanged. It does not show that the current 1.0 receiver accepts a 1.1 request; any future 1.1 receiver must agree its response version explicitly. Durable Inbox acceptance/deduplication is not webhook delivery. Do not mark `delivered` from HTTP 202.
