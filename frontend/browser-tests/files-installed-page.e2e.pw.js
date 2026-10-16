@@ -7,11 +7,15 @@ const composeEnvFile = process.env.VFX_FILES_LIVE_COMPOSE_ENV_FILE
 const productionId = process.env.VFX_FILES_LIVE_PRODUCTION_ID
 const productionName = process.env.VFX_FILES_LIVE_PRODUCTION_NAME
 const taskId = process.env.VFX_FILES_LIVE_TASK_ID
+const recipientTaskId = process.env.VFX_FILES_LIVE_RECIPIENT_TASK_ID
+const recipientDepartmentId = process.env.VFX_FILES_LIVE_RECIPIENT_DEPARTMENT_ID
+const recipientPersonId = process.env.VFX_FILES_LIVE_ARTIST_A_ID
+const recipientPersonCId = process.env.VFX_FILES_LIVE_ARTIST_C_ID
 const loginEmails = JSON.parse(process.env.VFX_FILES_LIVE_LOGIN_EMAILS || '{}')
 const loginPassword = process.env.VFX_FILES_LIVE_TEST_PASSWORD
 const artistAId = process.env.VFX_FILES_LIVE_ARTIST_A_ID
 
-const missingHostFixture = !composeProject || !composeFile || !composeEnvFile || !productionId || !productionName || !taskId || !loginPassword || !loginEmails.manager || !loginEmails.artist_a || !loginEmails.artist_b || !loginEmails.supervisor || !artistAId
+const missingHostFixture = !composeProject || !composeFile || !composeEnvFile || !productionId || !productionName || !taskId || !recipientTaskId || !recipientDepartmentId || !recipientPersonId || !recipientPersonCId || !loginPassword || !loginEmails.manager || !loginEmails.artist_a || !loginEmails.artist_b || !loginEmails.artist_c || !loginEmails.supervisor || !artistAId
 
 const baseUrl = process.env.VFX_FILES_LIVE_BASE_URL || 'http://127.0.0.1:55253'
 const origin = new URL(baseUrl).origin
@@ -176,8 +180,100 @@ test('installed Files page uses KitsuSync-managed folders and carries w001 throu
   overview = await readOverview(artistA.page, productionId)
   expect(overview.handoffs.find((item) => item.publish_id === publish.id)).toMatchObject({ state: 'accepted', recipient_id: artistAId })
 
+  // Exercise the Department-targeted flow through the installed Kitsu page,
+  // backed by Zou/PostgreSQL, the real plugin API and FakeStorage.
+  await artistB.page.reload()
+  await openFilesFromProductionMenu(artistB.page, productionId, { alreadySelected: true, taskId })
+  await artistB.ui.getByLabel('Publish Task').selectOption(taskId)
+  await artistB.ui.getByLabel('Department Handoff Publish').selectOption(publish.id)
+  await artistB.ui.getByLabel('Receiving Department').selectOption(recipientDepartmentId)
+  await artistB.ui.getByLabel('Receiving Task Type').selectOption(recipientTaskId)
+  await expect(artistB.ui.getByLabel('Accountable person').locator(`option[value="${recipientPersonId}"]`)).toHaveCount(1)
+  await artistB.ui.getByLabel('Accountable person').selectOption(recipientPersonId)
+  await artistB.ui.getByLabel('Handoff note').fill('Department E2E: check edge treatment.')
+  await expect(artistB.ui.getByRole('group', { name: 'Handoff confirmation summary' })).toContainText(publish.id)
+  await expect(artistB.ui.getByRole('group', { name: 'Handoff confirmation summary' })).toContainText('Publish v001')
+  await artistB.ui.getByRole('button', { name: 'Confirm and Send Publish' }).click()
+  await expect(artistB.ui.getByRole('status').filter({ hasText: /Created handoff for VFXCompositing/ })).toBeVisible()
+  overview = await readOverview(artistB.page, productionId)
+  const needsFixHandoff = overview.handoffs.find((item) => item.publish_id === publish.id && item.recipient_task_id === recipientTaskId && item.state === 'pending')
+  expect(needsFixHandoff).toMatchObject({
+    publish_id: publish.id,
+    publish_version: publish.version,
+    recipient_department_id: recipientDepartmentId,
+    recipient_person_id: recipientPersonId,
+    sender_note: 'Department E2E: check edge treatment.'
+  })
+
+  await openFilesFromProductionMenu(artistA.page, productionId, { alreadySelected: true, taskId: recipientTaskId })
+  const departmentInbox = artistA.ui.locator('.handoff-row').filter({ hasText: publish.id })
+  await expect(artistA.ui.getByText('Department Inbox')).toBeVisible()
+  await expect(departmentInbox).toContainText('Department E2E: check edge treatment.')
+  await expect(departmentInbox).toContainText('Exact Publish v001')
+  await expect(departmentInbox).toContainText('VFXCompositing')
+  const verifiedDownload = await artistA.page.request.get(new URL(
+    await departmentInbox.getByRole('link', { name: 'Download verified Publish' }).getAttribute('href'),
+    artistA.ui.url()
+  ).toString())
+  expect(verifiedDownload.status()).toBe(200)
+  expect(await verifiedDownload.body()).toEqual(bytes002)
+  await departmentInbox.getByRole('textbox', { name: 'Needs Fix feedback' }).fill('Please adjust the edge and resend.')
+  await departmentInbox.getByRole('button', { name: 'Needs Fix' }).click()
+  await expect(departmentInbox).toContainText('needs_fix')
+  await expect(departmentInbox).toContainText('Please adjust the edge and resend.')
+  await artistA.page.reload()
+  await openFilesFromProductionMenu(artistA.page, productionId, { alreadySelected: true, taskId: recipientTaskId })
+  const persistedNeedsFix = artistA.ui.locator('.handoff-row').filter({ hasText: publish.id })
+  await expect(persistedNeedsFix).toContainText('needs_fix')
+  await expect(persistedNeedsFix).toContainText('Please adjust the edge and resend.')
+
+  // A second Handoff with no named responder exposes response ownership to
+  // the whole currently eligible team. Concurrent HTTP responses must still
+  // serialize to one persisted decision.
+  await artistB.page.reload()
+  await openFilesFromProductionMenu(artistB.page, productionId, { alreadySelected: true, taskId })
+  await artistB.ui.getByLabel('Publish Task').selectOption(taskId)
+  await artistB.ui.getByLabel('Department Handoff Publish').selectOption(publish.id)
+  await artistB.ui.getByLabel('Receiving Department').selectOption(recipientDepartmentId)
+  await artistB.ui.getByLabel('Receiving Task Type').selectOption(recipientTaskId)
+  await expect(artistB.ui.getByLabel('Accountable person')).toHaveValue('')
+  await artistB.ui.getByLabel('Handoff note').fill('Concurrent response serialization check.')
+  await artistB.ui.getByRole('button', { name: 'Confirm and Send Publish' }).click()
+  await expect(artistB.ui.getByRole('status').filter({ hasText: /Created handoff for VFXCompositing/ })).toBeVisible()
+  overview = await readOverview(artistB.page, productionId)
+  const concurrentHandoff = overview.handoffs.find((item) => item.publish_id === publish.id && item.recipient_task_id === recipientTaskId && item.sender_note === 'Concurrent response serialization check.')
+  expect(concurrentHandoff).toMatchObject({ state: 'pending', response_ownership: 'first_authorized_responder' })
+
+  const artistC = await openFiles(browser, 'artist_c')
+  await openFilesFromProductionMenu(artistC.page, productionId, { alreadySelected: true, taskId: recipientTaskId })
+  const responseRequest = async (recipientContext, target, feedback, suffix) => {
+    const csrf = await recipientContext.page.evaluate(async () => {
+      const response = await fetch('/api/plugins/vfx_files/csrf-token', { credentials: 'same-origin' })
+      if (!response.ok) throw new Error(`CSRF endpoint returned ${response.status}`)
+      return (await response.json()).csrf_token
+    })
+    return recipientContext.page.request.post(`${pluginApiBase}/handoffs/${concurrentHandoff.id}/respond`, {
+      headers: { Origin: origin, 'X-VFX-Files-CSRF': csrf, 'Idempotency-Key': `department-race-${concurrentHandoff.id}-${suffix}` },
+      data: { target, feedback }
+    })
+  }
+  const race = await Promise.all([
+    responseRequest(artistA, 'accepted', '', 'artist-a'),
+    responseRequest(artistC, 'needs_fix', 'Concurrent review feedback.', 'artist-c')
+  ])
+  expect(race.map((response) => response.status()).sort()).toEqual([201, 409])
+  const winningResponse = race.find((response) => response.status() === 201)
+  const winningPayload = await winningResponse.json()
+  expect(winningPayload.state).toMatch(/^(accepted|needs_fix)$/)
+  const persistedOverview = await readOverview(artistA.page, productionId)
+  const persistedRace = persistedOverview.handoffs.find((item) => item.id === concurrentHandoff.id)
+  expect(persistedRace.state).toBe(winningPayload.state)
+  expect(persistedRace.events.filter((event) => ['accepted', 'needs_fix'].includes(event.type))).toHaveLength(1)
+  if (winningPayload.state === 'needs_fix') expect(persistedRace.events.at(-1).feedback).toBe('Concurrent review feedback.')
+
   await manager.context.close()
   await artistA.context.close()
   await artistB.context.close()
   await supervisor.context.close()
+  await artistC.context.close()
 })

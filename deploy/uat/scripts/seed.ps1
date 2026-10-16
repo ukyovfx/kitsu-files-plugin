@@ -10,9 +10,13 @@ $accountLines = @(
     "Production: $($seed.production_name)"
     "Production ID: $($seed.production_id)"
     "Task ID: $($seed.task_id)"
+    "Recipient Task ID: $($seed.recipient_task_id)"
+    "Receiving Department ID: $($seed.recipient_department_id)"
+    "Receiving Department: $($seed.recipient_department_name)"
     "Manager: $($seed.login_emails.manager)"
     "Artist A: $($seed.login_emails.artist_a)"
     "Artist B: $($seed.login_emails.artist_b)"
+    "Artist C: $($seed.login_emails.artist_c)"
     "Supervisor: $($seed.login_emails.supervisor)"
     "Synthetic account password: $($envMap['VFX_FILES_UAT_TEST_PASSWORD'])"
     'All accounts and Production/Task records are synthetic and belong only to this local unit.'
