@@ -32,16 +32,16 @@ Run from a clean, committed source worktree. `init.ps1` and `build.ps1` reject d
 .\deploy\uat\scripts\install-plugin.ps1 -Unit demo
 ```
 
-Then create the synthetic Manager / Artist A / Artist B / Supervisor, Production, Sequence, Shot, Task and FakeStorage bindings. Enable the Files feature and prepare a synthetic KitsuSync v1 integration service for Production connection/root/template selection and activation. This local package does not install or seed KitsuSync; do not configure Drive or folder templates from the Files page. The legacy Files mutation endpoints reject KitsuSync-managed Productions. Do not start the Worker until the KitsuSync desired configuration has been saved, the materialized template has been verified by Preview/Apply, and the integration is active:
+Then create the synthetic Manager / Artist A / Artist B / Supervisor, Production, Sequence, Shot, Task and FakeStorage bindings. Enable the Files feature and configure the Plugin-owned Production storage connection, root, templates and activation through Kitsu's manager-only VFX Files settings. The artist's daily files experience belongs in the Task-detail Files tab. KitsuSync is optional for standalone storage and remains the signed-event/Discord integration; integrated activation must wait for the acknowledged epoch-fence barrier. Do not start the Worker until the Plugin-owned configuration and materialized template have been verified and activation is complete:
 
 ```powershell
 .\deploy\uat\scripts\seed.ps1 -Unit demo
 .\deploy\uat\scripts\activate.ps1 -Unit demo
-# Start only after the isolated KitsuSync integration handoff is complete.
+# Start only after the Plugin-owned configuration and activation are verified.
 .\deploy\uat\scripts\start-worker.ps1 -Unit demo
 ```
 
-The seeded account names and shared synthetic test password are stored in the private local `ACCOUNTS.txt`. Open `http://127.0.0.1:55280` (or the selected port) and use the ordinary Kitsu login, then Open Production → Assets → VFX Files. This package does not run browser/GUI automation. Reuse the exact PR #2 installed-page Playwright evidence only for the source revision it covered; run human UAT before any server trial.
+The seeded account names and shared synthetic test password are stored in the private local `ACCOUNTS.txt`. Open `http://127.0.0.1:55280` (or the selected port) and use the ordinary Kitsu login. Artists open a Shot/Asset and select its Task-detail **Files** tab; they do not navigate to a Production Files application. Production Drive settings and diagnostics are available only through the manager-only Plugin settings route. This package does not run browser/GUI automation; use the pinned synthetic browser suite and complete human visual acceptance before any server trial.
 
 For readiness and a smoke status without revealing settings:
 
@@ -72,29 +72,27 @@ This deployment template is intended for local review. Any VFX Studio Server UAT
 
 ## Human acceptance in the installed Kitsu page
 
-The Kitsu home page at the unit's loopback URL is the normal landing page after standard Kitsu login. Use the Manager email and shared synthetic password from the protected `ACCOUNTS.txt`; never paste the password into an issue or report. The seeded Manager is a member of the seeded synthetic Production with the `manager` project role. The plugin metadata must show `frontend_project_enabled=true`, and API readiness now probes the authenticated Files health route instead of accepting the Kitsu home page alone.
+The Kitsu home page at the unit's loopback URL is the normal landing page after standard Kitsu login. Use the Manager email and shared synthetic password from the protected `ACCOUNTS.txt`; never paste the password into an issue or report. The seeded Manager is a member of the seeded synthetic Production with the `manager` project role. The plugin metadata must expose `frontend_task_enabled=true` and `frontend_project_admin_enabled=true` while keeping `frontend_project_enabled=false`; API readiness probes the authenticated Files health route. Pinned Zou 1.0.94 does not yet persist or return the Task/admin flags, so this metadata prerequisite must be supplied by a reviewed compatible Zou build before installed Task-tab UAT.
 
 Follow this screen path:
 
-1. In Kitsu, open **Productions** and select `VFX Files Installed E2E <suffix>`.
-2. Open the Production's **Assets** section and choose **VFX Files**. If the menu link is absent, use the authenticated fallback `/api/plugins/vfx_files/frontend/?production_id=<Production UUID>` on the same loopback origin. The ordinary `/` page is only the Kitsu home page.
-3. The Files page is not a Drive configuration surface. Connection, root, template selection and activation must come from the isolated KitsuSync v1 service. The current local UAT bundle does not include that service, so folder provisioning cannot be completed from this bundle alone.
-4. Once KitsuSync is configured and a supported template has been materialized for the Plugin worker, select the seeded Kitsu Task. The Files page displays only persisted bindings verified against the selected connection/root; it offers no folder-creation mutation. Refresh after KitsuSync sync progress until verified **Open** links appear.
-5. Sign out and sign in as Artist A. In **Working Files**, choose the seeded Task and upload a small synthetic text file. Confirm `w001` is completed and Latest Working. Do not use Production media.
-6. Sign out and sign in as Artist B. Download Artist A's `w001`, then upload a distinct synthetic text file for the same Task. Confirm `w002` becomes Latest Working while `w001` remains listed and downloadable.
-7. Sign in as Artist A. In **Publish and hand off**, select the Task, a completed file from `w002`, and **Synthetic Main**; choose **Publish Working File**. Wait for the immutable Publish to complete and QC to show `passed`.
-8. Sign in as the separate Supervisor, refresh Files, and approve that exact Publish. Confirm Latest Approved and Latest Published identify the expected version. A publisher attempting to approve their own work must be rejected.
-9. As an authorized Task participant, create a Handoff for the completed Publish addressed to Artist B. Sign in as Artist B, open the Production's Files page, and use **Accept** (or **Needs Fix** with feedback if testing rejection).
-10. Refresh after each identity change. Confirm `w001`, `w002`, the Publish manifest and both pointers remain persisted. Worker restart and snapshot restore are separate operational checks; restore into a new disposable unit and keep its Worker stopped until the snapshot integrity review is complete.
+1. In Kitsu, open the seeded Production and open its **VFX Files settings** as the seeded Manager. Connect the synthetic Plugin storage configuration, verify the root, materialize the supported template and explicitly activate it. Do not configure Drive in KitsuSync.
+2. Sign in as Artist A and open the seeded Shot/Asset Task detail. Select the **Files** tab; the embedded Files view must use the selected Task and must not show a second Task selector.
+3. In the Task's **Working** section, upload a small synthetic text file. Confirm `w001` is completed and Latest Working. Do not use Production media.
+4. Sign out and sign in as Artist B. Open the same Shot/Asset Task, select **Files → Working**, download Artist A's `w001`, then upload a distinct synthetic text file. Confirm `w002` becomes Latest Working while `w001` remains listed and downloadable.
+5. Sign in as Artist A, select **Files → Publish**, choose a completed file from `w002` and **Synthetic Main**, then choose **Publish Working File**. Wait for the immutable Publish to complete and QC to show `passed`.
+6. Sign in as the separate Supervisor, open the same Task's **Files → Publish** section, and approve that exact Publish. Confirm Latest Approved and Latest Published identify the expected version. A publisher attempting to approve their own work must be rejected.
+7. As an authorized Task participant, create a Department Handoff for the completed Publish addressed to Artist B. Sign in as Artist B, return to the same Task-detail **Files → Department Handoff** section, and use **Accept** (or **Needs Fix** with feedback if testing rejection).
+8. Refresh after each identity change. Confirm `w001`, `w002`, the Publish manifest and both pointers remain persisted. Worker restart and snapshot restore are separate operational checks; restore into a new disposable unit and keep its Worker stopped until the snapshot integrity review is complete.
 
 ### KitsuSync integration handoff (synthetic service only)
 
-- The management base path is `/api/plugins/vfx_files/integrations/v1`; it uses the agreed KitsuSync service bearer/JWKS contract. KitsuSync remains the sole authority for connection, verified root, template selection and activation.
+- KitsuSync does not own or edit the Drive connection, verified root, template selection, or Plugin activation. It consumes read-only Plugin status and remains the signed-event/Discord dispatcher. The management base path is `/api/plugins/vfx_files/integrations/v1`; its service bearer/JWKS contract remains separate from browser sessions.
 - The API-side service verifier requires the issuer, audience, subject and client ID (`VFX_FILES_KITSUSYNC_ISSUER`, `VFX_FILES_KITSUSYNC_AUDIENCE`, `VFX_FILES_KITSUSYNC_SUBJECT`, `VFX_FILES_KITSUSYNC_CLIENT_ID`) in the Flask app configuration. `init.ps1` seeds non-secret synthetic identity values into the private UAT env file and Compose passes them only to the API; missing values remain unset and requests fail closed. The verifier fetches keys only from `<issuer>/.well-known/vfx-files-jwks.json` over HTTPS. Use the synthetic issuer/JWKS and scoped RS256 tokens for isolated tests. Never print or share signing keys or bearer tokens.
 - The Plugin-to-KitsuSync business-event receiver is a separate trust direction: configure an HTTPS endpoint ending at `/api/integrations/vfx-files/v1/events`, producer key ID `vfx-files-plugin`, and a synthetic HMAC key file readable only by the Worker. Never reuse the RS256 management bearer as the event key.
 - The Plugin API and Worker must use the same exact source revision/image. Readiness reports the installed schema epoch; the current code line targets epoch 13 after `vxf_0014`. The worker command in the packaged UAT image is `/opt/zou/env/bin/python -m vfx_files.worker_runtime --poll --idle-seconds 2`.
 - Keep the Plugin API on the isolated loopback ingress. The management service needs authenticated reachability to the Plugin API; the signed event receiver needs authenticated TLS reachability from the Worker. Do not bridge either path to Production, Staging, real Drive, or live Discord.
-- Current integration blocker: this bundle does not include or seed a KitsuSync service, so no selected connection/root/template/Activation is preconfigured. Plugin materialization now resolves the exact supported catalog identity, revision and safe overrides into a persisted, config-revision-fenced `SharedTemplateConfiguration`; root-only setup may be saved but cannot Preview or Activate. End-to-end folder-sync Human UAT still requires a synthetic KitsuSync v1 instance and a current-source PostgreSQL/API/separate-Worker run. Do not substitute the Files page or legacy routes for KitsuSync's authority.
+- Current integration blocker: this bundle does not include or seed a KitsuSync service, so integrated status/event delivery and the drain-and-ack activation barrier cannot be demonstrated here. Standalone Plugin storage setup must work without KitsuSync. The Task-detail hook also requires Zou metadata support for `frontend_task_enabled` and manager-only `frontend_project_admin_enabled`; pinned Zou 1.0.94 drops both flags. Share and Received Files remain gated until the reference-sharing API and compatible receiver are verified.
 
 For resource capture while performing the UI stages, run the read-only sampler from the repository root in a separate PowerShell window, once per stage:
 

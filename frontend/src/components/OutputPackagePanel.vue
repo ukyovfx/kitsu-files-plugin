@@ -1,5 +1,6 @@
 <script setup>
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { driveObjectUrl } from '../driveObjectUrl.js'
 
 const props = defineProps({ taskId: { type: String, default: null }, tasks: { type: Array, default: () => [] }, publishes: { type: Array, default: () => [] }, fixedTaskId: { type: String, default: null }, api: { type: Object, required: true } })
 const emit = defineEmits(['changed'])
@@ -55,6 +56,10 @@ function taskLabel(task) {
   const entity = task.entity_name || task.entity_id || 'Entity'
   const type = task.task_type_name || task.task_type_id || 'Task'
   return `${entity} · ${type} · ${task.name || task.id}`
+}
+
+function openInDriveUrl(item) {
+  return driveObjectUrl(item)
 }
 
 async function loadObjects(parentId = currentParent.value, token = null, append = false, requestId = requestGeneration.value) {
@@ -366,6 +371,7 @@ onUnmounted(() => {
         <div v-for="item in objects" :key="item.id" class="storage-object-row">
           <button v-if="item.is_folder" class="text-button object-name" @click="openFolder(item)">📁 {{ item.name }}</button>
           <label v-else class="object-name"><input type="checkbox" :checked="selectedIds.includes(item.id)" :disabled="item.size === null" @change="toggleSelected(item)"> {{ item.name }}</label>
+          <a v-if="openInDriveUrl(item)" :href="openInDriveUrl(item)" target="_blank" rel="noopener noreferrer">Open in Google Drive</a>
           <span class="muted">{{ item.is_folder ? 'Folder' : `${item.size ?? 'Unknown size'} bytes` }}<template v-if="item.modified_time"> · Drive modified {{ new Date(item.modified_time).toLocaleString() }}</template></span>
           <label v-if="sequencePackage && selectedIds.includes(item.id)" class="frame-number">Frame<input v-model="frameNumbers[item.id]" type="number" step="1" :aria-label="`Frame number ${item.name}`"></label>
         </div>

@@ -131,8 +131,7 @@ async function departmentHandoff() {
     </div>
     <p class="muted workflow-note">Publish Handoffs reference the exact native Zou OutputFile. Output Package deliveries use a verified immutable file manifest; the Files page links the records only when a single-file source and SHA-256 match, so approval is never inferred from a similar name or timestamp.</p>
     <div class="workflow-controls">
-      <p v-if="fixedTaskId" class="task-context">Current Kitsu Task <span class="mono">{{ fixedTaskId }}</span></p>
-      <label v-else class="workflow-field">Task
+      <label v-if="!fixedTaskId" class="workflow-field">Task
         <select v-model="taskId" class="task-select" aria-label="Publish Task"><option value="">Choose Task</option><option v-for="task in tasks" :key="task.id" :value="task.id">{{ task.id }}</option></select>
       </label>
       <p v-if="loading" class="loading-state" role="status">Loading Working revisions and Publish options…</p>

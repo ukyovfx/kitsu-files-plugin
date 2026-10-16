@@ -1,6 +1,6 @@
 # Kitsu Task Detail Files Extension Feasibility
 
-Status: proposal and plugin-side context support; no Kitsu/Zou core source is modified here.
+Status: the Plugin Task-context baseline previously passed authenticated browser UAT on a pinned disposable host. The Task-section navigation update in this PR has frontend tests/build evidence only; its installed-host browser run is still pending. The Kitsu source branch remains unpublished and is not upstream accepted. Human visual UAT is still required.
 
 ## Pinned source examined
 
@@ -14,17 +14,38 @@ At that exact Kitsu source:
 
 The production-scoped Files page is therefore not proof of Task-detail integration. Injecting buttons into rendered DOM is not a supported extension point and is rejected.
 
-## Small upstream-compatible hook proposal
+## Local upstream-compatible hook proposal
 
-Add a generic Project Extensions panel/tab to the Task detail component. It should enumerate only project-enabled frontend plugins, reuse Kitsu's existing same-origin plugin frontend route, and mount the selected plugin in a sandboxed iframe. Pass the selected Task's stable IDs as query context: `production_id`, `task_id`, `entity_id`, `entity_type`, and `task_type_id`, plus existing theme and locale settings. Key the iframe by plugin ID and Task ID so Task changes destroy old component state. Do not add VFX Files-specific conditions or Zou database fields to Kitsu core.
+The isolated Kitsu source branch `codex/task-detail-files-extension` contains commit `c2a3b99576a23bdfaaf6bebe0e99f80b43ba17c7` against the dereferenced Kitsu `v1.0.70` tag. It adds a generic Task Extensions tab to the existing Task detail pane. The tab enumerates only `frontend_task_enabled` plugins, separate from Project-page discovery, reuses the same-origin `/api/plugins/<plugin_id>/frontend/` route, and mounts the chosen plugin in a scoped iframe. It passes `production_id`, `task_id`, `entity_id`, `entity_type`, and `task_type_id` as untrusted context hints; locale and theme are sent over a same-origin parent message. The iframe key includes plugin ID, Production ID and Task ID; changing Task resets the panel and replaces its iframe. The pinned Kitsu/Zou host does not yet persist or return `frontend_task_enabled`, so this local hook cannot be installed as a working Task entry until that upstream metadata contract is added.
 
-These query IDs are hints, never authorization. The plugin must resolve the Task and owning Production from Zou on every request, verify all IDs agree, and recheck current user access. A missing, stale, or contradictory context must fail closed. The proposed hook itself needs an upstream review and compatibility test against Kitsu; this repository does not claim that it is installed.
+These query IDs are hints, never authorization. The plugin resolves the Task and owning Production from Zou on every request, verifies the requested Production/Task scope, and rechecks current user access. A missing, stale, or contradictory scope fails closed. The Kitsu patch has not been published upstream. It is built into a local candidate image labeled `c2a3b99576a23bdfaaf6bebe0e99f80b43ba17c7` and exercised only by the `issue5-1016` synthetic UAT unit.
 
 ## Plugin-side behavior now supported
 
 The Files frontend parses Task/Entity context and passes the Task ID to the existing Production overview API. The API already resolves Task ownership and authorizes the resulting Production/Task scope. Upload and Publish panels can run in fixed-Task mode without asking the artist to select a second Task. Task-bound asynchronous reads are fenced so a response from the previous Task cannot overwrite the newly selected Task view. Folder bindings and valid provider links are shown in Task context.
 
-This is a plugin-side prerequisite, not native Kitsu UI acceptance. Until an upstream hook is available in the deployed Kitsu, the actual Task detail panel cannot display this view through an official extension point.
+The plugin's existing Working upload/history/download, Publish/QC/Approval, authorized folder browser and Handoff panels are mounted through the Task-scoped iframe context. The Task context removes manual Task reselection. The user-visible `Open in Google Drive` links use only provider IDs returned by the authorized, root-checked Task listing; a link does not grant Drive access or change sharing. Authenticated Playwright on the pinned disposable host verified the actual Task drawer, Task and Production switching, Artist A upload, Artist A and Artist B byte-verified downloads, Publish/QC completion, Supervisor exact Publish approval, and Artist A denial on a different Production. The browser preview is `frontend/test-results/issue5-task-detail-files.png`; screenshots and this synthetic browser run are not human visual acceptance.
+
+## Option A UX alignment (current draft, 2026-10-17)
+
+The embedded Task mode is the artist workflow. When a Kitsu Task ID is present, the Plugin omits the Production dashboard and exposes Task-scoped Files, Working, Publish, Share, Received Files, and Department Handoff sections inside the Kitsu iframe. The source Task is not reselected in the embedded panel. Existing Working, authorized browsing/package, Publish, and Handoff components receive the selected Task and use the existing server-side Task/Production authorization. The Production-level Plugin frontend is an administration gateway and does not fetch or display artist file operations without Task context; its settings link depends on the native Drive settings route from PR #11.
+
+Share and Received Files are visible Task-context sections but remain unavailable in this build. The general original Drive reference-sharing and incoming-reference API/receiver contract is not implemented. Do not enable those actions or imply they alter Drive access. Keep `file_share.created` v1.1 behind the existing compatibility/security gates. The Task sections use a compact tab strip and flat, responsive iframe presentation aligned to Kitsu's Task detail styling; installed-host visual acceptance is still required.
+
+The Task-detail hook discovers plugins through `frontend_task_enabled`; the separate Project-plugin menu continues to use `frontend_project_enabled`. VFX Files sets Task discovery on and ordinary Project discovery off. Its separate Production settings/diagnostics page uses `frontend_project_admin_enabled`, which the Kitsu hook exposes only to a manager in that Production. Both flags require an upstream Zou metadata/model/API change: pinned Kitsu 1.0.70 / Zou 1.0.94 only persists and returns `frontend_project_enabled` and `frontend_studio_enabled`, and ignores the new flags. The local Kitsu hook is unpublished. Do not claim this UX is available on stock Kitsu until Zou metadata support and the Kitsu hook are reviewed, adopted, and authenticated visual UAT passes.
+
+The current Publish/package flow is not general reference sharing. Share and Received Files do not yet provide an original Drive file-or-folder reference picker or an incoming-reference list. No copy, move, or ACL mutation is available through these sections.
+
+## Existing Task-scoped operation surface at plugin baseline `cc6fd4dc06293f48978e048208877bc900399af8`
+
+- `GET /api/plugins/vfx_files/tasks/{task_id}/storage-objects?parent_id=<id>&page_token=<token>` authenticates the Kitsu actor, resolves the Task and Production, checks read permission, verifies the selected parent remains below the configured root, and returns the authorized page. The browser's Drive open links are derived from these returned IDs.
+- Working snapshots have resumable upload and exact Working-file download routes. Output Packages can be registered from listed Task objects; verified package file downloads use the existing package download route. Publish, QC state, approval/revocation and exact artifact links remain in their existing API paths.
+- The Task-scoped `GET .../shared-folders` endpoint reads configured Task folder bindings. `POST .../shared-folders` can queue a Task-folder job only for plugin-owned template configuration; it explicitly rejects when KitsuSync owns the Production storage configuration. The plugin frontend has no KitsuSync provisioning adapter, so the Task panel does not expose folder creation while KitsuSync is the owner.
+- The current backend/frontend expose no Task-scoped rename, copy, move, delete, sharing or trash route/contract. Those controls stay unavailable. Drive access still depends on the authenticated user's Google permissions.
+
+## Department Handoff adapter contract
+
+The Task Files view reuses the existing Handoff API and supplies the Kitsu-selected source Task through the iframe context. Department targets are returned by `GET /api/plugins/vfx_files/tasks/{task_id}/publish-options` as `department_targets` entries containing `task_id`, `task_type_name`, and `department_id` (alongside eligible person recipients and Publish families). The create request is `POST /api/plugins/vfx_files/publishes/{publish_id}/handoffs` with `Idempotency-Key` and JSON `{ "recipient_department_id": "<department UUID>", "recipient_task_id": "<receiving Task UUID>", "recipient_person_id": "<optional Person UUID>" }`. The response contains `id`, `state`, `publish_id`, `recipient_department_id`, `recipient_task_id`, and `recipient_person_id`. The service resolves source/target Task, Production, Department membership and permissions server-side. This Task iframe adapter does not change the parallel Issue #6 service, migration or shared Handoff UI files.
 
 ## Current integration boundary (2026-10-13)
 

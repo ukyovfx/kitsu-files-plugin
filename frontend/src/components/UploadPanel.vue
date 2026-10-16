@@ -100,8 +100,7 @@ function displayVersion(revision) {
       <h2 id="upload-heading">Working Files</h2>
       <p>Each upload creates a new w### Working snapshot. Earlier revisions remain available.</p>
     </div>
-    <p v-if="fixedTaskId" class="task-context">Current Kitsu Task <span class="mono">{{ fixedTaskId }}</span></p>
-    <select v-else v-model="taskId" class="task-select" aria-label="Choose Task" :disabled="!enabled || busy">
+    <select v-if="!fixedTaskId" v-model="taskId" class="task-select" aria-label="Choose Task" :disabled="!enabled || busy">
       <option value="">Choose Task</option>
       <option v-for="task in tasks" :key="task.id" :value="task.id">{{ task.task_type_id.slice(0, 8) }} · {{ task.entity_id.slice(0, 8) }}</option>
     </select>
