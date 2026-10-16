@@ -1,10 +1,11 @@
-import { createApp } from 'vue'
+import { createApp, reactive } from 'vue'
 import App from './App.vue'
-import { createKitsuClient, parseProductionContext } from './kitsuClient.js'
+import { applyTaskPluginPreferences, createKitsuClient, parseProductionContext } from './kitsuClient.js'
 import { createFilesApi } from './api/files.js'
 import './style.css'
 
-const context = parseProductionContext(window.location.search)
+const context = reactive(parseProductionContext(window.location.search))
+window.addEventListener('message', (event) => applyTaskPluginPreferences(event, context))
 const client = createKitsuClient({ apiBase: '/api' })
 const api = createFilesApi(client)
 

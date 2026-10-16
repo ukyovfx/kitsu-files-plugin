@@ -42,6 +42,11 @@ test('native Task detail Files tab stays scoped to the Kitsu Task and Production
   const overviewData = await overviewResponse.json()
   expect(overviewData.upload_ready).toBe(true)
 
+  await manager.page.goto(`${origin}/api/plugins/vfx_files/frontend/?production_id=${encodeURIComponent(productionId)}`)
+  await expect(manager.page.locator('.files-page[data-mode="admin-entry"] .admin-entry')).toBeVisible()
+  await expect(manager.page.getByRole('heading', { name: 'Working Files', exact: true })).toHaveCount(0)
+  await expect(manager.page.getByRole('link', { name: 'Open VFX Files Plugin settings' })).toHaveAttribute('href', /drive_settings=1/)
+
   const openFilesTab = async (production, task) => {
     const entity = task === taskId ? entityIds.primary : task === secondTaskId ? entityIds.second : entityIds.other
     await manager.page.goto(`${origin}/productions/${production}/assets/${entity}`)
@@ -50,7 +55,9 @@ test('native Task detail Files tab stays scoped to the Kitsu Task and Production
     await expect(filesTab).toBeVisible()
     await filesTab.click()
     const frame = manager.page.frameLocator('iframe[title="VFX Files"]')
-    await expect(frame.getByRole('heading', { name: 'Files', level: 1, exact: true })).toBeVisible()
+    await expect(frame.locator('.files-page[data-mode="task"] .task-context-header')).toBeVisible()
+    await expect(frame.locator('.page-header')).toHaveCount(0)
+    await expect(frame.getByLabel('Publish pointers')).toHaveCount(0)
     await expect(frame.getByLabel('Choose Task')).toHaveCount(0)
     return frame
   }
@@ -77,7 +84,7 @@ test('native Task detail Files tab stays scoped to the Kitsu Task and Production
     await artistA.page.getByRole('button', { name: /VFXComp/ }).click()
     await artistA.page.getByRole('tab', { name: 'VFX Files', exact: true }).click()
     const panel = artistA.page.frameLocator('iframe[title="VFX Files"]')
-    await expect(panel.getByRole('heading', { name: 'Files', level: 1, exact: true })).toBeVisible()
+    await expect(panel.locator('.files-page[data-mode="task"] .task-context-header')).toBeVisible()
     return panel
   }
   let artistAFrame = await artistADrawer()
@@ -143,7 +150,7 @@ test('native Task detail Files tab stays scoped to the Kitsu Task and Production
   await supervisor.page.getByRole('button', { name: /VFXComp/ }).click()
   await supervisor.page.getByRole('tab', { name: 'VFX Files', exact: true }).click()
   const supervisorFrame = supervisor.page.frameLocator('iframe[title="VFX Files"]')
-  await expect(supervisorFrame.getByRole('heading', { name: 'Files', level: 1, exact: true })).toBeVisible()
+  await expect(supervisorFrame.locator('.files-page[data-mode="task"] .task-context-header')).toBeVisible()
   const latestPublishRow = supervisorFrame.getByRole('row', { name: new RegExp(`${secondTaskId} Synthetic Main ${nextPublishVersion} passed`) })
   const approvalButton = latestPublishRow.getByRole('button', { name: 'Approve exact Publish' })
   await expect(approvalButton).toBeVisible()

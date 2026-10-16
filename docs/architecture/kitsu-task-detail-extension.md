@@ -26,6 +26,14 @@ The Files frontend parses Task/Entity context and passes the Task ID to the exis
 
 The plugin's existing Working upload/history/download, Publish/QC/Approval, authorized folder browser and Handoff panels are mounted through the Task-scoped iframe context. The Task context removes manual Task reselection. The user-visible `Open in Google Drive` links use only provider IDs returned by the authorized, root-checked Task listing; a link does not grant Drive access or change sharing. Authenticated Playwright on the pinned disposable host verified the actual Task drawer, Task and Production switching, Artist A upload, Artist A and Artist B byte-verified downloads, Publish/QC completion, Supervisor exact Publish approval, and Artist A denial on a different Production. The browser preview is `frontend/test-results/issue5-task-detail-files.png`; screenshots and this synthetic browser run are not human visual acceptance.
 
+## Option A UX alignment (current draft)
+
+The embedded Task mode is the artist workflow. When a Kitsu Task ID is present, the Plugin shows the selected entity and Task Type context, omits the Production dashboard and overview cards, and supplies the selected Task to Working, Output Package delivery, Publish and Handoff workflows. The source Task is not reselected in the embedded panel. The Production-level Plugin frontend now acts as an administration gateway and does not fetch or display artist file operations without Task context; its settings link depends on the native Drive settings route from PR #11.
+
+The normal Kitsu Project-plugin page and the Task extension currently share Kitsu's `frontend_project_enabled` discovery flag. The generic Task-detail tab therefore still depends on that host metadata and does not itself hide the project-page navigation item from artists. Upstream Kitsu needs a generic Task-extension discovery capability separate from the Project-page capability, or an equivalent role-aware host route, before the standalone Project page can be made admin-only without hiding the Task tab. The current local hook is unpublished. Do not claim the UX is available on stock Kitsu until that host change is reviewed, adopted, and visually accepted.
+
+The Task view's Share / Received Files surface remains package-version based. It does not yet provide a general original Drive file-or-folder reference picker. Do not imply that the current package delivery flow covers every Share use case or that it changes Drive ACLs.
+
 ## Existing Task-scoped operation surface at plugin baseline `cc6fd4dc06293f48978e048208877bc900399af8`
 
 - `GET /api/plugins/vfx_files/tasks/{task_id}/storage-objects?parent_id=<id>&page_token=<token>` authenticates the Kitsu actor, resolves the Task and Production, checks read permission, verifies the selected parent remains below the configured root, and returns the authorized page. The browser's Drive open links are derived from these returned IDs.
