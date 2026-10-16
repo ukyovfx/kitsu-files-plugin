@@ -19,7 +19,7 @@ def _user_client(app, person):
 
 
 def test_task_link_share_api_uses_current_tasks_fake_storage_and_stays_default_off(
-    authenticated_plugin_client, synthetic_upload_task, zou_db_factory, monkeypatch,
+    authenticated_plugin_client, synthetic_upload_task, zou_db_factory, monkeypatch, request,
 ):
     from sqlalchemy import select
     from zou.app.models.entity import Entity
@@ -76,6 +76,18 @@ def test_task_link_share_api_uses_current_tasks_fake_storage_and_stays_default_o
             ),
         ])
         session.flush()
+
+    def cleanup_authority_credentials():
+        from sqlalchemy import delete
+        with app.app_context(), zou_db_factory.begin() as session:
+            session.execute(delete(ProductionDriveAuthority).where(
+                ProductionDriveAuthority.production_id == production_id,
+            ))
+            session.execute(delete(DriveCredential).where(
+                DriveCredential.connection_id == connection_id,
+            ))
+
+    request.addfinalizer(cleanup_authority_credentials)
 
     client = _user_client(app, actor)
     fake = FakeStorage(root_id="synthetic-root-id", drive_id="synthetic-drive-id")
