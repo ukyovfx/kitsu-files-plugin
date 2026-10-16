@@ -73,6 +73,22 @@ describe('Files API', () => {
     expect(JSON.parse(client.request.mock.calls[1][2].body)).toEqual({ recipient_department_id: 'dept-fx', recipient_task_id: 'task-fx', recipient_person_id: 'artist-fx' })
   })
 
+  it('links an Output Package only through the authenticated exact-publication endpoint', async () => {
+    const client = { request: vi.fn()
+      .mockResolvedValueOnce(response({ csrf_token: 'publication-csrf' }))
+      .mockResolvedValueOnce(response({ id: 'link-1', package_id: 'package-1', publish_id: 'publish-1' }, 201)) }
+    const api = createFilesApi(client)
+    await api.linkOutputPackagePublication('package-1', 'publish-1', 'package-publication:package-1:publish-1')
+    expect(client.request.mock.calls).toEqual([
+      ['GET', 'plugins/vfx_files/csrf-token'],
+      ['POST', 'plugins/vfx_files/output-packages/package-1/publication-binding', expect.objectContaining({
+        csrfToken: 'publication-csrf',
+        headers: expect.objectContaining({ 'Idempotency-Key': 'package-publication:package-1:publish-1' })
+      })]
+    ])
+    expect(JSON.parse(client.request.mock.calls[1][2].body)).toEqual({ publish_id: 'publish-1' })
+  })
+
   it('shows the disabled service as a non-success result', async () => {
     const client = { request: vi.fn(async () => response({}, 503)) }
     await expect(createFilesApi(client).listProduction('p-1')).rejects.toMatchObject({ status: 503 })

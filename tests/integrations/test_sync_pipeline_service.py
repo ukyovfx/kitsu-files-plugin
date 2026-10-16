@@ -515,6 +515,7 @@ def test_explicit_apply_reaches_fenced_worker_and_fake_storage(sync_db, monkeypa
     from plugin.storage.fake import FakeStorage
 
     factory, *_ = sync_db
+    Binding = sync_db[6]
     data = seed_sync_state(sync_db)
     actor_id = UUID(ACTOR)
     preview, _, _ = create_sync_preview(
@@ -554,6 +555,13 @@ def test_explicit_apply_reaches_fenced_worker_and_fake_storage(sync_db, monkeypa
                 parent_id=parent, display_name=name,
             )
             parent = result.provider_folder_id
+            if kind == "task":
+                with session_factory.begin() as session:
+                    session.add(Binding(
+                        storage_connection_id=data["connection_id"], allowed_root_id="fake-root",
+                        canonical_scope_key=f"production:{PRODUCTION}:task:{TASK}",
+                        provider_folder_id=result.provider_folder_id, state="ready",
+                    ))
 
     monkeypatch.setattr(sync_worker, "provision_task_folders", fake_task_provision)
     handler = sync_worker.make_hierarchy_sync_handler(factory, storage)
@@ -562,6 +570,57 @@ def test_explicit_apply_reaches_fenced_worker_and_fake_storage(sync_db, monkeypa
     assert len([obj for obj in storage.objects.values() if obj.mime_type == "folder"]) == 3
     with factory() as session:
         persisted_job = session.get(sync_db[-1], UUID(job_body["id"]))
+        assert persisted_job.payload["progress"] == {"completed": 1, "total": 1}
+
+
+def test_hierarchy_sync_worker_normalizes_progress_when_retry_finds_all_bindings_ready(sync_db, monkeypatch):
+    from uuid import UUID
+
+    from plugin.integrations import worker as sync_worker
+    from plugin.integrations.sync import apply_sync_preview, create_sync_preview
+    from plugin.jobs.queue import LeasedJob
+
+    factory, _Desired, _Idempotency, _Snapshot, _Page, _Connection, Binding, _Preview, _Template, Job = sync_db
+    data = seed_sync_state(sync_db)
+    preview, _, _ = create_sync_preview(
+        factory(), production_id=UUID(PRODUCTION), actor_id=UUID(ACTOR),
+        payload={"contract_version": "1.0", "config_revision": 4, "snapshot_id": str(data["snapshot_id"])},
+        idempotency_key="worker-ready-retry-preview-0001",
+    )
+    job_body, _, _ = apply_sync_preview(
+        factory(), production_id=UUID(PRODUCTION), actor_id=UUID(ACTOR),
+        payload={"contract_version": "1.0", "preview_id": preview["preview_id"], "config_revision": 4},
+        idempotency_key="worker-ready-retry-apply-0001",
+    )
+    worker_id = uuid4()
+    with factory.begin() as session:
+        session.add(Binding(
+            storage_connection_id=data["connection_id"], allowed_root_id="fake-root",
+            canonical_scope_key=f"production:{PRODUCTION}:task:{TASK}",
+            provider_folder_id="existing-task-folder", state="ready",
+        ))
+        job = session.get(Job, UUID(job_body["id"]))
+        job.state = "leased"
+        job.lease_owner = worker_id
+        job.lease_generation = 1
+        job.lease_expires_at = datetime.now(timezone.utc) + timedelta(minutes=2)
+    with factory() as session:
+        payload = dict(session.get(Job, UUID(job_body["id"])).payload)
+    assert payload["progress"] == {"completed": 0, "total": 1}
+    leased = LeasedJob(UUID(job_body["id"]), "sync_hierarchy", payload, worker_id, 1, 1)
+    monkeypatch.setattr(sync_worker, "_authorized_manager", lambda *_: True)
+    monkeypatch.setattr(sync_worker, "_snapshot_task_matches_kitsu", lambda *_: True)
+    monkeypatch.setattr(
+        sync_worker,
+        "provision_task_folders",
+        lambda *_args, **_kwargs: pytest.fail("ready binding must not be provisioned again"),
+    )
+
+    result = sync_worker.make_hierarchy_sync_handler(factory, object())(leased)
+
+    assert result.state == "completed"
+    with factory() as session:
+        persisted_job = session.get(Job, UUID(job_body["id"]))
         assert persisted_job.payload["progress"] == {"completed": 1, "total": 1}
 
 

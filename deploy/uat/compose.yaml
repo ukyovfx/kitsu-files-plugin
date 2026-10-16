@@ -120,6 +120,10 @@ services:
       VFX_FILES_FAKE_DRIVE_ID: synthetic-drive-id
       VFX_FILES_STAGING_ROOT: /var/lib/vfx-files/staging
       VFX_FILES_KITSU_ORIGIN: http://127.0.0.1:${VFX_FILES_UAT_HTTP_PORT:-55280}
+      VFX_FILES_KITSUSYNC_ISSUER: ${VFX_FILES_KITSUSYNC_ISSUER:-}
+      VFX_FILES_KITSUSYNC_AUDIENCE: ${VFX_FILES_KITSUSYNC_AUDIENCE:-}
+      VFX_FILES_KITSUSYNC_SUBJECT: ${VFX_FILES_KITSUSYNC_SUBJECT:-}
+      VFX_FILES_KITSUSYNC_CLIENT_ID: ${VFX_FILES_KITSUSYNC_CLIENT_ID:-}
     depends_on:
       postgres: {condition: service_healthy}
       redis: {condition: service_healthy}

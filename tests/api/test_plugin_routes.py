@@ -157,6 +157,9 @@ def test_upload_routes_write_verified_bytes_and_reuse_finalize_job(authenticated
     overview = client.get(f"/plugins/vfx_files/overview?production_id={production_id}")
     assert overview.status_code == 200
     assert overview.json["tasks"][0]["id"] == str(task_id)
+    assert overview.json["tasks"][0]["name"] == "main"
+    assert overview.json["tasks"][0]["entity_name"].startswith("SHOT")
+    assert overview.json["tasks"][0]["task_type_name"].startswith("VFXTask")
     from plugin.models import Job, UploadPart, UploadSession
     from sqlalchemy import select
     with zou_db_factory() as session:
@@ -166,6 +169,67 @@ def test_upload_routes_write_verified_bytes_and_reuse_finalize_job(authenticated
         assert stored.state == "staged"
         assert [part.state for part in parts] == ["staged", "staged"]
         assert job.job_type == "publish_source" and job.state == "queued"
+
+
+def test_production_overview_lists_only_tasks_the_current_artist_can_read(
+    authenticated_plugin_client, synthetic_upload_task, zou_db_factory,
+):
+    from zou.app.models.person import Person
+    from zou.app.models.project import ProjectPersonLink
+    from zou.app.models.task import Task, TaskPersonLink
+    from zou.app.services.persons_service import create_access_token_for_raw_person
+
+    app = authenticated_plugin_client.vfx_app
+    production_id, _entity_type_id, task_type_id, entity_id, assigned_task_id, _connection_id, _manager_id = synthetic_upload_task
+    with app.app_context():
+        with zou_db_factory.begin() as session:
+            artist = Person(
+                first_name="Synthetic", last_name=f"Overview{uuid4().hex[:8]}",
+                email=f"overview-{uuid4().hex}@example.invalid", role="user", active=True,
+            )
+            session.add(artist)
+            session.flush()
+            membership = session.get(ProjectPersonLink, (production_id, artist.id))
+            if membership is None:
+                membership = ProjectPersonLink(project_id=production_id, person_id=artist.id, role="user")
+                session.add(membership)
+            else:
+                membership.role = "user"
+            session.add(TaskPersonLink(task_id=assigned_task_id, person_id=artist.id))
+            unseen_task = Task(
+                name="unassigned-task", project_id=production_id,
+                task_type_id=task_type_id, entity_id=entity_id,
+            )
+            session.add(unseen_task)
+            session.flush()
+            unseen_task_id = unseen_task.id
+            token = create_access_token_for_raw_person(artist)
+
+    artist_client = app.test_client()
+    artist_client.set_cookie(app.config.get("JWT_ACCESS_COOKIE_NAME", "access_token_cookie"), token)
+    try:
+        overview = artist_client.get(f"/plugins/vfx_files/overview?production_id={production_id}")
+        assert overview.status_code == 200
+        assert [row["id"] for row in overview.json["tasks"]] == [str(assigned_task_id)]
+        assert overview.json["tasks"][0]["name"] == "main"
+        assert overview.json["tasks"][0]["entity_name"].startswith("SHOT")
+        assert overview.json["tasks"][0]["task_type_name"].startswith("VFXTask")
+        denied = artist_client.get(
+            f"/plugins/vfx_files/overview?production_id={production_id}&task_id={unseen_task_id}"
+        )
+        assert denied.status_code == 403
+    finally:
+        with zou_db_factory.begin() as session:
+            session.execute(TaskPersonLink.__table__.delete().where(
+                TaskPersonLink.task_id == assigned_task_id,
+                TaskPersonLink.person_id == artist.id,
+            ))
+            session.execute(ProjectPersonLink.__table__.delete().where(
+                ProjectPersonLink.project_id == production_id,
+                ProjectPersonLink.person_id == artist.id,
+            ))
+            session.execute(Task.__table__.delete().where(Task.id == unseen_task_id))
+            session.execute(Person.__table__.delete().where(Person.id == artist.id))
 
 
 def test_official_plugin_api_accepts_same_origin_kitsu_cookie(authenticated_plugin_client):

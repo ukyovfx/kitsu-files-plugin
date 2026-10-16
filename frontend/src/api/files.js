@@ -70,6 +70,44 @@ export function createFilesApi(client) {
       return readJson(await client.request('GET', `${ROOT}/tasks/${encodeURIComponent(taskId)}/output-packages?${query}`))
     },
 
+    async listTaskPackageDeliveries(taskId) {
+      if (!taskId) throw new TypeError('A Task ID is required')
+      return readJson(await client.request('GET', `${ROOT}/tasks/${encodeURIComponent(taskId)}/output-package-deliveries`))
+    },
+
+    async listOutputPackageDeliveryTargets(packageId) {
+      if (!packageId) throw new TypeError('An Output Package ID is required')
+      return readJson(await client.request('GET', `${ROOT}/output-packages/${encodeURIComponent(packageId)}/delivery-targets`))
+    },
+
+    async linkOutputPackagePublication(packageId, publishId, idempotencyKey) {
+      if (!packageId || !publishId || !idempotencyKey) throw new TypeError('A Package, approved Publish and idempotency key are required')
+      return readJson(await mutation('POST', `${ROOT}/output-packages/${encodeURIComponent(packageId)}/publication-binding`, {
+        headers: { 'Content-Type': 'application/json', 'Idempotency-Key': idempotencyKey },
+        body: JSON.stringify({ publish_id: publishId })
+      }))
+    },
+
+    async createOutputPackageDelivery(packageId, recipientTaskId, recipientTaskTypeId, idempotencyKey) {
+      if (!packageId || !recipientTaskId || !recipientTaskTypeId || !idempotencyKey) {
+        throw new TypeError('A Package, receiving Task Type and idempotency key are required')
+      }
+      return readJson(await mutation('POST', `${ROOT}/output-packages/${encodeURIComponent(packageId)}/deliveries`, {
+        headers: { 'Content-Type': 'application/json', 'Idempotency-Key': idempotencyKey },
+        body: JSON.stringify({ recipient_task_id: recipientTaskId, recipient_task_type_id: recipientTaskTypeId })
+      }))
+    },
+
+    async respondToOutputPackageDelivery(deliveryId, status, feedback, idempotencyKey) {
+      if (!deliveryId || !['accepted', 'needs_fix'].includes(status) || !idempotencyKey) {
+        throw new TypeError('A Delivery, valid response and idempotency key are required')
+      }
+      return readJson(await mutation('POST', `${ROOT}/output-package-deliveries/${encodeURIComponent(deliveryId)}/respond`, {
+        headers: { 'Content-Type': 'application/json', 'Idempotency-Key': idempotencyKey },
+        body: JSON.stringify({ status, ...(feedback ? { feedback } : {}) })
+      }))
+    },
+
     async createTaskOutputPackage(taskId, descriptor, idempotencyKey) {
       if (!taskId || !descriptor?.output_type_id || !descriptor?.package_type || !descriptor?.files?.length) {
         throw new TypeError('A Task, Output Type, package type and at least one file are required')

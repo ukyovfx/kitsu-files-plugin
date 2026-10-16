@@ -80,6 +80,9 @@ def test_artist_b_downloads_w001_and_publishes_w002_without_replacing_history(
     artist_a = authenticated_plugin_client
     production_id, _entity_type, _task_type, _entity_id, task_id, _connection_id, _artist_a_id = synthetic_upload_task
     app = artist_a.vfx_app
+    monkeypatch.setitem(app.config, "VFX_FILES_FAKE_STORAGE_ROOT", str(tmp_path / "multi-artist-fake-storage.json"))
+    monkeypatch.setitem(app.config, "VFX_FILES_FAKE_ROOT_ID", "synthetic-root-id")
+    monkeypatch.setitem(app.config, "VFX_FILES_FAKE_DRIVE_ID", "synthetic-drive-id")
     artist_b_id = None
     try:
         with app.app_context():

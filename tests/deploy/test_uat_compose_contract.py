@@ -194,3 +194,16 @@ def test_fake_storage_root_matches_the_synthetic_seeder_contract():
 
     assert compose.count("VFX_FILES_FAKE_ROOT_ID: synthetic-root-id") == 2
     assert compose.count("VFX_FILES_FAKE_DRIVE_ID: synthetic-drive-id") == 2
+
+
+def test_uat_api_receives_fail_closed_kitsusync_service_identity_configuration():
+    compose = (UAT / "compose.yaml").read_text(encoding="utf-8")
+    init = (UAT / "scripts" / "init.ps1").read_text(encoding="utf-8")
+    api = compose.split("  api:\n", 1)[1].split("  worker:\n", 1)[0]
+
+    names = ("ISSUER", "AUDIENCE", "SUBJECT", "CLIENT_ID")
+    for name in names:
+        key = f"VFX_FILES_KITSUSYNC_{name}"
+        assert f"{key}: ${{{key}:-}}" in api
+        assert key in init
+    assert "VFX_FILES_KITSUSYNC_CLIENT_ID=vfx-files-uat-$Unit" in init

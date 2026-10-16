@@ -186,3 +186,80 @@ def append_new_task_folder_event(
         },
     }
     return append_eligible_event(session, event, selected_connection_id=selected_connection_id)
+
+
+def append_file_delivery_event(session, delivery, *, event_type):
+    """Append one post-activation delivery transition using the v1 file schema.
+
+    The transition and outbox insert share the caller's transaction. Inactive
+    or bootstrap configurations remain notification-suppressed.
+    """
+    from sqlalchemy import select
+    from zou.app.models.entity import Entity
+    from zou.app.models.entity_type import EntityType
+    from zou.app.models.person import Person
+    from zou.app.models.project import Project, ProjectTaskTypeLink
+    from zou.app.models.task import Task
+    from zou.app.models.task_type import TaskType
+    from ..models import OutputPackage, OutputPackageFile
+    from .file_delivery_events import build_file_delivery_event
+    from .storage_authority import selected_storage_connection
+
+    package = session.get(OutputPackage, delivery.package_id)
+    recipient = session.get(Task, delivery.recipient_task_id)
+    if package is None or recipient is None:
+        raise ValueError("Delivery references an unavailable Task or Output Package")
+    source = session.get(Task, package.task_id)
+    entity = session.get(Entity, package.entity_id)
+    source_type = session.get(TaskType, source.task_type_id) if source is not None else None
+    recipient_type = session.get(TaskType, recipient.task_type_id)
+    entity_type = session.get(EntityType, entity.entity_type_id) if entity is not None else None
+    sender = session.get(Person, delivery.created_by)
+    production = session.get(Project, package.production_id)
+    if (
+        package.production_id != delivery.production_id
+        or package.state != "completed" or package.qc_state != "passed"
+        or source is None or source.project_id != package.production_id
+        or source.entity_id != package.entity_id
+        or recipient.project_id != package.production_id or recipient.entity_id != package.entity_id
+        or recipient.task_type_id != delivery.recipient_task_type_id
+        or session.query(ProjectTaskTypeLink.id).filter_by(
+            project_id=recipient.project_id,
+            task_type_id=recipient.task_type_id,
+        ).one_or_none() is None
+        or source_type is None or recipient_type is None or entity_type is None
+        or sender is None or production is None
+    ):
+        raise ValueError("Delivery does not match its Production, entity, Task Types, or sender")
+    connection = selected_storage_connection(session, package.production_id)
+    if connection is None:
+        return False
+    epoch = current_notification_epoch(
+        session, production_id=package.production_id,
+        selected_connection_id=connection.id,
+    )
+    if epoch is None:
+        return False
+    files = session.scalars(select(OutputPackageFile).where(
+        OutputPackageFile.package_id == package.id,
+    ).order_by(OutputPackageFile.ordinal)).all()
+    event = build_file_delivery_event(
+        delivery=delivery,
+        package=package,
+        source_task=source,
+        source_task_type=source_type,
+        recipient_task_type=recipient_type,
+        entity=entity,
+        entity_type_name=(
+            entity_type.name if str(entity_type.name).casefold() in {"shot", "asset", "sequence"}
+            else getattr(source_type, "for_entity", "")
+        ),
+        sender=sender,
+        production_name=production.name,
+        files=files,
+        event_type=event_type,
+        activation_epoch=epoch,
+    )
+    return append_eligible_event(
+        session, event, selected_connection_id=connection.id,
+    )

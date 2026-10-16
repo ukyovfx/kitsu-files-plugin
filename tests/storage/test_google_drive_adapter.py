@@ -290,7 +290,9 @@ def test_upload_download_and_sha256_readback_are_byte_exact_on_shared_drive():
         Response(200, {"id": "artifact-1", "parents": ["root-1"], "mimeType": "application/octet-stream", "driveId": "drive-1", "size": len(content)}),
         Response(200, content=content),
         Response(200, {"id": "artifact-1", "parents": ["root-1"], "mimeType": "application/octet-stream", "driveId": "drive-1", "size": len(content)}),
+        Response(200, {"id": "artifact-1", "parents": ["root-1"], "mimeType": "application/octet-stream", "driveId": "drive-1", "size": len(content)}),
         Response(200, content=content),
+        Response(200, {"id": "artifact-1", "parents": ["root-1"], "mimeType": "application/octet-stream", "driveId": "drive-1", "size": len(content)}),
     ])
     adapter = drive(transport)
     adapter.capabilities("root-1")
@@ -304,6 +306,43 @@ def test_upload_download_and_sha256_readback_are_byte_exact_on_shared_drive():
     upload_call = transport.calls[1]
     assert upload_call[2]["params"]["supportsAllDrives"] == "true"
     assert content in upload_call[2]["data"]
+
+
+def test_download_rechecks_provider_ancestry_after_transfer_before_returning_bytes():
+    content = b"synthetic authorized bytes"
+    transport = FakeTransport([
+        Response(200, {"id": "root-1", "mimeType": FOLDER_MIME, "driveId": "drive-1", "capabilities": {"canAddChildren": True}}),
+        Response(200, {"id": "artifact-1", "parents": ["folder-1"], "mimeType": "application/octet-stream", "driveId": "drive-1", "size": len(content), "modifiedTime": "2026-10-14T00:00:00Z"}),
+        Response(200, {"id": "folder-1", "parents": ["root-1"], "mimeType": FOLDER_MIME, "driveId": "drive-1"}),
+        Response(200, content=content),
+        # The object itself did not change, but its parent was moved outside
+        # the configured root while the media request was in flight.
+        Response(200, {"id": "artifact-1", "parents": ["folder-1"], "mimeType": "application/octet-stream", "driveId": "drive-1", "size": len(content), "modifiedTime": "2026-10-14T00:00:00Z"}),
+        Response(200, {"id": "folder-1", "parents": ["outside-root"], "mimeType": FOLDER_MIME, "driveId": "drive-1"}),
+        Response(200, {"id": "outside-root", "parents": [], "mimeType": FOLDER_MIME, "driveId": "drive-1"}),
+    ])
+    adapter = drive(transport)
+    adapter.capabilities("root-1")
+    destination = io.BytesIO()
+
+    with pytest.raises(PermissionFailure):
+        adapter.download_to("artifact-1", destination)
+
+    assert destination.getvalue() == b""
+
+
+def test_download_rejects_shortcuts_even_when_the_shortcut_is_inside_root():
+    transport = FakeTransport([
+        Response(200, {"id": "root-1", "mimeType": FOLDER_MIME, "driveId": "drive-1", "capabilities": {"canAddChildren": True}}),
+        Response(200, {"id": "shortcut-1", "parents": ["root-1"], "mimeType": "application/vnd.google-apps.shortcut", "driveId": "drive-1", "size": 0}),
+    ])
+    adapter = drive(transport)
+    adapter.capabilities("root-1")
+
+    with pytest.raises(PermissionFailure):
+        adapter.download_to("shortcut-1", io.BytesIO())
+
+    assert len(transport.calls) == 2
 
 
 def test_package_copy_upload_preserves_provider_filename_and_reserved_id():
@@ -331,6 +370,7 @@ def test_lost_upload_response_retries_same_reserved_id_and_verifies_existing_byt
         Response(200, {"id": "artifact-1", "parents": ["root-1"], "mimeType": "application/octet-stream", "driveId": "drive-1", "size": len(content)}),
         Response(200, {"id": "artifact-1", "parents": ["root-1"], "mimeType": "application/octet-stream", "driveId": "drive-1", "size": len(content)}),
         Response(200, content=content),
+        Response(200, {"id": "artifact-1", "parents": ["root-1"], "mimeType": "application/octet-stream", "driveId": "drive-1", "size": len(content)}),
     ])
     adapter = drive(transport)
     adapter.capabilities("root-1")

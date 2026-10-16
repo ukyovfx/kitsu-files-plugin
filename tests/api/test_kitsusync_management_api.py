@@ -161,6 +161,99 @@ def test_management_api_enforces_service_auth_scope_actor_and_production(managem
     assert bad_actor.json["code"] == "unauthorized_service"
 
 
+def test_management_api_auth_settings_loaded_from_environment_are_usable(management_client):
+    from plugin.integrations.service_config import configure_management_service_auth
+
+    client = management_client
+    for key in (
+        "VFX_FILES_KITSUSYNC_ISSUER",
+        "VFX_FILES_KITSUSYNC_AUDIENCE",
+        "VFX_FILES_KITSUSYNC_SUBJECT",
+        "VFX_FILES_KITSUSYNC_CLIENT_ID",
+    ):
+        client.vfx_app.config.pop(key, None)
+
+    configure_management_service_auth(client.vfx_app, {
+        "VFX_FILES_KITSUSYNC_ISSUER": ISSUER,
+        "VFX_FILES_KITSUSYNC_AUDIENCE": AUDIENCE,
+        "VFX_FILES_KITSUSYNC_SUBJECT": SUBJECT,
+        "VFX_FILES_KITSUSYNC_CLIENT_ID": CLIENT_ID,
+    })
+
+    response = client.get(
+        _route(client),
+        headers=client.vfx_management_headers("vfx.config.read"),
+    )
+    assert response.status_code == 200, response.get_data(as_text=True)
+
+
+@pytest.mark.parametrize("client_id", [None, "", "   "])
+def test_management_api_missing_or_malformed_environment_fails_closed(
+    management_client, client_id,
+):
+    from plugin.integrations.service_config import configure_management_service_auth
+
+    client = management_client
+    for key in (
+        "VFX_FILES_KITSUSYNC_ISSUER",
+        "VFX_FILES_KITSUSYNC_AUDIENCE",
+        "VFX_FILES_KITSUSYNC_SUBJECT",
+        "VFX_FILES_KITSUSYNC_CLIENT_ID",
+    ):
+        client.vfx_app.config.pop(key, None)
+    environment = {
+        "VFX_FILES_KITSUSYNC_ISSUER": ISSUER,
+        "VFX_FILES_KITSUSYNC_AUDIENCE": AUDIENCE,
+        "VFX_FILES_KITSUSYNC_SUBJECT": SUBJECT,
+    }
+    if client_id is not None:
+        environment["VFX_FILES_KITSUSYNC_CLIENT_ID"] = client_id
+    configure_management_service_auth(client.vfx_app, environment)
+
+    response = client.get(
+        _route(client),
+        headers=client.vfx_management_headers("vfx.config.read"),
+    )
+    assert response.status_code == 401
+    assert response.json["code"] == "unauthorized_service"
+
+
+@pytest.mark.parametrize(("key", "wrong_value"), [
+    ("VFX_FILES_KITSUSYNC_ISSUER", "https://wrong-sync.example.test"),
+    ("VFX_FILES_KITSUSYNC_AUDIENCE", "https://wrong-files.example.test/api/plugins/vfx_files/integrations/v1"),
+    ("VFX_FILES_KITSUSYNC_SUBJECT", "wrong-service"),
+    ("VFX_FILES_KITSUSYNC_CLIENT_ID", "wrong-installation"),
+])
+def test_management_api_rejects_wrong_environment_service_identity(
+    management_client, key, wrong_value,
+):
+    from plugin.integrations.service_config import configure_management_service_auth
+
+    client = management_client
+    for setting in (
+        "VFX_FILES_KITSUSYNC_ISSUER",
+        "VFX_FILES_KITSUSYNC_AUDIENCE",
+        "VFX_FILES_KITSUSYNC_SUBJECT",
+        "VFX_FILES_KITSUSYNC_CLIENT_ID",
+    ):
+        client.vfx_app.config.pop(setting, None)
+    environment = {
+        "VFX_FILES_KITSUSYNC_ISSUER": ISSUER,
+        "VFX_FILES_KITSUSYNC_AUDIENCE": AUDIENCE,
+        "VFX_FILES_KITSUSYNC_SUBJECT": SUBJECT,
+        "VFX_FILES_KITSUSYNC_CLIENT_ID": CLIENT_ID,
+    }
+    environment[key] = wrong_value
+    configure_management_service_auth(client.vfx_app, environment)
+
+    response = client.get(
+        _route(client),
+        headers=client.vfx_management_headers("vfx.config.read"),
+    )
+    assert response.status_code == 401
+    assert response.json["code"] == "unauthorized_service"
+
+
 def test_desired_config_create_replay_conflict_update_and_activation_fencing(management_client):
     from sqlalchemy import select
 
@@ -400,3 +493,49 @@ def test_provider_template_catalog_matches_v1_and_is_scope_authorized(management
     )
     assert invalid_scope.status_code == 400
     assert invalid_scope.json["code"] == "invalid_event"
+
+
+def test_fake_shared_drive_root_verification_preserves_drive_identity(management_client, tmp_path, monkeypatch):
+    from vfx_files.storage.fake import PersistentFakeStorage
+    from plugin.models import StorageConnection
+
+    client = management_client
+    app = client.vfx_app
+    state_path = tmp_path / "fake-storage.json"
+    PersistentFakeStorage(state_path, root_id="synthetic-root-id", drive_id="synthetic-drive-id")
+    monkeypatch.setitem(app.config, "VFX_FILES_STORAGE_MODE", "fake")
+    monkeypatch.setitem(app.config, "VFX_FILES_FAKE_STORAGE_ROOT", str(state_path))
+    monkeypatch.setitem(app.config, "VFX_FILES_FAKE_ROOT_ID", "synthetic-root-id")
+    monkeypatch.setitem(app.config, "VFX_FILES_FAKE_DRIVE_ID", "synthetic-drive-id")
+    monkeypatch.delitem(app.extensions, "vfx_files_storage_adapter_factory", raising=False)
+
+    # A new Shared Drive authorization does not have a selected Drive identity
+    # until a root candidate is verified. Root discovery must return the
+    # candidate's verified Drive identity rather than treating the unset
+    # connection field as a mismatch.
+    with client.vfx_db_factory.begin() as session:
+        connection = session.get(StorageConnection, client.vfx_connection_id)
+        connection.drive_id = None
+
+    roots_url = f"{BASE}/drive-connections/{client.vfx_connection_id}/roots?production_id={client.vfx_production_id}"
+    roots = client.get(roots_url, headers=client.vfx_management_headers("vfx.roots.read"))
+    assert roots.status_code == 200
+    assert roots.json["roots"][0]["drive_id"] == "synthetic-drive-id"
+
+    verified = client.post(
+        f"{BASE}/drive-connections/{client.vfx_connection_id}/roots",
+        json={
+            "contract_version": "1.0",
+            "production_id": str(client.vfx_production_id),
+            "account_mode": "shared_drive",
+            "drive_id": "synthetic-drive-id",
+            "root_id": "synthetic-root-id",
+        },
+        headers={
+            **client.vfx_management_headers("vfx.roots.verify"),
+            "Idempotency-Key": "fake-shared-root-verify-001",
+        },
+    )
+    assert verified.status_code == 200, verified.get_data(as_text=True)
+    assert verified.json["drive_id"] == "synthetic-drive-id"
+    assert verified.json["capabilities"] == {"can_read": True, "can_add_children": True}

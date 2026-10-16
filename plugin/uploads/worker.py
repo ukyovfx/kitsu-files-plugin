@@ -69,6 +69,7 @@ def make_upload_handler(session_factory, staging, adapter_factory):
             parent_id = connection.allowed_root_id
             expected_size = upload.expected_size
             expected_sha256 = upload.expected_sha256
+            file_name = upload.file_name
             part_rows = session.scalars(
                 select(UploadPart).where(UploadPart.session_id == upload_id).order_by(UploadPart.part_index)
             ).all()
@@ -110,7 +111,10 @@ def make_upload_handler(session_factory, staging, adapter_factory):
             if not is_selected_storage_connection(session_factory, production_id, connection.id):
                 return JobResult("blocked_authorization", error_code="storage_selection_changed")
             try:
-                job_adapter.upload(source, provider_id, expected_size, expected_sha256, parent_id)
+                job_adapter.upload(
+                    source, provider_id, expected_size, expected_sha256, parent_id,
+                    file_name=file_name,
+                )
             except AlreadyExists:
                 pass
             except AmbiguousOutcome:

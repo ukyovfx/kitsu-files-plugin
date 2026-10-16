@@ -1,7 +1,9 @@
-import { execFileSync, spawnSync } from 'node:child_process'
+import { execFileSync } from 'node:child_process'
 import { expect, test } from '@playwright/test'
 
-const host = process.env.VFX_FILES_LIVE_HOST_CONTAINER
+const composeProject = process.env.VFX_FILES_LIVE_COMPOSE_PROJECT
+const composeFile = process.env.VFX_FILES_LIVE_COMPOSE_FILE
+const composeEnvFile = process.env.VFX_FILES_LIVE_COMPOSE_ENV_FILE
 const productionId = process.env.VFX_FILES_LIVE_PRODUCTION_ID
 const productionName = process.env.VFX_FILES_LIVE_PRODUCTION_NAME
 const taskId = process.env.VFX_FILES_LIVE_TASK_ID
@@ -9,13 +11,13 @@ const loginEmails = JSON.parse(process.env.VFX_FILES_LIVE_LOGIN_EMAILS || '{}')
 const loginPassword = process.env.VFX_FILES_LIVE_TEST_PASSWORD
 const artistAId = process.env.VFX_FILES_LIVE_ARTIST_A_ID
 
-const missingHostFixture = !host || !productionId || !productionName || !taskId || !loginPassword || !loginEmails.manager || !loginEmails.artist_a || !loginEmails.artist_b || !loginEmails.supervisor || !artistAId
+const missingHostFixture = !composeProject || !composeFile || !composeEnvFile || !productionId || !productionName || !taskId || !loginPassword || !loginEmails.manager || !loginEmails.artist_a || !loginEmails.artist_b || !loginEmails.supervisor || !artistAId
 
 const baseUrl = process.env.VFX_FILES_LIVE_BASE_URL || 'http://127.0.0.1:55253'
 const origin = new URL(baseUrl).origin
 const pluginApiBase = `${origin}/api/plugins/vfx_files`
 
-async function openFilesFromProductionMenu(page, productionId, { alreadySelected = false } = {}) {
+async function openFilesFromProductionMenu(page, productionId, { alreadySelected = false, taskId: selectedTaskId = null } = {}) {
   const selectedPlugin = page.getByRole('button', { name: 'VFX Files', exact: true })
   const assetsMenu = page.getByRole('button', { name: 'Assets', exact: true })
   if (alreadySelected) {
@@ -27,10 +29,14 @@ async function openFilesFromProductionMenu(page, productionId, { alreadySelected
     await expect(projectMenuItem).toBeVisible()
     await projectMenuItem.click()
   }
-  await expect.poll(() => page.frames().some((frame) => frame.url().includes('/plugins/vfx_files/') && frame.url().includes(`production_id=${encodeURIComponent(productionId)}`))).toBe(true)
+  await expect.poll(() => page.frames().some((frame) => frame.url().includes('/api/plugins/vfx_files/frontend/') && frame.url().includes(`production_id=${encodeURIComponent(productionId)}`))).toBe(true)
+  let frame = page.frames().find((item) => item.url().includes('/api/plugins/vfx_files/frontend/'))
+  if (selectedTaskId && !frame.url().includes(`task_id=${encodeURIComponent(selectedTaskId)}`)) {
+    await frame.goto(`${origin}/api/plugins/vfx_files/frontend/?production_id=${encodeURIComponent(productionId)}&task_id=${encodeURIComponent(selectedTaskId)}`)
+  }
   const overview = await readOverview(page, productionId)
   expect(overview.production_id).toBe(productionId)
-  const frame = page.frames().find((item) => item.url().includes('/plugins/vfx_files/'))
+  frame = page.frames().find((item) => item.url().includes('/api/plugins/vfx_files/frontend/'))
   await expect(frame.getByRole('heading', { name: 'Files', level: 1, exact: true })).toBeVisible()
 }
 
@@ -54,7 +60,7 @@ async function openFiles(browser, role) {
   await expect(production).toBeVisible()
   await production.click()
   await openFilesFromProductionMenu(page, productionId)
-  return { context, page, get ui() { return page.frames().find((frame) => frame.url().includes('/plugins/vfx_files/')) } }
+  return { context, page, get ui() { return page.frames().find((frame) => frame.url().includes('/api/plugins/vfx_files/frontend/')) } }
 }
 
 async function readOverview(page, productionId) {
@@ -64,74 +70,24 @@ async function readOverview(page, productionId) {
 }
 
 function runWorker() {
+  if (!composeProject || !composeFile || !composeEnvFile) {
+    throw new Error('Disposable Worker Compose identity is required for this integration test.')
+  }
   const output = execFileSync('docker', [
-    'exec',
-    '-e', 'SECRET_KEY=vfx-files-isolated-test-secret-key-32-bytes-minimum',
-    '-e', 'PLUGIN_FOLDER=/opt/zou/plugins',
-    '-e', 'PYTHONPATH=/opt/zou/plugins',
-    '-e', 'VFX_FILES_ENABLED=true',
-    '-e', 'VFX_FILES_WORKER_ENABLED=true',
-    '-e', 'VFX_FILES_STORAGE_MODE=fake',
-    '-e', `VFX_FILES_STAGING_ROOT=${process.env.VFX_FILES_LIVE_STAGING_ROOT}`,
-    '-e', `VFX_FILES_FAKE_STORAGE_ROOT=${process.env.VFX_FILES_LIVE_FAKE_STORAGE_PATH}`,
-    '-e', 'VFX_FILES_FAKE_ROOT_ID=synthetic-root-id',
-    '-e', 'VFX_FILES_FAKE_DRIVE_ID=synthetic-drive-id',
-    host,
+    'compose', '--project-name', composeProject, '--env-file', composeEnvFile, '--file', composeFile,
+    '--profile', 'worker', 'run', '--rm', '--no-deps', 'worker',
     '/opt/zou/env/bin/python', '-m', 'vfx_files.worker_runtime', '--once'
-  ], { encoding: 'utf8', timeout: 30_000 })
+  ], { encoding: 'utf8', timeout: 90_000 })
   expect(output).toContain('"result": "completed"')
 }
 
-function runPollWorker() {
-  const result = spawnSync('docker', [
-    'exec',
-    '-e', 'SECRET_KEY=vfx-files-isolated-test-secret-key-32-bytes-minimum',
-    '-e', 'PLUGIN_FOLDER=/opt/zou/plugins',
-    '-e', 'PYTHONPATH=/opt/zou/plugins',
-    '-e', 'VFX_FILES_ENABLED=true',
-    '-e', 'VFX_FILES_WORKER_ENABLED=true',
-    '-e', 'VFX_FILES_STORAGE_MODE=fake',
-    '-e', `VFX_FILES_STAGING_ROOT=${process.env.VFX_FILES_LIVE_STAGING_ROOT}`,
-    '-e', `VFX_FILES_FAKE_STORAGE_ROOT=${process.env.VFX_FILES_LIVE_FAKE_STORAGE_PATH}`,
-    '-e', 'VFX_FILES_FAKE_ROOT_ID=synthetic-root-id',
-    '-e', 'VFX_FILES_FAKE_DRIVE_ID=synthetic-drive-id',
-    host,
-    '/usr/bin/timeout', '--signal=TERM', '8s',
-    '/opt/zou/env/bin/python', '-m', 'vfx_files.worker_runtime', '--poll', '--idle-seconds', '0.25'
-  ], { encoding: 'utf8', timeout: 12_000 })
-  expect(result.status).toBe(124)
-  const remaining = execFileSync('docker', [
-    'exec', host, 'sh', '-lc', "ps -eo args | grep '[v]fx_files.worker_runtime' || true"
-  ], { encoding: 'utf8' })
-  expect(remaining.trim()).toBe('')
-}
-
-test('installed Files page provisions folders and carries w001 through Artist B to immutable w002', async ({ browser }) => {
+test('installed Files page uses KitsuSync-managed folders and carries w001 through Artist B to immutable w002', async ({ browser }) => {
   test.skip(missingHostFixture, 'Requires synthetic identities on the pinned disposable Zou host.')
   test.setTimeout(150_000)
   const manager = await openFiles(browser, 'manager')
-  const managerPage = manager.ui
-  await managerPage.getByRole('button', { name: /Folder template setup/ }).click()
-  await managerPage.getByLabel('Google Drive root URL').fill(`https://drive.google.com/drive/folders/synthetic-root-id`)
-  await managerPage.getByRole('button', { name: 'Discover' }).click()
-  await managerPage.getByLabel('Folder template', { exact: true }).selectOption('template-root')
-  await managerPage.getByLabel('Sequence (optional) mapping').selectOption('template-sequence')
-  await managerPage.getByLabel('Shot mapping').selectOption('template-shot')
-  await managerPage.getByLabel('Task mapping').selectOption('template-task')
-  await managerPage.getByRole('button', { name: 'Save disabled configuration' }).click()
-  await expect(managerPage.getByText(/Configuration v\d+ · disabled/)).toBeVisible()
-  await managerPage.getByRole('button', { name: 'Activate provisioning' }).click()
-  await expect(managerPage.getByText(/Configuration v\d+ · active/)).toBeVisible()
-  await managerPage.getByLabel('Provision Task folders').selectOption(taskId)
-  await managerPage.getByRole('button', { name: 'Create or reuse' }).click()
-  await expect(managerPage.getByText(/Folder job queued:/)).toBeVisible()
-  runPollWorker()
-
-  await manager.page.reload()
-  await openFilesFromProductionMenu(manager.page, productionId, { alreadySelected: true })
-  await expect(manager.ui.getByRole('link', { name: 'Open folder' })).toHaveCount(5)
-  const folderLinks = await manager.ui.getByRole('link', { name: 'Open folder' }).evaluateAll((links) => links.map((link) => link.href))
-  expect(folderLinks.every((url) => /^https:\/\/drive\.google\.com\/drive\/folders\/[A-Za-z0-9_-]+$/.test(url))).toBe(true)
+  await openFilesFromProductionMenu(manager.page, productionId, { alreadySelected: true, taskId })
+  await expect(manager.ui.getByRole('link', { name: 'Open folder' })).toHaveCount(0)
+  await expect(manager.ui.getByText(/managed through KitsuSync/)).toBeVisible()
 
   const artistA = await openFiles(browser, 'artist_a')
   await artistA.ui.getByLabel('Choose Task').selectOption(taskId)
@@ -141,8 +97,7 @@ test('installed Files page provisions folders and carries w001 through Artist B 
   await expect(artistA.ui.getByText(/Working w001 reserved\. 1 transfer job\(s\) queued\./)).toBeVisible({ timeout: 15_000 })
   runWorker()
   await artistA.page.reload()
-  await openFilesFromProductionMenu(artistA.page, productionId, { alreadySelected: true })
-  await artistA.ui.getByLabel('Choose Task').selectOption(taskId)
+  await openFilesFromProductionMenu(artistA.page, productionId, { alreadySelected: true, taskId })
   await expect(artistA.ui.getByRole('link', { name: name001, exact: true })).toBeVisible()
   await expect(artistA.ui.locator('.revision-heading')).toContainText('w001')
 
@@ -160,8 +115,7 @@ test('installed Files page provisions folders and carries w001 through Artist B 
   await expect(artistB.ui.getByText(/Working w002 reserved\. 1 transfer job\(s\) queued\./)).toBeVisible({ timeout: 15_000 })
   runWorker()
   await artistB.page.reload()
-  await openFilesFromProductionMenu(artistB.page, productionId, { alreadySelected: true })
-  await artistB.ui.getByLabel('Choose Task').selectOption(taskId)
+  await openFilesFromProductionMenu(artistB.page, productionId, { alreadySelected: true, taskId })
   await expect(artistB.ui.locator('.revision-list').getByText('w001', { exact: true })).toBeVisible()
   await expect(artistB.ui.locator('.revision-list').getByText('w002', { exact: true })).toBeVisible()
   const pointer = artistB.ui.locator('.revision-heading')
@@ -174,14 +128,13 @@ test('installed Files page provisions folders and carries w001 through Artist B 
     expect(await response.body()).toEqual(bytes)
   }
 
-  await artistB.ui.getByLabel('Publish Task').selectOption(taskId)
   await artistB.ui.getByLabel('Completed Working File').selectOption({ label: `w002 · ${name002}` })
   await artistB.ui.getByLabel('Output family').selectOption({ label: 'Synthetic Main' })
   await artistB.ui.getByRole('button', { name: 'Publish Working File' }).click()
   await expect(artistB.ui.getByRole('status').filter({ hasText: /Publish v001 queued/ })).toBeVisible()
   runWorker()
   await artistB.page.reload()
-  await openFilesFromProductionMenu(artistB.page, productionId, { alreadySelected: true })
+  await openFilesFromProductionMenu(artistB.page, productionId, { alreadySelected: true, taskId })
   let overview = await readOverview(artistB.page, productionId)
   const publish = overview.publishes.find((row) => row.task_id === taskId)
   expect(publish).toMatchObject({ state: 'completed', qc_state: 'passed', latest_published: true })
@@ -203,24 +156,23 @@ test('installed Files page provisions folders and carries w001 through Artist B 
   await supervisor.ui.getByRole('button', { name: 'Approve exact Publish' }).click()
   await expect(supervisor.ui.getByRole('button', { name: 'Approved' })).toBeVisible()
   await supervisor.page.reload()
-  await openFilesFromProductionMenu(supervisor.page, productionId, { alreadySelected: true })
+  await openFilesFromProductionMenu(supervisor.page, productionId, { alreadySelected: true, taskId })
   overview = await readOverview(supervisor.page, productionId)
   expect(overview.publishes.find((row) => row.id === publish.id)).toMatchObject({ latest_published: true, latest_approved: true })
 
-  await artistB.ui.getByLabel('Publish Task').selectOption(taskId)
   await expect(artistB.ui.getByLabel('Handoff Publish')).toBeVisible()
   await artistB.ui.getByLabel('Handoff Publish').selectOption(publish.id)
   await artistB.ui.getByLabel('Handoff recipient').selectOption(artistAId)
   await artistB.ui.getByRole('button', { name: 'Create Handoff' }).click()
   await expect(artistB.ui.getByRole('status').filter({ hasText: /Handoff pending/ })).toBeVisible()
   await artistA.page.reload()
-  await openFilesFromProductionMenu(artistA.page, productionId, { alreadySelected: true })
+  await openFilesFromProductionMenu(artistA.page, productionId, { alreadySelected: true, taskId })
   const incomingHandoff = artistA.ui.getByRole('region', { name: 'Awaiting your response' }).getByRole('article').filter({ hasText: publish.id })
   await expect(incomingHandoff).toBeVisible()
   await artistA.ui.getByRole('button', { name: 'Accept' }).click()
   await expect(artistA.ui.getByText('accepted', { exact: true })).toBeVisible()
   await artistA.page.reload()
-  await openFilesFromProductionMenu(artistA.page, productionId, { alreadySelected: true })
+  await openFilesFromProductionMenu(artistA.page, productionId, { alreadySelected: true, taskId })
   overview = await readOverview(artistA.page, productionId)
   expect(overview.handoffs.find((item) => item.publish_id === publish.id)).toMatchObject({ state: 'accepted', recipient_id: artistAId })
 

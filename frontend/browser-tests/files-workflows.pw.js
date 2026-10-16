@@ -106,57 +106,115 @@ test('Needs Fix requires feedback and Accepted persists after the page reloads',
   await expect(page.getByText('Latest Published')).toHaveCount(2)
 })
 
-test('template setup stays disabled until activation and refreshes folder bindings', async ({ page }) => {
-  let config = { configured: false, enabled: false }
-  let bindingsReady = false
-  const tree = { folder_id: 'template-root', name: 'Studio Shared', children: [
-    { folder_id: 'shot-role', name: '{shot}', children: [{ folder_id: 'task-role', name: '{task}', children: [] }] }
-  ] }
+test('Production Files page keeps configuration in KitsuSync and creates a Task-scoped Output Package from a selected Working revision', async ({ page }) => {
+  let submitted = null
+  let deliveryRequest = null
+  let deliveries = []
+  let packages = []
+  let incomingState = 'available'
+  const sourceRevision = '88888888-8888-4888-8888-888888888888'
   await page.route('**/api/plugins/vfx_files/**', async (route) => {
     const request = route.request()
     const url = new URL(request.url())
     if (url.pathname.endsWith('/csrf-token')) return json(route, { csrf_token: 'synthetic-csrf', expires_in: 900 })
-    if (url.pathname.endsWith('/overview')) return json(route, { production_id: productionId, tasks: [{ id: taskId, task_type_id: 'comp', entity_id: 'shot-1' }], upload_ready: false, publishes: [], handoffs: [] })
-    if (url.pathname.endsWith('/shared-template/candidates')) return json(route, { templates: [tree] })
-    if (url.pathname.endsWith('/shared-template') && request.method() === 'GET') return json(route, config)
-    if (url.pathname.endsWith('/shared-template') && request.method() === 'POST') {
-      const payload = JSON.parse(request.postData())
-      expect(payload).toMatchObject({ template_folder_id: 'template-root', role_mappings: { shot: 'shot-role', task: 'task-role' } })
-      config = { configured: true, enabled: false, version: 1, allowed_root_id: 'authorized-root', template_folder_id: 'template-root', template_tree: tree, role_mappings: payload.role_mappings }
-      return json(route, { id: 'config-1', version: 1, enabled: false, template_folder_id: 'template-root' }, 201)
+    if (url.pathname.endsWith('/overview')) return json(route, { production_id: productionId, tasks: [{ id: taskId, name: 'main', task_type_id: 'comp', task_type_name: 'Compositing', entity_id: 'shot-1', entity_name: 'SH010' }], upload_ready: false, publishes: [{ id: 'publish-1', task_id: taskId, version: 3, state: 'completed', qc_state: 'passed', latest_approved: true }], handoffs: [] })
+    if (url.pathname.endsWith(`/tasks/${taskId}/output-package-options`)) return json(route, { task_id: taskId, production_id: productionId, storage_root_id: 'authorized-root', output_types: [{ id: 'output-type-1', name: 'EXR Sequence' }] })
+    if (url.pathname.endsWith(`/tasks/${taskId}/output-packages`)) {
+      if (request.method() === 'POST') {
+        submitted = JSON.parse(request.postData())
+        packages = [{
+          id: 'package-1', task_id: taskId, version: 1, package_type: 'final-exr',
+          state: 'completed', qc_state: 'passed', file_count: 1, manifest_sha256: 'a'.repeat(64),
+          qc_report: null, approved_publish_candidates: [{ id: 'publish-1', version: 3 }],
+          formal_publish: null, latest_working: true, latest_published: false, latest_approved: false
+        }]
+        return json(route, { id: 'package-1', version: 1, state: 'queued' }, 202)
+      }
+      return json(route, packages)
     }
-    if (url.pathname.endsWith('/shared-template/activate')) {
-      config.enabled = JSON.parse(request.postData()).enabled
-      return json(route, { id: 'config-1', version: 1, enabled: config.enabled })
+    if (url.pathname.endsWith('/publication-binding') && request.method() === 'POST') {
+      expect(JSON.parse(request.postData())).toEqual({ publish_id: 'publish-1' })
+      packages = packages.map((item) => ({ ...item, formal_publish: { id: 'publish-1', version: 3, state: 'completed', qc_state: 'passed', approval_active: true }, latest_published: true, latest_approved: true }))
+      return json(route, { id: 'binding-1', package_id: 'package-1', publish_id: 'publish-1', replayed: false }, 201)
     }
-    if (url.pathname.endsWith('/shared-folders') && request.method() === 'POST') return json(route, { job_id: 'job-1', state: 'queued' }, 202)
-    if (url.pathname.endsWith('/shared-folders') && request.method() === 'GET') {
-      const state = bindingsReady ? 'ready' : 'pending'
-      return json(route, { configured: true, enabled: true, folders: [
-        { scope_key: 'shot-1', name: 'sh010', state, url: bindingsReady ? 'https://drive.google.com/drive/folders/folder-1' : null },
-        { scope_key: 'task-1', name: 'comp', state, url: bindingsReady ? 'https://drive.google.com/drive/folders/folder-2' : null }
-      ] })
+    if (url.pathname.endsWith(`/tasks/${taskId}/output-package-deliveries`)) return json(route, { task_id: taskId, deliveries })
+    if (url.pathname.endsWith('/output-packages/package-1/files')) return json(route, { package_id: 'package-1', files: [{ id: 'package-file-1', file_name: 'plate.1001.exr', frame_number: 1001, byte_count: 3, sha256: 'a'.repeat(64), download_url: '/download' }], next_offset: null })
+    if (url.pathname.endsWith('/delivery-targets')) return json(route, { package_id: 'package-1', targets: [
+      { task_id: 'fx-task', task_name: 'fx', task_type_id: 'fx-type', task_type_name: 'FX', department_id: 'fx-dept', department_name: 'Effects' },
+      { task_id: 'layout-task', task_name: 'layout', task_type_id: 'layout-type', task_type_name: 'Layout', department_id: 'layout-dept', department_name: 'Layout' }
+    ] })
+    if (url.pathname.endsWith('/deliveries') && request.method() === 'POST') {
+      deliveryRequest = JSON.parse(request.postData())
+      deliveries = [{
+        id: 'delivery-1', direction: 'outgoing', package_id: 'package-1', package_version: 1,
+        package_type: 'final-exr', recipient_task_id: deliveryRequest.recipient_task_id,
+        recipient_task_type_id: deliveryRequest.recipient_task_type_id,
+        recipient_task_type_name: 'FX', revision: 1, state: 'available', can_respond: false,
+        history: [{ event_type: 'delivered' }]
+      }, {
+        id: 'incoming-delivery-1', direction: 'incoming', package_id: 'package-1', package_version: 1,
+        package_type: 'final-exr', recipient_task_id: taskId, recipient_task_type_id: 'comp',
+        recipient_task_type_name: 'Compositing', revision: 1, state: incomingState, can_respond: incomingState === 'available',
+        history: [{ event_type: incomingState === 'accepted' ? 'accepted' : 'delivered' }]
+      }]
+      return json(route, { id: 'delivery-1', state: 'available', revision: 1 }, 201)
     }
+    if (url.pathname.endsWith('/output-package-deliveries/incoming-delivery-1/respond')) {
+      incomingState = JSON.parse(request.postData()).status
+      deliveries = deliveries.map((item) => item.id === 'incoming-delivery-1' ? {
+        ...item, state: incomingState, can_respond: false, history: [{ event_type: 'delivered' }, { event_type: incomingState }]
+      } : item)
+      return json(route, { id: 'incoming-delivery-1', state: incomingState, revision: 1 })
+    }
+    if (url.pathname.endsWith(`/tasks/${taskId}/working-revisions`)) return json(route, { task_id: taskId, latest_working_id: 'working-2', revisions: [
+      { id: sourceRevision, version_label: 'w001', state: 'completed', created_by: 'artist-a' },
+      { id: 'working-2', version_label: 'w002', state: 'completed', created_by: 'artist-b' }
+    ] })
+    if (url.pathname.endsWith(`/tasks/${taskId}/storage-objects`)) return json(route, { task_id: taskId, parent_id: 'authorized-root', checked_at: '2026-10-14T00:00:00Z', sync_status: 'verified', items: [{ id: 'drive-object-1', name: 'plate.1001.exr', is_folder: false, size: 3, modified_time: null }], next_page_token: null })
     return json(route, { error: 'unexpected test request' }, 500)
   })
 
   await openFiles(page)
-  await page.getByRole('button', { name: /Folder template setup/ }).click()
-  await page.getByLabel('Google Drive root URL').fill('https://drive.google.com/drive/folders/authorized-root')
-  await page.getByRole('button', { name: 'Discover' }).click()
-  await page.getByLabel('Folder template', { exact: true }).selectOption('template-root')
-  await page.getByLabel('Shot mapping').selectOption('shot-role')
-  await page.getByLabel('Task mapping').selectOption('task-role')
-  await page.getByRole('button', { name: 'Save disabled configuration' }).click()
-  await expect(page.getByText('Configuration v1 · disabled')).toBeVisible()
-  await page.getByRole('button', { name: 'Activate provisioning' }).click()
-  await page.getByLabel('Provision Task folders').selectOption(taskId)
-  await page.getByRole('button', { name: 'Create or reuse' }).click()
-  await expect(page.getByText('Folder job queued: job-1')).toBeVisible()
-  await expect(page.getByText('Waiting for worker')).toHaveCount(2)
-  bindingsReady = true
-  await page.getByRole('button', { name: 'Refresh bindings' }).click()
-  await expect(page.getByRole('link', { name: 'Open folder' })).toHaveCount(2)
-  await page.reload()
-  await expect(page.getByRole('link', { name: 'Open folder' })).toHaveCount(2)
+  await expect(page.getByRole('button', { name: /Folder template setup/ })).toHaveCount(0)
+  await expect(page.getByLabel('Output Package Task').locator(`option[value="${taskId}"]`)).toHaveText('SH010 · Compositing · main')
+  await page.getByLabel('Output Package Task').selectOption(taskId)
+  await expect(page.getByLabel('Source Working Revision')).toHaveValue('working-2')
+  await page.getByLabel('Source Working Revision').selectOption(sourceRevision)
+  await page.getByLabel('Package kind').selectOption('final-exr')
+  await page.getByLabel('plate.1001.exr').check()
+  await page.getByLabel('Frame start').fill('1001')
+  await page.getByLabel('Frame end').fill('1001')
+  await page.getByLabel('Frame number plate.1001.exr').fill('1001')
+  await page.getByRole('button', { name: /Register 1 selected file/ }).click()
+  await expect.poll(() => submitted).toMatchObject({
+    output_type_id: 'output-type-1',
+    package_type: 'final-exr',
+    source_working_revision_id: sourceRevision,
+    frame_start: 1001,
+    frame_end: 1001,
+    files: [{ provider_object_id: 'drive-object-1', frame_number: 1001 }]
+  })
+  await expect(page.getByRole('article').filter({ hasText: 'final-exr v001' })).toBeVisible()
+  await expect(page.getByRole('combobox', { name: /Approved Publish for/ })).toHaveValue('publish-1')
+  await page.getByRole('button', { name: 'Confirm Package / Publish match' }).click()
+  await expect(page.getByText(/Formally Published v003/)).toBeVisible()
+  await page.getByRole('button', { name: 'Choose delivery recipient' }).click()
+  const recipientSelect = page.getByRole('combobox', { name: /Delivery recipient for/ })
+  await expect(recipientSelect).toBeVisible()
+  await expect(recipientSelect.locator('option')).toHaveCount(2)
+  await expect(recipientSelect.locator('option').filter({ hasText: 'Effects · FX · fx' })).toHaveCount(1)
+  await recipientSelect.selectOption('fx-task:fx-type')
+  await page.getByRole('button', { name: 'Send immutable package version' }).click()
+  await expect.poll(() => deliveryRequest).toEqual({ recipient_task_id: 'fx-task', recipient_task_type_id: 'fx-type' })
+  await expect(page.getByText('Sent · final-exr v001')).toBeVisible()
+  await expect(page.getByText('FX · available · revision 1')).toBeVisible()
+  const incoming = page.locator('.delivery-row').filter({ hasText: 'Incoming · final-exr v001' })
+  await expect(incoming).toBeVisible()
+  await incoming.getByRole('button', { name: 'View / download delivered files' }).click()
+  await expect(incoming.getByText(/plate\.1001\.exr/)).toBeVisible()
+  await expect(incoming.getByRole('link', { name: 'Download verified file' })).toHaveAttribute(
+    'href', '/api/plugins/vfx_files/output-package-files/package-file-1/download'
+  )
+  await incoming.getByRole('button', { name: 'Accept' }).click()
+  await expect(incoming).toContainText('accepted')
 })
