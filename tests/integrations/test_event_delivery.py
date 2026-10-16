@@ -202,6 +202,190 @@ def test_v1_1_share_uses_signed_homogeneous_batch_and_stable_transport_ack_envel
     assert outbox.finalized == [("delivered", "202", None)]
 
 
+def test_v1_1_multi_recipient_share_is_sent_and_acked_as_one_complete_operation_batch():
+    import copy
+
+    first = _share_event()
+    second = copy.deepcopy(first)
+    second["event_id"] = str(uuid4())
+    second["recipient"]["task_id"] = str(uuid4())
+    second["share"]["share_target_id"] = str(uuid4())
+    second["share"]["idempotency_key"] = f"share-target-{second['share']['share_target_id']}-create-v1"
+    outbox = FakeOutbox(first)
+    claimed = [
+        type("Row", (), {
+            "event_id": event["event_id"], "payload": event,
+            "event_type": "file_share.created", "production_id": event["production_id"],
+            "attempts": 1, "lease_generation": 1,
+        })()
+        for event in (first, second)
+    ]
+    outbox.row.batch_rows = claimed
+    outbox.row.batch_events = [first, second]
+    config = EventDeliveryConfig(
+        endpoint="https://kitsusync.example.invalid/api/integrations/vfx-files/v1/events",
+        key_id="vfx-files-prod-key-01", secret=b"synthetic-event-key-" * 3,
+        contract_version_pin="1.1",
+    )
+    response_results = [
+        {"event_id": event["event_id"], "outcome": "accepted", "code": None}
+        for event in reversed((first, second))
+    ]
+    receiver = FakeReceiver((202, {"contract_version": "1.0", "results": response_results}))
+
+    assert dispatch_one(outbox, receiver, config, worker_id=uuid4()) == "delivered"
+
+    _url, body, headers = receiver.calls[0]
+    assert json.loads(body) == {"contract_version": "1.1", "events": [first, second]}
+    assert headers["Idempotency-Key"] == "vfx-share-batch-" + hashlib.sha256(body).hexdigest()
+    assert outbox.finalized == [("delivered", "202", None), ("delivered", "202", None)]
+
+    retry = FakeOutbox(first)
+    retry.row.batch_rows = claimed
+    retry.row.batch_events = [first, second]
+    duplicate_receiver = FakeReceiver((202, {
+        "contract_version": "1.0",
+        "results": [
+            {"event_id": event["event_id"], "outcome": "duplicate", "code": "duplicate_event"}
+            for event in (first, second)
+        ],
+    }))
+    assert dispatch_one(retry, duplicate_receiver, config, worker_id=uuid4()) == "delivered"
+    assert duplicate_receiver.calls[0][2]["Idempotency-Key"] == headers["Idempotency-Key"]
+
+
+def test_v1_1_share_batch_requires_exact_result_for_each_target():
+    import copy
+
+    first = _share_event()
+    second = copy.deepcopy(first)
+    second["event_id"] = str(uuid4())
+    second["recipient"]["task_id"] = str(uuid4())
+    second["share"]["share_target_id"] = str(uuid4())
+    second["share"]["idempotency_key"] = f"share-target-{second['share']['share_target_id']}-create-v1"
+    outbox = FakeOutbox(first)
+    outbox.row.batch_events = [first, second]
+    outbox.row.batch_rows = [outbox.row]
+    config = EventDeliveryConfig(
+        endpoint="https://kitsusync.example.invalid/api/integrations/vfx-files/v1/events",
+        key_id="vfx-files-prod-key-01", secret=b"synthetic-event-key-" * 3,
+        contract_version_pin="1.1",
+    )
+    receiver = FakeReceiver((202, {
+        "contract_version": "1.0",
+        "results": [{"event_id": first["event_id"], "outcome": "accepted", "code": None}],
+    }))
+    assert dispatch_one(outbox, receiver, config, worker_id=uuid4()) == "retry"
+    assert outbox.finalized[0][0] == "retry"
+
+
+def test_sqlalchemy_outbox_claims_every_share_target_under_one_lease():
+    import copy
+    from datetime import datetime, timedelta, timezone
+
+    from plugin.integrations.event_delivery import SqlAlchemyEventOutbox
+    from plugin.models import KitsuSyncEventOutbox, LinkShareTarget
+
+    first = _share_event()
+    second = copy.deepcopy(first)
+    second["event_id"] = str(uuid4())
+    second["recipient"]["task_id"] = str(uuid4())
+    second["share"]["share_target_id"] = str(uuid4())
+    second["share"]["idempotency_key"] = f"share-target-{second['share']['share_target_id']}-create-v1"
+    production_id = first["production_id"]
+
+    class Row:
+        def __init__(self, payload):
+            self.id = uuid4()
+            self.production_id = uuid4()
+            self.storage_connection_id = uuid4()
+            self.event_id = payload["event_id"]
+            self.event_type = "file_share.created"
+            self.payload = payload
+            self.attempts = 0
+            self.lease_generation = 0
+            self.lease_owner = None
+            self.lease_expires_at = None
+            self.available_at = datetime.now(timezone.utc)
+            self.state = "queued"
+            self.last_response_code = None
+
+    rows = [Row(first), Row(second)]
+    for row in rows:
+        row.production_id = production_id
+        row.storage_connection_id = "synthetic-connection"
+    share_id = uuid4()
+    for event in (first, second):
+        event["share"]["id"] = str(share_id)
+    for row, event in zip(rows, (first, second)):
+        row.payload = event
+    targets = [
+        type("Target", (), {
+            "share_id": share_id, "event_id": row.event_id,
+            "notification_status": "blocked_receiver_version",
+        })()
+        for row in rows
+    ]
+
+    class ScalarRows:
+        def __init__(self, values):
+            self.values = values
+
+        def all(self):
+            return self.values
+
+    class Session:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def execute(self, _statement):
+            return type("Result", (), {"rowcount": 0})()
+
+        def scalar(self, statement):
+            entities = getattr(statement, "column_descriptions", [])
+            if entities and entities[0].get("entity") is KitsuSyncEventOutbox:
+                return rows[0]
+            return datetime.now(timezone.utc)
+
+        def scalars(self, statement):
+            entity = statement.column_descriptions[0].get("entity")
+            return ScalarRows(targets if entity is LinkShareTarget else rows)
+
+        def flush(self):
+            pass
+
+    class Sessions:
+        @staticmethod
+        def begin():
+            return Session()
+
+    claimed = SqlAlchemyEventOutbox(Sessions, contract_version_pin="1.1").claim_next(uuid4())
+
+    assert claimed is not None
+    assert [event["event_id"] for event in claimed.batch_events] == sorted([first["event_id"], second["event_id"]])
+    assert {row.event_id for row in claimed.batch_rows} == {first["event_id"], second["event_id"]}
+    assert all(row.state == "leased" and row.attempts == 1 for row in rows)
+    assert all(target.notification_status == "pending" for target in targets)
+
+    for row in rows:
+        row.state = "queued"
+        row.attempts = 0
+        row.lease_owner = None
+        row.lease_expires_at = None
+    rows[1].state = "leased"
+    rows[1].lease_expires_at = datetime.now(timezone.utc) + timedelta(minutes=2)
+    targets[0].notification_status = "blocked_receiver_version"
+    targets[1].notification_status = "blocked_receiver_version"
+
+    assert SqlAlchemyEventOutbox(Sessions, contract_version_pin="1.1").claim_next(uuid4()) is None
+    assert rows[0].state == "queued" and rows[0].attempts == 0
+    assert rows[1].state == "leased" and rows[1].attempts == 0
+    assert all(target.notification_status == "blocked_receiver_version" for target in targets)
+
+
 def test_event_delivery_pin_defaults_to_1_0_and_rejects_unknown_versions():
     from plugin.integrations.event_delivery import EventDeliveryConfig
 
