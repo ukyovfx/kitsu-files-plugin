@@ -263,6 +263,81 @@ def test_native_oauth_return_is_selected_from_server_allowlist_and_bound_to_inte
         assert stored.return_surface == "kitsu_plugin"
 
 
+def test_native_kitsu_authorization_requires_manager_role_and_same_origin_csrf(oauth_db, monkeypatch):
+    from types import SimpleNamespace
+
+    from flask_jwt_extended import JWTManager, create_access_token
+
+    from plugin import resources
+    from plugin.authz import ResolvedScope, issue_csrf_token
+
+    sessions, models, _keyring, extensions = oauth_db
+    app = Flask(__name__)
+    app.config.update(
+        TESTING=True,
+        SECRET_KEY="synthetic-kitsu-secret",
+        JWT_SECRET_KEY="synthetic-jwt-secret-with-more-than-32-bytes",
+        JWT_TOKEN_LOCATION=["headers"],
+        VFX_FILES_KITSU_ORIGIN="https://kitsu.example.test",
+        **SETTINGS,
+    )
+    JWTManager(app)
+    app.extensions.update(extensions)
+    app.extensions["sqlalchemy"] = SimpleNamespace(engine=sessions.kw["bind"])
+    role = ["manager"]
+    monkeypatch.setattr(resources, "_assert_compatible", lambda: None)
+    monkeypatch.setattr(resources, "current_actor_role", lambda _production_id: role[0])
+    monkeypatch.setattr(
+        resources,
+        "_resolve_scope",
+        lambda _actor, _production_id: ResolvedScope(PRODUCTION, None, None),
+    )
+    app.add_url_rule(
+        "/api/plugins/vfx_files/productions/<production_id>/drive/authorizations",
+        view_func=resources.NativeDriveAuthorization.as_view("native_drive_authorization"),
+        methods=["POST"],
+    )
+    with app.app_context():
+        token = create_access_token(identity=str(ACTOR))
+    client = app.test_client()
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Origin": "https://kitsu.example.test",
+        "X-VFX-Files-CSRF": issue_csrf_token("synthetic-kitsu-secret", ACTOR),
+        "Idempotency-Key": "native-kitsu-drive-intent-001",
+    }
+    path = f"/api/plugins/vfx_files/productions/{PRODUCTION}/drive/authorizations"
+    response = client.post(
+        path,
+        json={"contract_version": "1.0", "account_mode": "my_drive"},
+        headers=headers,
+        base_url="https://kitsu.example.test",
+    )
+    assert response.status_code == 201
+    assert "authorization_url" in response.json
+    assert "synthetic-client-secret" not in response.get_data(as_text=True)
+    with sessions() as session:
+        intent = session.get(models.DriveAuthorizationIntent, UUID(response.json["authorization_id"]))
+        assert intent.actor_id == ACTOR
+        assert intent.return_surface == "kitsu_plugin"
+
+    role[0] = "user"
+    denied = client.post(
+        path,
+        json={"contract_version": "1.0", "account_mode": "my_drive"},
+        headers={**headers, "Idempotency-Key": "native-kitsu-drive-intent-002"},
+        base_url="https://kitsu.example.test",
+    )
+    assert denied.status_code == 403
+    bad_origin = client.post(
+        path,
+        json={"contract_version": "1.0", "account_mode": "my_drive"},
+        headers={**headers, "Origin": "https://attacker.example.test", "Idempotency-Key": "native-kitsu-drive-intent-003"},
+        base_url="https://kitsu.example.test",
+    )
+    assert bad_origin.status_code == 403
+
+
 def test_callback_query_rejects_duplicates_conflicting_results_and_unknown_parameters():
     from werkzeug.datastructures import MultiDict
     from plugin.integrations.oauth import OAuthOperationError, validate_google_callback_query

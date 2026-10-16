@@ -746,6 +746,54 @@ class Health(MethodView):
         return {"status": "ok", "enabled": enabled in (True, "true", "1", 1), "zou_version": zou_version, "schema_epoch": SCHEMA_EPOCH}
 
 
+class NativeDriveAuthorization(MethodView):
+    """Start a Plugin-owned OAuth intent from an authorized Kitsu Production session."""
+
+    @jwt_required()
+    def post(self, production_id):
+        _assert_compatible()
+        try:
+            actor = _request_actor(production_id)
+            scope = _resolve_scope(actor, production_id)
+            authorize(actor, Capability.PROVISION, scope)
+            _require_mutation_origin()
+        except NotFound:
+            abort(404)
+        except PermissionDenied:
+            abort(403)
+
+        if request.mimetype != "application/json" or request.content_length is None or request.content_length > 16 * 1024:
+            abort(400)
+        payload = request.get_json(silent=True)
+        if not isinstance(payload, dict) or set(payload) != {"contract_version", "account_mode"}:
+            abort(400)
+        from sqlalchemy.orm import sessionmaker
+
+        from .integrations.oauth import OAuthOperationError, start_authorization
+
+        database = current_app.extensions["sqlalchemy"]
+        sessions = sessionmaker(bind=database.engine, expire_on_commit=False)
+        native_payload = {
+            "contract_version": payload.get("contract_version"),
+            "production_id": str(scope.production_id),
+            "account_mode": payload.get("account_mode"),
+            "return_surface": "kitsu_plugin",
+        }
+        try:
+            with sessions() as session:
+                response, status = start_authorization(
+                    session,
+                    payload=native_payload,
+                    actor_id=actor.actor_id,
+                    idempotency_key=request.headers.get("Idempotency-Key"),
+                    settings=current_app.config,
+                    extensions=current_app.extensions,
+                )
+        except OAuthOperationError as exc:
+            return {"code": exc.code}, exc.status
+        return response, status
+
+
 class ProductionOverview(MethodView):
     @jwt_required()
     def get(self):
@@ -1897,6 +1945,7 @@ from .integrations.http import (  # noqa: E402 - route declarations stay after l
 
 
 routes = [
+    ("/productions/<production_id>/drive/authorizations", NativeDriveAuthorization),
     ("/integrations/v1/drive-connections/authorizations", DriveAuthorizationResource),
     ("/integrations/v1/drive-connections", DriveConnectionsResource),
     ("/integrations/v1/drive-connections/<connection_id>", DriveConnectionStatusResource),
