@@ -1,6 +1,5 @@
-from pathlib import Path
 import re
-
+from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 MIGRATION = ROOT / "plugin/migrations/versions/0001_plugin_foundation.py"
@@ -14,6 +13,7 @@ KITSUSYNC_IDEMPOTENCY_MIGRATION = ROOT / "plugin/migrations/versions/0011_kitsus
 KITSUSYNC_SYNC_MIGRATION = ROOT / "plugin/migrations/versions/0012_kitsusync_hierarchy_sync.py"
 DRIVE_OAUTH_MIGRATION = ROOT / "plugin/migrations/versions/0013_encrypted_drive_oauth.py"
 EVENT_OUTBOX_BINDING_MIGRATION = ROOT / "plugin/migrations/versions/0014_event_outbox_connection_binding.py"
+PRODUCTION_DRIVE_AUTHORITY_MIGRATION = ROOT / "plugin/migrations/versions/0015_production_drive_authority.py"
 
 
 def test_plugin_tables_are_namespaced_and_nullable_folder_identity_is_avoided():
@@ -206,3 +206,16 @@ def test_event_outbox_binding_migration_is_additive_and_preserves_bound_rows():
     assert '"event_activation_epoch"' in source
     assert "restore a consistent snapshot instead of downgrading" in source
     assert "Output Package event eligibility is immutable" in source
+
+
+def test_production_drive_authority_migration_preserves_legacy_rows_and_marks_import_required():
+    source = PRODUCTION_DRIVE_AUTHORITY_MIGRATION.read_text()
+    assert 'revision = "vxf_0015"' in source
+    assert 'down_revision = "vxf_0014"' in source
+    assert 'op.create_table(\n        "plugin_vfx_files_production_drive_authority"' in source
+    assert "INSERT INTO plugin_vfx_files_production_drive_authority" in source
+    assert "'legacy_kitsusync', 'legacy_import_required'" in source
+    assert "NULL, NULL, false" in source
+    assert "DELETE FROM plugin_vfx_files_kitsusync_desired_config" not in source
+    assert "schema_epoch = 14" in source and "schema_epoch = 13" in source
+    assert "Plugin-owned Drive authority exists" in source

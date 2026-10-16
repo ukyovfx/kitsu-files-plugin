@@ -60,6 +60,8 @@ def _legacy_rows(*, connection_match=True, template_match=True, credential_state
             description = statement.column_descriptions[0]
             entity = description["entity"]
             name = getattr(entity, "__name__", "")
+            if name == "ProductionDriveAuthority":
+                return None
             if name == "KitsuSyncDesiredConfiguration":
                 return legacy
             if name == "StorageConnection":

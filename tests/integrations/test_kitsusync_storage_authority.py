@@ -26,6 +26,8 @@ def _rows(*, desired=True, connection=True, selected=True, root="root-01", owner
     class Session:
         def scalar(self, statement):
             model = statement.column_descriptions[0]["entity"]
+            if model.__name__ == "ProductionDriveAuthority":
+                return None
             return desired_row if model.__name__ == "KitsuSyncDesiredConfiguration" else connection_row
 
     return production_id, connection_row, Session()

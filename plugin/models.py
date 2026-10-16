@@ -440,6 +440,31 @@ class KitsuSyncDesiredConfiguration(db.Model):
     updated_at = db.Column(DateTime(timezone=True), nullable=False, server_default=func.now())
 
 
+class ProductionDriveAuthority(db.Model):
+    """Explicit per-Production Drive owner and activation fence.
+
+    Legacy KitsuSync rows remain preserved and marked for reviewed import;
+    they are never silently promoted to Plugin ownership.
+    """
+    __tablename__ = "plugin_vfx_files_production_drive_authority"
+    production_id = db.Column(UUIDType(binary=False), primary_key=True)
+    owner = db.Column(String(32), nullable=False)
+    state = db.Column(String(32), nullable=False)
+    config_revision = db.Column(Integer, nullable=False, default=0)
+    activation_epoch = db.Column(Integer, nullable=False, default=0)
+    connection_id = db.Column(UUIDType(binary=False), ForeignKey("plugin_vfx_files_storage_connection.id"))
+    root_id = db.Column(String(255))
+    activation_enabled = db.Column(Boolean, nullable=False, default=False)
+    updated_by = db.Column(UUIDType(binary=False))
+    updated_at = db.Column(DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now())
+    __table_args__ = (
+        db.CheckConstraint("owner IN ('plugin','legacy_kitsusync')", name="plugin_vfx_files_drive_authority_owner_ck"),
+        db.CheckConstraint("state IN ('unconfigured','configured','legacy_import_required')", name="plugin_vfx_files_drive_authority_state_ck"),
+        db.CheckConstraint("config_revision >= 0 AND activation_epoch >= 0", name="plugin_vfx_files_drive_authority_revision_epoch_ck"),
+        db.CheckConstraint("(state = 'configured' AND owner = 'plugin' AND connection_id IS NOT NULL AND root_id IS NOT NULL) OR (state = 'unconfigured' AND owner = 'plugin' AND connection_id IS NULL AND root_id IS NULL AND activation_enabled = false) OR (state = 'legacy_import_required' AND owner = 'legacy_kitsusync' AND connection_id IS NULL AND root_id IS NULL AND activation_enabled = false)", name="plugin_vfx_files_drive_authority_state_owner_ck"),
+    )
+
+
 class KitsuSyncManagementIdempotency(db.Model):
     """Durable replay result for authenticated management mutations."""
     __tablename__ = "plugin_vfx_files_kitsusync_management_idempotency"
