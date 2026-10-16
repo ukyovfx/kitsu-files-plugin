@@ -1503,6 +1503,10 @@ class TaskSharedFolders(MethodView):
             actor = _request_actor(production_id)
             scope = _resolve_scope(actor, str(production_id), str(task_id))
             authorize(actor, Capability.READ, scope)
+            from .compat import authorize_task_read
+
+            if not authorize_task_read(actor, scope.task_id):
+                abort(403)
         except (PermissionDenied, NotFound):
             abort(403)
         from .models import FolderBinding, KitsuSyncDesiredConfiguration, SharedTemplateConfiguration
@@ -1540,6 +1544,9 @@ class TaskSharedFolders(MethodView):
             enabled = bool(((desired.desired_config or {}).get("activation") or {}).get("enabled"))
             current_app.extensions["sqlalchemy"].session.remove()
             adapter = _storage_adapter(connection)
+            from .storage.google_drive import GoogleDriveStorageAdapter
+
+            provider_mode = "google_drive" if isinstance(adapter, GoogleDriveStorageAdapter) else "synthetic"
             folders = []
             for binding in sorted(bindings, key=lambda row: row["scope_key"]):
                 state = binding["state"]
@@ -1560,7 +1567,8 @@ class TaskSharedFolders(MethodView):
                         else:
                             adapter.assert_parent_within_root(provider_object.parent_id)
                             folder_name = provider_object.name or folder_name
-                            url = f"https://drive.google.com/drive/folders/{provider_folder_id}"
+                            if provider_mode == "google_drive":
+                                url = f"https://drive.google.com/drive/folders/{provider_folder_id}"
                     except Exception:
                         state = "inaccessible"
                 folders.append({
@@ -1574,6 +1582,7 @@ class TaskSharedFolders(MethodView):
                 "configured": True,
                 "managed_by_kitsusync": True,
                 "enabled": enabled,
+                "provider_mode": provider_mode,
                 "folders": folders,
             }
 

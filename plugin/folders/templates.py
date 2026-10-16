@@ -98,6 +98,8 @@ def normalize_role_mappings(tree: TemplateFolder, values: object) -> dict[str, s
             raise ValueError("Template role mapping must reference folders in the selected template")
         mappings[role] = ids[0] if len(ids) == 1 else ids
     entity_roles = [role for role in ("shot", "asset") if role in mappings]
+    if len(entity_roles) > 1:
+        raise ValueError("Template must map either a Shot role or an Asset role, not both")
     task_ids = _mapping_ids(mappings.get("task"))
     if not entity_roles or not task_ids:
         raise ValueError("A Shot or Asset role and a Task role are required before provisioning can be activated")

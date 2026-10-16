@@ -119,6 +119,9 @@ def test_materialized_tree_supports_mixed_asset_and_shot_branches_with_optional_
         ("SQ01", "production:prod:sequence:sequence-id"),
         ("SH010", "production:prod:shot:shot-id"),
     ]
+    root_scope = "production:prod:root"
+    assert [item.parent_scope_key for item in shot_plan[:3]] == [root_scope] * 3
+    assert shot_plan[3].parent_scope_key == shot_plan[2].scope_key
     assert all("episode:episode-id" not in item.scope_key for item in shot_plan)
     assert ("Hero", "production:prod:asset:asset-id") in [(item.display_name, item.scope_key) for item in asset_plan]
     assert ("model", "production:prod:task:asset-task") in [(item.display_name, item.scope_key) for item in asset_plan]

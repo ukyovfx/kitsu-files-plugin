@@ -80,12 +80,13 @@ def test_kitsusync_managed_task_folders_are_read_from_verified_selected_bindings
     response = client.get(f"/plugins/vfx_files/productions/{production_id}/tasks/{task_id}/shared-folders")
     assert response.status_code == 200, response.get_data(as_text=True)
     assert response.json["managed_by_kitsusync"] is True
+    assert response.json["provider_mode"] == "synthetic"
     assert response.json["folders"] == [{
         "scope_key": f"production:{production_id}:task:{task_id}",
         "name": "main",
         "state": "ready",
-        "provider_folder_id": "task-folder",
-        "url": "https://drive.google.com/drive/folders/task-folder",
+        "provider_folder_id": None,
+        "url": None,
     }]
 
 

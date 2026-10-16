@@ -249,7 +249,9 @@ def provision_task_folders(
         task_name=task_name,
     )
     store = PostgresFolderStore(session_factory)
-    parent_provider_id = production_root_id
+    root_scope = f"production:{production_id}:root"
+    provider_ids_by_scope = {root_scope: production_root_id}
+    last_provider_id = production_root_id
     for planned in plan:
         # Re-read the feature fence immediately before each external folder
         # mutation. Updates and deactivation take effect without waiting for the
@@ -266,6 +268,9 @@ def provision_task_folders(
                 raise FolderProvisioningError("Template or storage configuration changed while provisioning")
         if before_external is not None and not before_external():
             raise FolderProvisioningError("Sync authorization, activation or lease fence changed")
+        parent_provider_id = provider_ids_by_scope.get(planned.parent_scope_key)
+        if parent_provider_id is None:
+            raise FolderProvisioningError("Folder plan refers to an unresolved parent scope")
         result = provision_folder(
             job_adapter,
             store,
@@ -278,5 +283,6 @@ def provision_task_folders(
         )
         if result.state != "ready" or result.provider_folder_id is None:
             raise FolderProvisioningError("Provider folder creation needs reconciliation")
-        parent_provider_id = result.provider_folder_id
-    return parent_provider_id
+        provider_ids_by_scope[planned.scope_key] = result.provider_folder_id
+        last_provider_id = result.provider_folder_id
+    return last_provider_id

@@ -758,10 +758,74 @@ def test_installed_http_snapshot_preview_apply_worker_and_recovery(
     expected_folder_ids = {binding.provider_folder_id for binding in bindings}
     assert len(expected_folder_ids) == 11
     assert expected_folder_ids.issubset(materialized.objects)
+    static_root_bindings = [
+        binding for binding in bindings
+        if binding.canonical_scope_key.startswith(f"production:{production_id}:root:template:")
+    ]
+    assert len(static_root_bindings) == 5
+    assert all(materialized.objects[binding.provider_folder_id].parent_id == "synthetic-root-id" for binding in static_root_bindings)
     assert {materialized.objects[folder_id].name for folder_id in expected_folder_ids} == {
         "00_Production", "01_Shared_Assets", "02_Shots", "03_Editorial", "04_Delivery",
         shot.name, task.name, "Working", "Publish", "Shared Outputs", "Final Delivery",
     }
+
+    # Read the actual completed bindings through the Task-scoped Kitsu API.
+    # Synthetic provider IDs must never be presented as drive.google.com URLs.
+    folder_url = f"/plugins/vfx_files/productions/{production_id}/tasks/{task_id}/shared-folders"
+    folder_response = client.get(folder_url)
+    assert folder_response.status_code == 200
+    assert folder_response.json["managed_by_kitsusync"] is True
+    assert folder_response.json["provider_mode"] == "synthetic"
+    assert len(folder_response.json["folders"]) == 5
+    assert all(
+        folder["state"] == "ready"
+        and folder["provider_folder_id"] is None
+        and folder["url"] is None
+        for folder in folder_response.json["folders"]
+    )
+    assert {folder["name"] for folder in folder_response.json["folders"]} == {
+        task.name, "Working", "Publish", "Shared Outputs", "Final Delivery",
+    }
+    assert client.get(
+        f"/plugins/vfx_files/productions/{wrong_production_id}/tasks/{task_id}/shared-folders"
+    ).status_code == 403
+
+    # Both a current Task assignee and a current Supervisor assignment can
+    # read the same persisted folder bindings; an unassigned project member
+    # cannot infer Task access from Production membership alone.
+    from zou.app.models.person import Person
+    from zou.app.models.project import ProjectPersonLink
+    from zou.app.models.task import TaskPersonLink
+    from zou.app.services.persons_service import create_access_token_for_raw_person
+
+    def client_for_role(role, *, assigned):
+        with app.app_context():
+            with zou_db_factory.begin() as session:
+                person = Person(
+                    first_name="Synthetic",
+                    last_name=f"Folder{role.title()}{uuid4().hex[:8]}",
+                    email=f"folder-{role}-{uuid4().hex}@example.invalid",
+                    role="user",
+                    active=True,
+                )
+                session.add(person)
+                session.flush()
+                session.add(ProjectPersonLink(project_id=production_id, person_id=person.id, role=role))
+                if assigned:
+                    session.add(TaskPersonLink(task_id=task_id, person_id=person.id))
+                person_id = person.id
+            person = Person.query.filter_by(id=person_id).one()
+            token = create_access_token_for_raw_person(person)
+            actor_client = app.test_client()
+            actor_client.set_cookie(app.config.get("JWT_ACCESS_COOKIE_NAME", "access_token_cookie"), token)
+            return actor_client
+
+    artist_folders = client_for_role("user", assigned=True).get(folder_url)
+    supervisor_folders = client_for_role("supervisor", assigned=True).get(folder_url)
+    unassigned_folders = client_for_role("user", assigned=False).get(folder_url)
+    assert artist_folders.status_code == supervisor_folders.status_code == 200
+    assert artist_folders.json["folders"] == supervisor_folders.json["folders"]
+    assert unassigned_folders.status_code == 403
 
     # Restarting the separate worker process reads the persisted queue and
     # bindings; it must not create duplicate provider folders.
