@@ -23,7 +23,7 @@ Origin: https://kitsu.example.invalid
 }
 ```
 
-No URL, provider token, ACL instruction, filename-based identity, destination Drive ID, or copy/move operation is accepted from the browser. The server resolves the object ID through the configured KitsuSync-owned connection/root, proves object type and root ancestry, reads bounded metadata, and verifies the source Task and each recipient Task against current Zou Production relationships and actor authorization. KitsuSync alone owns current route disclosure consent and checks it at Inbox intake and actual Discord dispatch; a producer claim is never consent evidence. If any requested target is invalid, the operation's atomicity policy must be explicit; recommendation: validate all targets before persisting any target, then create the operation/targets transactionally. Provider verification failure creates no link notification.
+No URL, provider token, ACL instruction, filename-based identity, destination Drive ID, or copy/move operation is accepted from the browser. The Files Plugin resolves the object ID through its own configured Drive connection/root, proves object type and root ancestry, reads bounded metadata, and verifies the source Task and each recipient Task against current Zou Production relationships and actor authorization. The Files Plugin is the sole Production Drive configuration authority. KitsuSync alone owns current route disclosure consent and checks it at Inbox intake and actual Discord dispatch; a producer claim is never consent evidence. If any requested target is invalid, the operation's atomicity policy must be explicit; recommendation: validate all targets before persisting any target, then create the operation/targets transactionally. Provider verification failure creates no link notification.
 
 ## Plugin response (proposed)
 
@@ -40,19 +40,19 @@ Content-Type: application/json
       "share_target_id": "b5c6c31d-f5f0-4ad7-8894-6d4c925cc832",
       "recipient_task_id": "f23f6273-4a56-4db8-9bdd-c3837fcbe3e4",
       "status": "created",
-      "notification_status": "pending_capability"
+      "notification_status": "blocked_receiver_version"
     },
     {
       "share_target_id": "536272e4-2bd2-416b-b1e3-7ff47e51c982",
       "recipient_task_id": "775f3501-dc26-435d-a1d2-1d9f8e37b0aa",
       "status": "created",
-      "notification_status": "pending_capability"
+      "notification_status": "blocked_receiver_version"
     }
   ]
 }
 ```
 
-`blocked_receiver_version` means the share record exists but no notification is sent because an operator has not configured and verified the exact receiver contract pin. Sending is default-off and fails closed when the pin is absent, not `1.1`, or does not match the verified deployed receiver. The current KitsuSync PR #239/#240 heads support only `1.0` and do not accept `file_share.created`. If KitsuSync route disclosure consent is absent or revoked, use `blocked_disclosure`. If provider access/root verification fails, reject the request (403/409/422 according to the established Plugin API error contract) and persist a sanitized audit finding where appropriate. Replaying the same Idempotency-Key with the same canonical request returns the same IDs and no duplicate event; a different request under that key returns 409.
+`notification_status` uses the contract state vocabulary: `blocked_receiver_version`, `blocked_disclosure`, `pending`, `inbox_accepted`, `quarantined`, or `delivered`. The examples use `blocked_receiver_version` because the current KitsuSync PR #239/#240 heads support only `1.0` and do not accept `file_share.created`. This state means the share record exists but no notification is sent because an operator has not configured and verified the exact receiver contract pin. Sending is default-off and fails closed when the pin is absent, not `1.1`, or does not match the verified deployed receiver. If KitsuSync route disclosure consent is absent or revoked, use `blocked_disclosure`. `inbox_accepted` means durable receiver Inbox intake only; it does not mean Discord delivery. Use `delivered` only when a durable receiver journal result confirms delivery. If provider access/root verification fails, reject the request (403/409/422 according to the established Plugin API error contract) and persist a sanitized audit finding where appropriate. Replaying the same Idempotency-Key with the same canonical request returns the same IDs and no duplicate event; a different request under that key returns 409.
 
 ## Receiver version pin (operator configuration; proposal only)
 
