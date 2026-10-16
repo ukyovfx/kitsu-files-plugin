@@ -468,6 +468,24 @@ class ProductionDriveAuthority(db.Model):
     )
 
 
+class ProductionDriveAuthorityEvent(db.Model):
+    """Immutable, secret-free record of explicit Drive ownership changes."""
+    __tablename__ = "plugin_vfx_files_production_drive_authority_event"
+    id = db.Column(UUIDType(binary=False), primary_key=True, default=uuid4)
+    production_id = db.Column(UUIDType(binary=False), nullable=False)
+    actor_id = db.Column(UUIDType(binary=False), nullable=False)
+    event_type = db.Column(String(64), nullable=False)
+    source_revision = db.Column(BigInteger, nullable=False)
+    config_revision = db.Column(BigInteger, nullable=False)
+    activation_epoch = db.Column(BigInteger, nullable=False)
+    idempotency_key = db.Column(String(128), nullable=False)
+    created_at = db.Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    __table_args__ = (
+        UniqueConstraint("production_id", "idempotency_key", name="plugin_vfx_files_drive_authority_event_idem_uc"),
+        Index("plugin_vfx_files_drive_authority_event_production_ix", "production_id", "created_at"),
+    )
+
+
 class KitsuSyncManagementIdempotency(db.Model):
     """Durable replay result for authenticated management mutations."""
     __tablename__ = "plugin_vfx_files_kitsusync_management_idempotency"

@@ -185,6 +185,7 @@ def import_legacy_configuration(
         DriveCredential,
         KitsuSyncDesiredConfiguration,
         ProductionDriveAuthority,
+        ProductionDriveAuthorityEvent,
         SharedTemplateConfiguration,
         StorageConnection,
     )
@@ -295,6 +296,15 @@ def import_legacy_configuration(
         template.enabled = False
         template.version = new_revision
         template.updated_by = actor_id
+        session.add(ProductionDriveAuthorityEvent(
+            production_id=production_id,
+            actor_id=actor_id,
+            event_type="legacy_configuration_imported",
+            source_revision=expected_revision,
+            config_revision=new_revision,
+            activation_epoch=new_epoch,
+            idempotency_key=idempotency_key,
+        ))
         session.flush()
 
         body = production_drive_authority_status(session, production_id)

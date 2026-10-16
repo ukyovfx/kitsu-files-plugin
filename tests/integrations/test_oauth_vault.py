@@ -29,7 +29,7 @@ SETTINGS = {
 @pytest.fixture
 def oauth_db(monkeypatch, tmp_path):
     pytest.importorskip("sqlalchemy")
-    from sqlalchemy import Boolean, DateTime, Integer, JSON, LargeBinary, String, Uuid, UniqueConstraint, create_engine
+    from sqlalchemy import BigInteger, Boolean, DateTime, Integer, JSON, LargeBinary, String, Uuid, UniqueConstraint, create_engine
     from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 
     class Base(DeclarativeBase):
@@ -102,6 +102,19 @@ def oauth_db(monkeypatch, tmp_path):
         activation_enabled: Mapped[bool] = mapped_column(Boolean)
         updated_by: Mapped[UUID | None] = mapped_column(Uuid, nullable=True)
 
+    class ProductionDriveAuthorityEvent(Base):
+        __tablename__ = "drive_authority_event"
+        id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+        production_id: Mapped[UUID] = mapped_column(Uuid)
+        actor_id: Mapped[UUID] = mapped_column(Uuid)
+        event_type: Mapped[str] = mapped_column(String)
+        source_revision: Mapped[int] = mapped_column(BigInteger)
+        config_revision: Mapped[int] = mapped_column(BigInteger)
+        activation_epoch: Mapped[int] = mapped_column(BigInteger)
+        idempotency_key: Mapped[str] = mapped_column(String)
+        created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+        __table_args__ = (UniqueConstraint("production_id", "idempotency_key"),)
+
     class SharedTemplateConfiguration(Base):
         __tablename__ = "shared_template_configuration"
         production_id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
@@ -151,7 +164,7 @@ def oauth_db(monkeypatch, tmp_path):
     models = ModuleType("plugin.models")
     for model in (
         StorageConnection, DriveCredential, DriveAuthorizationIntent, KitsuSyncDesiredConfiguration,
-        ProductionDriveAuthority, SharedTemplateConfiguration,
+        ProductionDriveAuthority, ProductionDriveAuthorityEvent, SharedTemplateConfiguration,
         Job, KitsuSyncManagementIdempotency, KitsuSyncHierarchySnapshot, KitsuSyncHierarchySnapshotPage,
     ):
         setattr(models, model.__name__, model)
@@ -663,10 +676,17 @@ def test_legacy_import_requires_verified_root_and_explicit_revisioned_confirmati
         template = session.scalar(select(SharedTemplateConfiguration).where(
             SharedTemplateConfiguration.production_id == PRODUCTION,
         ))
+        audit = session.scalar(select(models.ProductionDriveAuthorityEvent).where(
+            models.ProductionDriveAuthorityEvent.production_id == PRODUCTION,
+        ))
         assert authority.desired_config["activation"]["enabled"] is False
         assert legacy.desired_config == legacy_config
         assert template.template_tree == original_tree and template.role_mappings == {"task": ["existing-task-role"]}
         assert template.enabled is False
+        assert audit is not None
+        assert audit.actor_id == ACTOR and audit.event_type == "legacy_configuration_imported"
+        assert (audit.source_revision, audit.config_revision, audit.activation_epoch) == (7, 8, 5)
+        assert audit.idempotency_key == "legacy-import-confirm-0001"
 
     with sessions() as session:
         replay, replay_status, replay_etag = import_legacy_configuration(
