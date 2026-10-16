@@ -66,13 +66,14 @@ class DriveCredential(db.Model):
 
 
 class DriveAuthorizationIntent(db.Model):
-    """Single-use OAuth handoff bound to KitsuSync actor and Production."""
+    """Single-use OAuth handoff bound to actor, Production and return surface."""
     __tablename__ = "plugin_vfx_files_drive_authorization_intent"
     id = db.Column(UUIDType(binary=False), primary_key=True, default=uuid4)
     production_id = db.Column(UUIDType(binary=False), nullable=False, index=True)
     actor_id = db.Column(UUIDType(binary=False), nullable=False)
     connection_id = db.Column(UUIDType(binary=False), ForeignKey("plugin_vfx_files_storage_connection.id"), nullable=False)
     account_mode = db.Column(String(24), nullable=False)
+    return_surface = db.Column(String(24), nullable=False, default="kitsusync")
     state_sha256 = db.Column(String(64), nullable=False, unique=True)
     key_id = db.Column(String(64), nullable=False)
     verifier_nonce = db.Column(db.LargeBinary(12), nullable=False)
@@ -88,6 +89,7 @@ class DriveAuthorizationIntent(db.Model):
     __table_args__ = (
         UniqueConstraint("production_id", "idempotency_key", name="plugin_vfx_files_drive_auth_idem_uc"),
         db.CheckConstraint("account_mode IN ('my_drive','shared_drive')", name="plugin_vfx_files_drive_auth_mode_ck"),
+        db.CheckConstraint("return_surface IN ('kitsusync','kitsu_plugin')", name="plugin_vfx_files_drive_auth_return_surface_ck"),
         db.CheckConstraint("status IN ('pending','processing','connected','failed','expired')", name="plugin_vfx_files_drive_auth_state_ck"),
         Index("plugin_vfx_files_drive_auth_expiry_ix", "expires_at"),
     )

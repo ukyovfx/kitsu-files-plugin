@@ -454,7 +454,7 @@ class GoogleOAuthCallbackResource(MethodView):
         from sqlalchemy.orm import sessionmaker
         from zou.app import db
         from ..models import DriveAuthorizationIntent
-        from .oauth import OAuthOperationError, _oauth_settings, complete_authorization, validate_google_callback_query
+        from .oauth import OAuthOperationError, _oauth_return_uri, complete_authorization, validate_google_callback_query
         from ..storage.worker_factory import RequestsDriveTransport
         import hashlib
 
@@ -462,6 +462,7 @@ class GoogleOAuthCallbackResource(MethodView):
         code = None
         oauth_error = None
         authorization_id = None
+        return_surface = "kitsusync"
         try:
             state, code, oauth_error = validate_google_callback_query(request.args)
             if isinstance(state, str) and 32 <= len(state) <= 256:
@@ -469,6 +470,8 @@ class GoogleOAuthCallbackResource(MethodView):
                     DriveAuthorizationIntent.state_sha256 == hashlib.sha256(state.encode("utf-8")).hexdigest(),
                 ))
                 authorization_id = str(row.id) if row is not None else None
+                if row is not None:
+                    return_surface = getattr(row, "return_surface", None) or "kitsusync"
             if authorization_id is None:
                 raise OAuthOperationError(400, "authorization_invalid")
             database = current_app.extensions["sqlalchemy"]
@@ -481,7 +484,7 @@ class GoogleOAuthCallbackResource(MethodView):
             )
         except OAuthOperationError as exc:
             try:
-                _client, _secret, _callback, return_uri = _oauth_settings(current_app.config)
+                return_uri = _oauth_return_uri(current_app.config, return_surface)
                 from urllib.parse import urlencode
                 location = return_uri + ("&" if "?" in return_uri else "?") + urlencode({
                     "authorization_id": authorization_id or "", "status": "failed", "error": exc.code,

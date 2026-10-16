@@ -14,6 +14,7 @@ KITSUSYNC_SYNC_MIGRATION = ROOT / "plugin/migrations/versions/0012_kitsusync_hie
 DRIVE_OAUTH_MIGRATION = ROOT / "plugin/migrations/versions/0013_encrypted_drive_oauth.py"
 EVENT_OUTBOX_BINDING_MIGRATION = ROOT / "plugin/migrations/versions/0014_event_outbox_connection_binding.py"
 PRODUCTION_DRIVE_AUTHORITY_MIGRATION = ROOT / "plugin/migrations/versions/0015_production_drive_authority.py"
+OAUTH_RETURN_SURFACE_MIGRATION = ROOT / "plugin/migrations/versions/0016_oauth_return_surface.py"
 
 
 def test_plugin_tables_are_namespaced_and_nullable_folder_identity_is_avoided():
@@ -219,3 +220,13 @@ def test_production_drive_authority_migration_preserves_legacy_rows_and_marks_im
     assert "DELETE FROM plugin_vfx_files_kitsusync_desired_config" not in source
     assert "schema_epoch = 14" in source and "schema_epoch = 13" in source
     assert "Plugin-owned Drive authority exists" in source
+
+
+def test_oauth_return_surface_migration_preserves_pending_legacy_callbacks():
+    source = OAUTH_RETURN_SURFACE_MIGRATION.read_text()
+    assert 'revision = "vxf_0016"' in source
+    assert 'down_revision = "vxf_0015"' in source
+    assert 'server_default="kitsusync"' in source
+    assert "return_surface IN ('kitsusync','kitsu_plugin')" in source
+    assert "schema_epoch = 15" in source and "schema_epoch = 14" in source
+    assert "Native OAuth return intents exist" in source

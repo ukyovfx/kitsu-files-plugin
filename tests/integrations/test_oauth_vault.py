@@ -22,6 +22,7 @@ SETTINGS = {
     "VFX_FILES_GOOGLE_CLIENT_SECRET": "synthetic-client-secret",
     "VFX_FILES_GOOGLE_OAUTH_REDIRECT_URI": "https://files.example.test/api/plugins/vfx_files/oauth/google/callback",
     "VFX_FILES_KITSUSYNC_RETURN_URI": "https://sync.example.test/admin/vfx-files/authorization-return",
+    "VFX_FILES_KITSU_PLUGIN_RETURN_URI": "https://kitsu.example.test/api/plugins/vfx_files/frontend/",
 }
 
 
@@ -67,6 +68,7 @@ def oauth_db(monkeypatch, tmp_path):
         actor_id: Mapped[UUID] = mapped_column(Uuid)
         connection_id: Mapped[UUID] = mapped_column(Uuid)
         account_mode: Mapped[str] = mapped_column(String)
+        return_surface: Mapped[str] = mapped_column(String, default="kitsusync")
         state_sha256: Mapped[str] = mapped_column(String, unique=True)
         key_id: Mapped[str] = mapped_column(String)
         verifier_nonce: Mapped[bytes] = mapped_column(LargeBinary)
@@ -185,15 +187,17 @@ class OAuthTransport:
         raise AssertionError("Unexpected provider endpoint")
 
 
-def _intent(session_factory, extensions, *, mode="my_drive", connection_id=None, key="oauth-idempotency-key-01", actor=ACTOR):
+def _intent(session_factory, extensions, *, mode="my_drive", connection_id=None, key="oauth-idempotency-key-01", actor=ACTOR, return_surface="kitsusync", settings=SETTINGS):
     from plugin.integrations.oauth import start_authorization
     body = {"contract_version": "1.0", "production_id": str(PRODUCTION), "account_mode": mode}
     if connection_id is not None:
         body["connection_id"] = str(connection_id)
+    if return_surface != "kitsusync":
+        body["return_surface"] = return_surface
     with session_factory() as session:
         return start_authorization(
             session, payload=body, actor_id=actor, idempotency_key=key,
-            settings=SETTINGS, extensions=extensions,
+            settings=settings, extensions=extensions,
         )
 
 
@@ -234,6 +238,29 @@ def test_oauth_intent_is_pkce_bound_durable_idempotent_and_secret_free(oauth_db)
         assert b"synthetic-client-secret" not in intent.response_ciphertext
     replay, replay_status = _intent(sessions, extensions)
     assert replay == first and replay_status == 201
+
+
+def test_native_oauth_return_is_selected_from_server_allowlist_and_bound_to_intent(oauth_db):
+    sessions, models, _keyring, extensions = oauth_db
+    from plugin.integrations.oauth import complete_authorization
+
+    settings = {key: value for key, value in SETTINGS.items() if key != "VFX_FILES_KITSUSYNC_RETURN_URI"}
+    intent, status = _intent(
+        sessions, extensions, key="native-oauth-idempotency-01",
+        return_surface="kitsu_plugin", settings=settings,
+    )
+    assert status == 201
+    state, _params = _state_from_response(intent)
+    result = complete_authorization(
+        sessions, state=state, code="synthetic-code", oauth_error=None,
+        settings=settings, extensions=extensions, transport=OAuthTransport(),
+    )
+    assert result.startswith(settings["VFX_FILES_KITSU_PLUGIN_RETURN_URI"])
+    assert "authorization_id=" in result and "status=connected" in result
+    assert "code=" not in result and "token" not in result
+    with sessions() as session:
+        stored = session.get(models.DriveAuthorizationIntent, UUID(intent["authorization_id"]))
+        assert stored.return_surface == "kitsu_plugin"
 
 
 def test_callback_query_rejects_duplicates_conflicting_results_and_unknown_parameters():

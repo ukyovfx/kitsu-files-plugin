@@ -175,10 +175,28 @@ def _oauth_settings(settings):
     client_id = _setting(settings, "VFX_FILES_GOOGLE_CLIENT_ID")
     client_secret = _setting(settings, "VFX_FILES_GOOGLE_CLIENT_SECRET")
     callback = _fixed_https_uri(_setting(settings, "VFX_FILES_GOOGLE_OAUTH_REDIRECT_URI"), exact_path="/api/plugins/vfx_files/oauth/google/callback")
-    return_uri = _fixed_https_uri(_setting(settings, "VFX_FILES_KITSUSYNC_RETURN_URI"))
     if not all(isinstance(value, str) and value and len(value) <= 2048 for value in (client_id, client_secret)):
         raise OAuthOperationError(503, "oauth_not_configured")
-    return client_id, client_secret, callback, return_uri
+    return_uris = {}
+    for surface, setting in (
+        ("kitsusync", "VFX_FILES_KITSUSYNC_RETURN_URI"),
+        ("kitsu_plugin", "VFX_FILES_KITSU_PLUGIN_RETURN_URI"),
+    ):
+        value = _setting(settings, setting)
+        if value:
+            return_uris[surface] = _fixed_https_uri(value)
+    if not return_uris:
+        raise OAuthOperationError(503, "oauth_not_configured")
+    return client_id, client_secret, callback, return_uris
+
+
+def _oauth_return_uri(settings, surface):
+    if surface not in {"kitsusync", "kitsu_plugin"}:
+        raise OAuthOperationError(400, "authorization_invalid")
+    return_uri = _oauth_settings(settings)[3].get(surface)
+    if return_uri is None:
+        raise OAuthOperationError(503, "oauth_not_configured")
+    return return_uri
 
 
 def _keyring(settings, app_extensions):
@@ -202,9 +220,12 @@ def start_authorization(session, *, payload, actor_id, idempotency_key, settings
     from sqlalchemy import select
     from ..models import DriveAuthorizationIntent, DriveCredential, StorageConnection
 
-    if not isinstance(payload, dict) or set(payload) - {"contract_version", "production_id", "account_mode", "connection_id"}:
+    if not isinstance(payload, dict) or set(payload) - {"contract_version", "production_id", "account_mode", "connection_id", "return_surface"}:
         raise OAuthOperationError(400, "invalid_event")
     if payload.get("contract_version") != "1.0" or payload.get("account_mode") not in {"my_drive", "shared_drive"}:
+        raise OAuthOperationError(400, "invalid_event")
+    return_surface = payload.get("return_surface", "kitsusync")
+    if return_surface not in {"kitsusync", "kitsu_plugin"}:
         raise OAuthOperationError(400, "invalid_event")
     try:
         production_id = UUID(payload["production_id"])
@@ -217,10 +238,11 @@ def start_authorization(session, *, payload, actor_id, idempotency_key, settings
         raise OAuthOperationError(400, "invalid_event") from None
     if not isinstance(idempotency_key, str) or not 16 <= len(idempotency_key) <= 128:
         raise OAuthOperationError(400, "invalid_event")
-    client_id, _client_secret, callback, _return_uri = _oauth_settings(settings)
+    client_id, _client_secret, callback, _return_uris = _oauth_settings(settings)
+    _oauth_return_uri(settings, return_surface)
     keyring = _keyring(settings, extensions)
     current = datetime.now(timezone.utc) if now is None else now
-    request = {"production_id": str(production_id), "account_mode": payload["account_mode"], "connection_id": str(connection_id) if connection_id else None}
+    request = {"production_id": str(production_id), "account_mode": payload["account_mode"], "connection_id": str(connection_id) if connection_id else None, "return_surface": return_surface}
     request_sha256 = hashlib.sha256(_json_bytes(request)).hexdigest()
     try:
         with session.begin():
@@ -283,6 +305,7 @@ def start_authorization(session, *, payload, actor_id, idempotency_key, settings
             session.add(DriveAuthorizationIntent(
                 id=authorization_id, production_id=production_id, actor_id=actor_id,
                 connection_id=connection_id, account_mode=payload["account_mode"],
+                return_surface=return_surface,
                 state_sha256=hashlib.sha256(state.encode("ascii")).hexdigest(),
                 key_id=key_id, verifier_nonce=verifier_nonce, verifier_ciphertext=verifier_ciphertext,
                 response_nonce=response_nonce, response_ciphertext=response_ciphertext,
@@ -492,6 +515,7 @@ def complete_authorization(session_factory, *, state, code, oauth_error, setting
             intent.consumed_at = current
             production_id, connection_id = intent.production_id, intent.connection_id
             account_mode, actor_id, auth_id = intent.account_mode, intent.actor_id, intent.id
+            return_surface = getattr(intent, "return_surface", "kitsusync") or "kitsusync"
             key_id, nonce, ciphertext = intent.key_id, intent.verifier_nonce, intent.verifier_ciphertext
     if expired:
         raise OAuthOperationError(410, "authorization_expired")
@@ -500,7 +524,8 @@ def complete_authorization(session_factory, *, state, code, oauth_error, setting
     keyring = _keyring(settings, extensions)
     verifier = keyring.decrypt(key_id, nonce, ciphertext, _aad("authorization-verifier", production_id, connection_id, actor_id))["verifier"]
     try:
-        client_id, client_secret, callback, return_uri = _oauth_settings(settings)
+        client_id, client_secret, callback, _return_uris = _oauth_settings(settings)
+        return_uri = _oauth_return_uri(settings, return_surface)
         if oauth_error:
             raise OAuthOperationError(400, "authorization_denied")
         if not isinstance(code, str) or not 1 <= len(code) <= 4096:
