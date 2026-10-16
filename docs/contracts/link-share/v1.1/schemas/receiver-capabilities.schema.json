@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://example.invalid/vfx-files/contracts/1.1/receiver-capabilities.schema.json",
+  "$id": "urn:ukyovfx:vfx-files:contracts:1.1:receiver-capabilities",
   "title": "Draft receiver capabilities 1.1 response",
   "description": "Proposal only. Must be authenticated, fresh, and bound to the intended Production before use.",
   "type": "object",

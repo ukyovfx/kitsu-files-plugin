@@ -1,17 +1,21 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://example.invalid/vfx-files/contracts/1.1/event-batch.schema.json",
+  "$id": "urn:ukyovfx:vfx-files:contracts:1.1:event-batch",
   "title": "Draft VFX Files event batch 1.1",
   "description": "Proposal shape reuses the existing events array and HMAC endpoint. Confirm any existing required envelope fields before adoption.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["events"],
+  "required": [
+    "events"
+  ],
   "properties": {
     "events": {
       "type": "array",
       "minItems": 1,
       "maxItems": 100,
-      "items": {"$ref": "file_share.created.schema.json"}
+      "items": {
+        "$ref": "urn:ukyovfx:vfx-files:contracts:1.1:file-share-created"
+      }
     }
   }
 }

@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://example.invalid/vfx-files/contracts/1.1/file_share.created.schema.json",
+  "$id": "urn:ukyovfx:vfx-files:contracts:1.1:file-share-created",
   "title": "Draft VFX Files file_share.created event contract 1.1",
   "description": "Unadopted proposal. Strict per-recipient link-only Drive share event; never a file_delivery event.",
   "type": "object",
