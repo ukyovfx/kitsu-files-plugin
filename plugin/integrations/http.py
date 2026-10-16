@@ -733,6 +733,21 @@ class DeactivationResource(MethodView):
             return _respond(deactivate)
 
 
+class ProductionDriveAuthorityStatusResource(MethodView):
+    @service_scope("vfx.config.read")
+    def get(self, production_id, service_identity=None):
+        from .storage_authority import production_drive_authority_status
+
+        try:
+            parsed = UUID(str(production_id))
+            if str(parsed) != str(production_id):
+                return _error("invalid_event", 400)
+        except (TypeError, ValueError, AttributeError):
+            return _error("invalid_event", 400)
+        with _integration_session_factory()() as session:
+            return jsonify(production_drive_authority_status(session, parsed))
+
+
 class SyncPreviewResource(MethodView):
     @service_scope("vfx.sync.preview")
     def post(self, production_id, service_identity=None):

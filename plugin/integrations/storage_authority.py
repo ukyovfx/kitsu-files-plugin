@@ -103,3 +103,83 @@ def is_selected_storage_connection(session_factory, production_id, connection_id
     with session_factory() as session:
         connection = selected_storage_connection(session, production_id)
         return connection is not None and connection.id == connection_id
+
+
+def production_drive_authority_status(session, production_id):
+    """Build a credential-free status response for the KitsuSync consumer."""
+    from ..models import (
+        DriveCredential,
+        KitsuSyncDesiredConfiguration,
+        ProductionDriveAuthority,
+        StorageConnection,
+    )
+
+    authority = session.scalar(select(ProductionDriveAuthority).where(
+        ProductionDriveAuthority.production_id == production_id,
+    ))
+    if authority is None:
+        legacy = session.scalar(select(KitsuSyncDesiredConfiguration).where(
+            KitsuSyncDesiredConfiguration.production_id == production_id,
+        ))
+        return {
+            "contract_version": "1.0",
+            "production_id": str(production_id),
+            "owner": "legacy_kitsusync" if legacy is not None else "plugin",
+            "state": "legacy_import_required" if legacy is not None else "unconfigured",
+            "config_revision": 0,
+            "activation_epoch": 0,
+            "connection_id": None,
+            "root_id": None,
+            "account_mode": None,
+            "credential_state": "unknown",
+            "activation_enabled": False,
+        }
+
+    status = {
+        "contract_version": "1.0",
+        "production_id": str(production_id),
+        "owner": authority.owner,
+        "state": authority.state,
+        "config_revision": authority.config_revision,
+        "activation_epoch": authority.activation_epoch,
+        "connection_id": None,
+        "root_id": None,
+        "account_mode": None,
+        "credential_state": "unknown",
+        "activation_enabled": bool(authority.activation_enabled),
+    }
+    if authority.owner != "plugin" or authority.state != "configured":
+        status["activation_enabled"] = False
+        return status
+
+    try:
+        connection_id = UUID(str(authority.connection_id))
+    except (TypeError, ValueError, AttributeError):
+        status["state"] = "blocked"
+        status["activation_enabled"] = False
+        return status
+    connection = session.scalar(select(StorageConnection).where(
+        StorageConnection.id == connection_id,
+        StorageConnection.production_id == production_id,
+    ))
+    if (
+        connection is None or not connection.enabled
+        or connection.allowed_root_id != authority.root_id
+        or connection.provider != "google_drive"
+    ):
+        status["state"] = "blocked"
+        status["activation_enabled"] = False
+        return status
+    credential = session.scalar(select(DriveCredential).where(
+        DriveCredential.connection_id == connection_id,
+        DriveCredential.production_id == production_id,
+    ))
+    status.update({
+        "connection_id": str(connection.id),
+        "root_id": connection.allowed_root_id,
+        "account_mode": connection.account_mode,
+        "credential_state": credential.state if credential is not None else "missing",
+    })
+    if credential is None or credential.state != "active":
+        status["activation_enabled"] = False
+    return status
