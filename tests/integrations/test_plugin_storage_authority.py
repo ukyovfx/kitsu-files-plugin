@@ -203,7 +203,10 @@ def test_plugin_authority_status_is_sanitized_and_reports_legacy_gate():
         owner_subject="must-not-be-returned",
         drive_id=None,
     )
-    credential = SimpleNamespace(state="active")
+    credential = SimpleNamespace(
+        state="active", account_subject="must-not-be-returned",
+        owner_subject="must-not-be-returned", drive_id=None,
+    )
 
     class Session:
         def scalar(self, statement):

@@ -42,13 +42,37 @@ export function createFilesApi(client) {
       return readJson(await client.request('GET', `${ROOT}/productions/${encodeURIComponent(productionId)}/drive/status`))
     },
 
+    async listDriveConnections(productionId) {
+      if (!productionId) throw new TypeError('A Production ID is required')
+      return readJson(await client.request('GET', `${ROOT}/productions/${encodeURIComponent(productionId)}/drive/connections`))
+    },
+
+    async listDriveRootCandidates(productionId, connectionId) {
+      if (!productionId || !connectionId) throw new TypeError('A Production and Drive connection are required')
+      return readJson(await client.request('GET', `${ROOT}/productions/${encodeURIComponent(productionId)}/drive/connections/${encodeURIComponent(connectionId)}/roots`))
+    },
+
     async createDriveAuthorization(productionId, accountMode, idempotencyKey) {
-      if (!productionId || !['my_drive', 'shared_drive'].includes(accountMode) || !idempotencyKey) {
+      if (!productionId || accountMode !== 'my_drive' || !idempotencyKey) {
         throw new TypeError('A Production, Drive account mode and idempotency key are required')
       }
       return readJson(await mutation('POST', `${ROOT}/productions/${encodeURIComponent(productionId)}/drive/authorizations`, {
         headers: { 'Content-Type': 'application/json', 'Idempotency-Key': idempotencyKey },
         body: JSON.stringify({ contract_version: '1.0', account_mode: accountMode })
+      }))
+    },
+
+    async selectDriveRoot(productionId, connectionId, rootId, configRevision, idempotencyKey) {
+      if (!productionId || !connectionId || !rootId || !Number.isInteger(configRevision) || configRevision < 0 || !idempotencyKey) {
+        throw new TypeError('A Production, connection, root, revision and idempotency key are required')
+      }
+      return readJson(await mutation('POST', `${ROOT}/productions/${encodeURIComponent(productionId)}/drive/connections/${encodeURIComponent(connectionId)}/roots`, {
+        headers: {
+          'Content-Type': 'application/json',
+          'Idempotency-Key': idempotencyKey,
+          'If-Match': `"${configRevision}"`
+        },
+        body: JSON.stringify({ contract_version: '1.0', root_id: rootId })
       }))
     },
 

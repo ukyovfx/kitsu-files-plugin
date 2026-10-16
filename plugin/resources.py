@@ -765,7 +765,10 @@ class NativeDriveAuthorization(MethodView):
         if request.mimetype != "application/json" or request.content_length is None or request.content_length > 16 * 1024:
             abort(400)
         payload = request.get_json(silent=True)
-        if not isinstance(payload, dict) or set(payload) != {"contract_version", "account_mode"}:
+        if (
+            not isinstance(payload, dict) or set(payload) != {"contract_version", "account_mode"}
+            or payload.get("account_mode") != "my_drive"
+        ):
             abort(400)
         from sqlalchemy.orm import sessionmaker
 
@@ -799,6 +802,165 @@ class NativeDriveAuthorization(MethodView):
         except OAuthOperationError as exc:
             return {"code": exc.code}, exc.status
         return response, status
+
+
+class NativeDriveConnections(MethodView):
+    """Expose this Production's credential-free Plugin OAuth connections."""
+
+    @jwt_required()
+    def get(self, production_id):
+        _assert_compatible()
+        try:
+            actor = _request_actor(production_id)
+            scope = _resolve_scope(actor, production_id)
+            authorize(actor, Capability.PROVISION, scope)
+        except NotFound:
+            abort(404)
+        except PermissionDenied:
+            abort(403)
+
+        from .integrations.oauth import connection_status
+        from .models import DriveAuthorizationIntent, DriveCredential, StorageConnection
+
+        rows = StorageConnection.query.filter_by(production_id=scope.production_id).order_by(StorageConnection.id).all()
+        native_ids = {
+            row.connection_id for row in DriveAuthorizationIntent.query.filter_by(
+                production_id=scope.production_id, return_surface="kitsu_plugin", status="connected",
+            ).all()
+        }
+        return {"contract_version": "1.0", "connections": [
+            connection_status(row, DriveCredential.query.filter_by(connection_id=row.id).one_or_none())
+            for row in rows if row.id in native_ids
+        ]}
+
+
+class NativeDriveRoots(MethodView):
+    """List and verify only currently app-visible My Drive root candidates."""
+
+    @jwt_required()
+    def get(self, production_id, connection_id):
+        _assert_compatible()
+        try:
+            actor = _request_actor(production_id)
+            scope = _resolve_scope(actor, production_id)
+            authorize(actor, Capability.PROVISION, scope)
+            connection_uuid = UUID(str(connection_id))
+        except (NotFound, ValueError, TypeError):
+            abort(404)
+        except PermissionDenied:
+            abort(403)
+
+        from .integrations.native_storage import list_native_root_candidates
+        from .models import DriveAuthorizationIntent, DriveCredential, StorageConnection
+
+        connection = StorageConnection.query.filter_by(
+            id=connection_uuid, production_id=scope.production_id,
+        ).one_or_none()
+        credential = DriveCredential.query.filter_by(connection_id=connection_uuid).one_or_none()
+        if connection is None:
+            abort(404)
+        if DriveAuthorizationIntent.query.filter_by(
+            production_id=scope.production_id, connection_id=connection_uuid,
+            return_surface="kitsu_plugin", status="connected",
+        ).one_or_none() is None:
+            abort(404)
+        if credential is None or credential.state != "active":
+            abort(409, description="connection_not_ready")
+        if connection.account_mode != "my_drive":
+            abort(409, description="shared_drive_selection_unavailable")
+        try:
+            adapter = _storage_adapter(connection, allow_unconfigured=True)
+            return list_native_root_candidates(connection, adapter)
+        except Exception as error:
+            from .integrations.configuration import ConfigurationError
+            from .storage.base import PermissionFailure
+
+            if isinstance(error, ConfigurationError):
+                return {"code": error.code}, error.status
+            if isinstance(error, PermissionFailure):
+                return {"code": "drive_permission_denied"}, 403
+            return {"code": "provider_unavailable"}, 503
+
+    @jwt_required()
+    def post(self, production_id, connection_id):
+        _assert_compatible()
+        try:
+            _require_mutation_origin()
+            actor = _request_actor(production_id)
+            scope = _resolve_scope(actor, production_id)
+            authorize(actor, Capability.PROVISION, scope)
+            connection_uuid = UUID(str(connection_id))
+            payload = request.get_json(silent=False)
+        except (NotFound, ValueError, TypeError):
+            abort(404)
+        except PermissionDenied:
+            abort(403)
+
+        from .integrations.configuration import ConfigurationError
+        from .integrations.native_storage import (
+            list_native_root_candidates,
+            native_root_receipt,
+            select_native_root,
+        )
+        from .models import DriveAuthorizationIntent, DriveCredential, StorageConnection
+        from .storage.base import PermissionFailure
+        from sqlalchemy.orm import sessionmaker
+
+        connection = StorageConnection.query.filter_by(
+            id=connection_uuid, production_id=scope.production_id,
+        ).one_or_none()
+        credential = DriveCredential.query.filter_by(connection_id=connection_uuid).one_or_none()
+        if connection is None:
+            abort(404)
+        if DriveAuthorizationIntent.query.filter_by(
+            production_id=scope.production_id, connection_id=connection_uuid,
+            return_surface="kitsu_plugin", status="connected",
+        ).one_or_none() is None:
+            abort(404)
+        if credential is None or credential.state != "active":
+            return {"code": "connection_not_ready"}, 409
+        if connection.account_mode != "my_drive":
+            return {"code": "shared_drive_selection_unavailable"}, 409
+        try:
+            database = current_app.extensions["sqlalchemy"]
+            sessions = sessionmaker(bind=database.engine, expire_on_commit=False)
+            with sessions() as session:
+                receipt = native_root_receipt(
+                    session, production_id=scope.production_id, actor_id=actor.actor_id,
+                    payload=payload, idempotency_key=request.headers.get("Idempotency-Key"),
+                    if_match=request.headers.get("If-Match"),
+                )
+            if receipt is not None:
+                body, status, etag = receipt
+                response = current_app.response_class(
+                    current_app.json.dumps(body), status=status, mimetype="application/json",
+                )
+                response.headers["ETag"] = etag
+                return response
+            adapter = _storage_adapter(connection, allow_unconfigured=True)
+            candidates = list_native_root_candidates(connection, adapter)["roots"]
+            root_id = payload.get("root_id") if isinstance(payload, dict) else None
+            if not any(candidate["id"] == root_id for candidate in candidates):
+                return {"code": "root_unverified"}, 403
+            capabilities = adapter.verify_root_candidate(root_id)
+            with sessions() as session:
+                body, status, etag = select_native_root(
+                    session, production_id=scope.production_id, actor_id=actor.actor_id,
+                    connection_id=connection_uuid, payload=payload,
+                    idempotency_key=request.headers.get("Idempotency-Key"),
+                    if_match=request.headers.get("If-Match"), capabilities=capabilities,
+                )
+            response = current_app.response_class(
+                current_app.json.dumps(body), status=status, mimetype="application/json",
+            )
+            response.headers["ETag"] = etag
+            return response
+        except ConfigurationError as error:
+            return {"code": error.code}, error.status
+        except PermissionFailure:
+            return {"code": "drive_permission_denied"}, 403
+        except Exception:
+            return {"code": "provider_unavailable"}, 503
 
 
 class NativeDriveStatus(MethodView):
@@ -1978,6 +2140,8 @@ from .integrations.http import (  # noqa: E402 - route declarations stay after l
 
 
 routes = [
+    ("/productions/<production_id>/drive/connections", NativeDriveConnections),
+    ("/productions/<production_id>/drive/connections/<connection_id>/roots", NativeDriveRoots),
     ("/productions/<production_id>/drive/status", NativeDriveStatus),
     ("/productions/<production_id>/drive/authorizations", NativeDriveAuthorization),
     ("/integrations/v1/drive-connections/authorizations", DriveAuthorizationResource),

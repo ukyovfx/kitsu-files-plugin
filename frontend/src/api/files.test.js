@@ -38,6 +38,27 @@ describe('Files API', () => {
     expect(options.headers['Idempotency-Key']).toBe('native-drive:prod/a:one')
     expect(JSON.parse(options.body)).toEqual({ contract_version: '1.0', account_mode: 'my_drive' })
     await expect(api.createDriveAuthorization('prod/a', 'drive', 'key')).rejects.toThrow('account mode')
+    await expect(api.createDriveAuthorization('prod/a', 'shared_drive', 'key')).rejects.toThrow('account mode')
+  })
+
+  it('lists Plugin-owned Drive candidates and verifies root selection with revision fencing', async () => {
+    const client = { request: vi.fn()
+      .mockResolvedValueOnce(response({ connections: [{ id: 'conn-1', state: 'connected' }] }))
+      .mockResolvedValueOnce(response({ roots: [{ id: 'root-1', name: 'App authorized root' }] }))
+      .mockResolvedValueOnce(response({ csrf_token: 'drive-csrf' }))
+      .mockResolvedValueOnce(response({ owner: 'plugin', config_revision: 1, root_id: 'root-1' })) }
+    const api = createFilesApi(client)
+    await expect(api.listDriveConnections('prod-1')).resolves.toMatchObject({ connections: [{ id: 'conn-1' }] })
+    await expect(api.listDriveRootCandidates('prod-1', 'conn-1')).resolves.toMatchObject({ roots: [{ id: 'root-1' }] })
+    await api.selectDriveRoot('prod-1', 'conn-1', 'root-1', 0, 'native-root-selection-0001')
+    const [method, path, options] = client.request.mock.calls[3]
+    expect(method).toBe('POST')
+    expect(path).toBe('plugins/vfx_files/productions/prod-1/drive/connections/conn-1/roots')
+    expect(options.csrfToken).toBe('drive-csrf')
+    expect(options.headers['If-Match']).toBe('"0"')
+    expect(options.headers['Idempotency-Key']).toBe('native-root-selection-0001')
+    expect(JSON.parse(options.body)).toEqual({ contract_version: '1.0', root_id: 'root-1' })
+    await expect(api.selectDriveRoot('prod-1', 'conn-1', 'root-1', -1, 'key')).rejects.toThrow('revision')
   })
 
   it('fetches a CSRF token and submits an idempotent handoff response', async () => {

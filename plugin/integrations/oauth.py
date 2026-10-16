@@ -218,7 +218,13 @@ def _advisory_lock(session, key):
 
 def start_authorization(session, *, payload, actor_id, idempotency_key, settings, extensions, now=None):
     from sqlalchemy import select
-    from ..models import DriveAuthorizationIntent, DriveCredential, StorageConnection
+    from ..models import (
+        DriveAuthorizationIntent,
+        DriveCredential,
+        KitsuSyncDesiredConfiguration,
+        ProductionDriveAuthority,
+        StorageConnection,
+    )
 
     if not isinstance(payload, dict) or set(payload) - {"contract_version", "production_id", "account_mode", "connection_id", "return_surface"}:
         raise OAuthOperationError(400, "invalid_event")
@@ -247,6 +253,37 @@ def start_authorization(session, *, payload, actor_id, idempotency_key, settings
     try:
         with session.begin():
             _advisory_lock(session, f"vfx-files-oauth:{production_id}:{idempotency_key}")
+            authority = session.scalar(select(ProductionDriveAuthority).where(
+                ProductionDriveAuthority.production_id == production_id,
+            ).with_for_update())
+            if return_surface == "kitsu_plugin":
+                _advisory_lock(session, f"vfx-files-config:{production_id}")
+                authority = session.scalar(select(ProductionDriveAuthority).where(
+                    ProductionDriveAuthority.production_id == production_id,
+                ).with_for_update())
+                if authority is not None and authority.owner != "plugin":
+                    raise OAuthOperationError(409, "legacy_import_required")
+                if authority is None:
+                    if session.get(KitsuSyncDesiredConfiguration, production_id) is not None:
+                        raise OAuthOperationError(409, "legacy_import_required")
+                    existing_connection_ids = set(session.scalars(select(StorageConnection.id).where(
+                        StorageConnection.production_id == production_id,
+                    )).all())
+                    native_connection_ids = set(session.scalars(select(DriveAuthorizationIntent.connection_id).where(
+                        DriveAuthorizationIntent.production_id == production_id,
+                        DriveAuthorizationIntent.return_surface == "kitsu_plugin",
+                    )).all())
+                    if existing_connection_ids - native_connection_ids:
+                        raise OAuthOperationError(409, "legacy_import_required")
+                    authority = ProductionDriveAuthority(
+                        production_id=production_id, owner="plugin", state="unconfigured",
+                        config_revision=0, activation_epoch=0, connection_id=None,
+                        root_id=None, activation_enabled=False, updated_by=actor_id,
+                    )
+                    session.add(authority)
+                    session.flush()
+            elif authority is not None and authority.owner == "plugin":
+                raise OAuthOperationError(409, "plugin_authority_active")
             existing_intent = session.scalar(select(DriveAuthorizationIntent).where(
                 DriveAuthorizationIntent.production_id == production_id,
                 DriveAuthorizationIntent.idempotency_key == idempotency_key,

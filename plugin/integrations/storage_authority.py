@@ -298,6 +298,27 @@ def production_drive_authority_status(session, production_id):
         "account_mode": connection.account_mode,
         "credential_state": credential.state if credential is not None else "missing",
     })
+    identity_matches = bool(
+        credential is not None
+        and (
+            (
+                connection.account_mode == "my_drive"
+                and connection.owner_subject
+                and credential.account_subject == connection.owner_subject
+                and credential.owner_subject == connection.owner_subject
+            )
+            or (
+                connection.account_mode == "shared_drive"
+                and connection.drive_id
+                and credential.owner_subject is None
+                and credential.drive_id == connection.drive_id
+            )
+        )
+    )
+    if not identity_matches:
+        status["state"] = "blocked"
+        status["activation_enabled"] = False
+        return status
     if (
         credential is None or credential.state != "active"
         or isinstance(authority.activation_epoch, bool)

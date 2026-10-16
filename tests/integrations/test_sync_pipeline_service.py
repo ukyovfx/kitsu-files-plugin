@@ -23,6 +23,17 @@ def sync_db(monkeypatch):
         desired_config: Mapped[dict] = mapped_column(JSON)
         updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
+    class ProductionDriveAuthority(Base):
+        __tablename__ = "production_drive_authority"
+        production_id: Mapped[object] = mapped_column(Uuid, primary_key=True)
+        owner: Mapped[str] = mapped_column(String(32))
+        state: Mapped[str] = mapped_column(String(32))
+        config_revision: Mapped[int] = mapped_column(Integer)
+        activation_epoch: Mapped[int] = mapped_column(Integer)
+        connection_id: Mapped[object | None] = mapped_column(Uuid, nullable=True)
+        root_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+        activation_enabled: Mapped[bool] = mapped_column(Boolean)
+
     class Idempotency(Base):
         __tablename__ = "idempotency"
         id: Mapped[object] = mapped_column(Uuid, primary_key=True, default=uuid4)
@@ -124,6 +135,7 @@ def sync_db(monkeypatch):
     module = ModuleType("plugin.models")
     for name, model in {
         "KitsuSyncDesiredConfiguration": Desired,
+        "ProductionDriveAuthority": ProductionDriveAuthority,
         "KitsuSyncManagementIdempotency": Idempotency,
         "KitsuSyncHierarchySnapshot": Snapshot,
         "KitsuSyncHierarchySnapshotPage": Page,

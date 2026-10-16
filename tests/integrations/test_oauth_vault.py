@@ -97,7 +97,15 @@ def oauth_db(monkeypatch, tmp_path):
         config_revision: Mapped[int] = mapped_column(Integer)
         activation_epoch: Mapped[int] = mapped_column(Integer)
         connection_id: Mapped[UUID | None] = mapped_column(Uuid, nullable=True)
+        root_id: Mapped[str | None] = mapped_column(String, nullable=True)
         activation_enabled: Mapped[bool] = mapped_column(Boolean)
+        updated_by: Mapped[UUID | None] = mapped_column(Uuid, nullable=True)
+
+    class SharedTemplateConfiguration(Base):
+        __tablename__ = "shared_template_configuration"
+        production_id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
+        storage_connection_id: Mapped[UUID] = mapped_column(Uuid)
+        enabled: Mapped[bool] = mapped_column(Boolean)
 
     class Job(Base):
         __tablename__ = "job"
@@ -135,7 +143,7 @@ def oauth_db(monkeypatch, tmp_path):
     models = ModuleType("plugin.models")
     for model in (
         StorageConnection, DriveCredential, DriveAuthorizationIntent, KitsuSyncDesiredConfiguration,
-        ProductionDriveAuthority,
+        ProductionDriveAuthority, SharedTemplateConfiguration,
         Job, KitsuSyncManagementIdempotency, KitsuSyncHierarchySnapshot, KitsuSyncHierarchySnapshotPage,
     ):
         setattr(models, model.__name__, model)
@@ -371,6 +379,101 @@ def test_native_kitsu_authorization_requires_manager_role_and_same_origin_csrf(o
         base_url="https://kitsu.example.test",
     )
     assert bad_origin.status_code == 403
+
+
+def test_native_root_selection_requires_app_visible_root_and_fences_configuration(oauth_db):
+    from plugin.integrations.configuration import ConfigurationError
+    from plugin.integrations.native_storage import list_native_root_candidates, select_native_root
+    from plugin.storage.fake import FakeStorage
+
+    sessions, models, _keyring, _extensions = oauth_db
+    connection_id = uuid4()
+    connection = models.StorageConnection(
+        id=connection_id, production_id=PRODUCTION, provider="google_drive",
+        account_mode="my_drive", owner_subject="oidc-subject-a", drive_id=None,
+        allowed_root_id=f"__pending__:{connection_id}", credential_ref=str(connection_id), enabled=False,
+    )
+    credential = models.DriveCredential(
+        connection_id=connection_id, production_id=PRODUCTION, account_mode="my_drive",
+        account_subject="oidc-subject-a", owner_subject="oidc-subject-a", drive_id=None,
+        key_id="test-key-1", nonce=b"n" * 12, ciphertext=b"encrypted", state="active",
+    )
+    with sessions.begin() as session:
+        session.add_all([connection, credential])
+
+    adapter = FakeStorage(root_id="app-visible-root")
+    assert list_native_root_candidates(connection, adapter) == {
+        "contract_version": "1.0",
+        "roots": [{"id": "app-visible-root", "name": "FakeStorage root", "account_mode": "my_drive"}],
+    }
+    caps = adapter.verify_root_candidate("app-visible-root")
+    payload = {"contract_version": "1.0", "root_id": "app-visible-root"}
+    with sessions() as session:
+        body, status, etag = select_native_root(
+            session, production_id=PRODUCTION, actor_id=ACTOR, connection_id=connection_id,
+            payload=payload, idempotency_key="native-root-select-0001", if_match='"0"',
+            capabilities=caps,
+        )
+    assert status == 200 and etag == '"1"'
+    assert body["owner"] == "plugin" and body["state"] == "configured"
+    assert body["root_id"] == "app-visible-root" and not body["activation_enabled"]
+    with sessions() as session:
+        stored = session.get(models.StorageConnection, connection_id)
+        authority = session.get(models.ProductionDriveAuthority, PRODUCTION)
+        assert stored.enabled and stored.allowed_root_id == "app-visible-root"
+        assert authority.owner == "plugin" and authority.config_revision == 1
+        assert authority.activation_epoch == 1 and authority.activation_enabled is False
+
+    with sessions() as session:
+        assert select_native_root(
+            session, production_id=PRODUCTION, actor_id=ACTOR, connection_id=connection_id,
+            payload=payload, idempotency_key="native-root-select-0001", if_match='"0"',
+            capabilities=caps,
+        ) == (body, status, etag)
+    with sessions() as session, pytest.raises(ConfigurationError) as stale:
+        select_native_root(
+            session, production_id=PRODUCTION, actor_id=ACTOR, connection_id=connection_id,
+            payload=payload, idempotency_key="native-root-select-0002", if_match='"0"',
+            capabilities=caps,
+        )
+    assert stale.value.code == "stale_config"
+
+
+def test_native_root_selection_refuses_legacy_owner_without_mutation(oauth_db):
+    from types import SimpleNamespace
+
+    from plugin.integrations.configuration import ConfigurationError
+    from plugin.integrations.native_storage import select_native_root
+
+    sessions, models, _keyring, _extensions = oauth_db
+    connection_id = uuid4()
+    connection = models.StorageConnection(
+        id=connection_id, production_id=PRODUCTION, provider="google_drive",
+        account_mode="my_drive", owner_subject="oidc-subject-a", drive_id=None,
+        allowed_root_id=f"__pending__:{connection_id}", credential_ref=str(connection_id), enabled=False,
+    )
+    credential = models.DriveCredential(
+        connection_id=connection_id, production_id=PRODUCTION, account_mode="my_drive",
+        account_subject="oidc-subject-a", owner_subject="oidc-subject-a", drive_id=None,
+        key_id="test-key-1", nonce=b"n" * 12, ciphertext=b"encrypted", state="active",
+    )
+    legacy = models.ProductionDriveAuthority(
+        production_id=PRODUCTION, owner="legacy_kitsusync", state="legacy_import_required",
+        config_revision=3, activation_epoch=7, connection_id=None, root_id=None, activation_enabled=False,
+    )
+    with sessions.begin() as session:
+        session.add_all([connection, credential, legacy])
+    with sessions() as session, pytest.raises(ConfigurationError) as blocked:
+        select_native_root(
+            session, production_id=PRODUCTION, actor_id=ACTOR, connection_id=connection_id,
+            payload={"contract_version": "1.0", "root_id": "app-visible-root"},
+            idempotency_key="native-root-legacy-0001", if_match='"3"',
+            capabilities=SimpleNamespace(root_visible=True, root_id="app-visible-root", can_add_children=True),
+        )
+    assert blocked.value.code == "legacy_import_required"
+    with sessions() as session:
+        assert session.get(models.StorageConnection, connection_id).enabled is False
+        assert session.get(models.ProductionDriveAuthority, PRODUCTION).config_revision == 3
 
 
 def test_callback_query_rejects_duplicates_conflicting_results_and_unknown_parameters():

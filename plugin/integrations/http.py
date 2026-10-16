@@ -379,7 +379,7 @@ class DriveConnectionRevokeResource(MethodView):
         from sqlalchemy import select
         from sqlalchemy.orm import sessionmaker
         from flask import current_app
-        from ..models import DriveCredential, Job, KitsuSyncDesiredConfiguration, StorageConnection
+        from ..models import DriveCredential, Job, KitsuSyncDesiredConfiguration, ProductionDriveAuthority, StorageConnection
         from .oauth import OAuthOperationError, connection_status
         from .sync import validate_operator_command
 
@@ -411,6 +411,9 @@ class DriveConnectionRevokeResource(MethodView):
                 ).with_for_update())
                 if connection is None:
                     raise OAuthOperationError(404, "connection_not_found")
+                authority = session.get(ProductionDriveAuthority, production_id)
+                if authority is not None and authority.owner == "plugin":
+                    raise OAuthOperationError(409, "plugin_authority_active")
                 if credential is None or credential.state == "revoked":
                     return jsonify(connection_status(connection, credential)), 202
                 job_key = f"drive-revoke:{production_id}:{key}"
@@ -564,11 +567,14 @@ class DriveRootsResource(MethodView):
             database = current_app.extensions["sqlalchemy"]
             sessions = sessionmaker(bind=database.engine, expire_on_commit=False)
             def verify_root():
-                from ..models import DriveCredential, StorageConnection
+                from ..models import DriveCredential, ProductionDriveAuthority, StorageConnection
 
                 connection = _provider_connection(
                     connection_id, payload.get("production_id"), session=session,
                 )
+                authority = session.get(ProductionDriveAuthority, connection.production_id)
+                if authority is not None and authority.owner == "plugin":
+                    raise ProviderContractError(409, "plugin_authority_active")
                 if payload.get("account_mode") != connection.account_mode:
                     raise ProviderContractError(403, "root_unverified")
                 requested_drive_id = payload.get("drive_id")

@@ -162,9 +162,20 @@ def _response_receipt(session, production_id, actor_id, idempotency_key, operati
 def _lock_production(session, production_id):
     # The transaction-scoped lock also serializes first creation, where there
     # is not yet a desired-config row on which SELECT FOR UPDATE can lock.
+    if session.get_bind().dialect.name != "postgresql":
+        return
     session.execute(text("SELECT pg_advisory_xact_lock(hashtextextended(:lock_key, 0))"), {
         "lock_key": f"vfx-files-config:{production_id}"
     })
+
+
+def _assert_kitsusync_is_legacy_owner(session, production_id):
+    """Fence the legacy writer as soon as the Plugin claims a Production."""
+    from ..models import ProductionDriveAuthority
+
+    authority = session.get(ProductionDriveAuthority, production_id)
+    if authority is not None and authority.owner == "plugin":
+        _fail(409, "plugin_authority_active")
 
 
 def _check_connection(session, production_id, connection_id, drive):
@@ -270,6 +281,7 @@ def put_desired_config(session, *, production_id: UUID, actor_id: UUID, payload:
     request_hash = _request_hash(operation, payload, if_match, if_none_match)
     with session.begin():
         _lock_production(session, production_id)
+        _assert_kitsusync_is_legacy_owner(session, production_id)
         prior = _response_receipt(session, production_id, actor_id, key, operation, request_hash)
         if prior is not None:
             return prior.response_body, prior.response_status, prior.response_etag
@@ -336,6 +348,7 @@ def set_activation(session, *, production_id: UUID, actor_id: UUID, enabled: boo
     request_hash = _request_hash(operation, payload, if_match, None)
     with session.begin():
         _lock_production(session, production_id)
+        _assert_kitsusync_is_legacy_owner(session, production_id)
         prior = _response_receipt(session, production_id, actor_id, key, operation, request_hash)
         if prior is not None:
             return prior.response_body, prior.response_status, prior.response_etag
