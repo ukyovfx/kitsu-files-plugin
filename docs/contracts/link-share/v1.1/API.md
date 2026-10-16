@@ -60,7 +60,7 @@ Do not add or call an unauthenticated capabilities API. Before enabling the send
 
 ## KitsuSync event intake (existing route, candidate body)
 
-The endpoint path and HMAC framing remain the existing v1 ones. Exact required headers are `X-VFX-Key-Id`, `X-VFX-Timestamp`, `X-VFX-Nonce`, `X-VFX-Content-SHA256`, `X-VFX-Signature`, and `Idempotency-Key`; the last is 16–128 characters. The current KitsuSync 1.0 contract requires root `contract_version` plus `events`. The draft 1.1 batch likewise requires root `contract_version: "1.1"` plus `events`, and every event must be `1.1`. KitsuSync PR #239 now contains Draft 1.1 receiver source, but the receiver is not deployed or operator-pinned. The sender must remain disabled until the exact receiver is verified; cross-target invariants between singleton requests also need an agreed and tested handling model.
+The endpoint path and HMAC framing remain the existing v1 ones. Exact required headers are `X-VFX-Key-Id`, `X-VFX-Timestamp`, `X-VFX-Nonce`, `X-VFX-Content-SHA256`, `X-VFX-Signature`, and `Idempotency-Key`; the last is 16–128 characters. The current KitsuSync 1.0 contract requires root `contract_version` plus `events`. The draft 1.1 batch likewise requires root `contract_version: "1.1"` plus `events`, and every event must be `1.1`. KitsuSync PR #239 contains Draft 1.1 receiver source, but the receiver is not deployed or operator-pinned. The sender must remain disabled until the exact receiver is verified. For one share operation, the producer MUST include every recipient-target event in one signed request so the receiver can validate cross-target invariants.
 
 ```http
 POST /api/integrations/vfx-files/v1/events HTTP/1.1
@@ -83,7 +83,7 @@ X-VFX-Signature: sha256=<lowercase HMAC-SHA256 hex>
 }
 ```
 
-This abbreviated HTTP body is illustrative only; use the full [positive fixture](fixtures/positive/two-recipient-share.json) as the body example. The signature MUST cover exact raw body bytes using `timestamp + LF + nonce + LF + lowercase body SHA-256 + LF + Idempotency-Key`. A retry keeps exact body bytes, event IDs, and the 16–128 character Idempotency-Key stable while rotating nonce, timestamp, and signature under replay protection.
+This abbreviated HTTP body is illustrative only; use the full [positive fixture](fixtures/positive/two-recipient-share.json) as the body example. For a multi-recipient operation, the batch MUST contain every target from that operation. The signature MUST cover exact raw body bytes using `timestamp + LF + nonce + LF + lowercase body SHA-256 + LF + Idempotency-Key`. A retry keeps the complete event set, exact body bytes, event IDs, event payloads, and the 16–128 character Idempotency-Key stable while rotating nonce, timestamp, and signature under replay protection. KitsuSync deduplicates each event by its stable ID and payload; a repeated HTTP batch returns durable per-event duplicate outcomes.
 
 ## KitsuSync 202 response and completion
 
