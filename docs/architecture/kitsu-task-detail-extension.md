@@ -1,6 +1,6 @@
 # Kitsu Task Detail Files Extension Feasibility
 
-Status: local Kitsu hook and plugin-side Task context are implemented for review. The Kitsu source branch is unpublished and must not be represented as installed or upstream accepted.
+Status: local Kitsu hook and plugin-side Task context are implemented and passed authenticated browser UAT on a pinned disposable host. The Kitsu source branch remains unpublished and is not upstream accepted. Human visual UAT is still required.
 
 ## Pinned source examined
 
@@ -18,13 +18,13 @@ The production-scoped Files page is therefore not proof of Task-detail integrati
 
 The isolated Kitsu source branch `codex/task-detail-files-extension` contains commit `c2a3b99576a23bdfaaf6bebe0e99f80b43ba17c7` against the dereferenced Kitsu `v1.0.70` tag. It adds a generic Project Extensions tab to the existing Task detail pane. The tab enumerates only Kitsu's project-enabled frontend plugins, reuses the existing same-origin `/api/plugins/<plugin_id>/frontend/` route, and mounts the chosen plugin in an iframe. It passes `production_id`, `task_id`, `entity_id`, `entity_type`, `task_type_id`, theme and locale as context hints. The iframe key includes plugin ID, Production ID and Task ID; changing Task resets the panel and replaces its iframe. Kitsu core has no VFX Files-specific condition or Zou database field change.
 
-These query IDs are hints, never authorization. The plugin resolves the Task and owning Production from Zou on every request, verifies the requested Production/Task scope, and rechecks current user access. A missing, stale, or contradictory scope fails closed. The Kitsu patch has not been published upstream or installed into a disposable host, so the native drawer browser acceptance gate remains open.
+These query IDs are hints, never authorization. The plugin resolves the Task and owning Production from Zou on every request, verifies the requested Production/Task scope, and rechecks current user access. A missing, stale, or contradictory scope fails closed. The Kitsu patch has not been published upstream. It is built into a local candidate image labeled `c2a3b99576a23bdfaaf6bebe0e99f80b43ba17c7` and exercised only by the `issue5-1016` synthetic UAT unit.
 
 ## Plugin-side behavior now supported
 
 The Files frontend parses Task/Entity context and passes the Task ID to the existing Production overview API. The API already resolves Task ownership and authorizes the resulting Production/Task scope. Upload and Publish panels can run in fixed-Task mode without asking the artist to select a second Task. Task-bound asynchronous reads are fenced so a response from the previous Task cannot overwrite the newly selected Task view. Folder bindings and valid provider links are shown in Task context.
 
-The plugin's existing Working upload/history/download, Publish/QC/Approval, authorized folder browser and Handoff panels are mounted through the Task-scoped iframe context. The Task context removes manual Task reselection. The user-visible `Open in Google Drive` links use only provider IDs returned by the authorized, root-checked Task listing; a link does not grant Drive access or change sharing. This is still not native UI acceptance until the local Kitsu hook is built into a pinned disposable host and exercised in an authenticated browser.
+The plugin's existing Working upload/history/download, Publish/QC/Approval, authorized folder browser and Handoff panels are mounted through the Task-scoped iframe context. The Task context removes manual Task reselection. The user-visible `Open in Google Drive` links use only provider IDs returned by the authorized, root-checked Task listing; a link does not grant Drive access or change sharing. Authenticated Playwright on the pinned disposable host verified the actual Task drawer, Task and Production switching, Artist A upload, Artist A and Artist B byte-verified downloads, Publish/QC completion, Supervisor exact Publish approval, and Artist A denial on a different Production. The browser preview is `frontend/test-results/issue5-task-detail-files.png`; screenshots and this synthetic browser run are not human visual acceptance.
 
 ## Existing Task-scoped operation surface at plugin baseline `cc6fd4dc06293f48978e048208877bc900399af8`
 
