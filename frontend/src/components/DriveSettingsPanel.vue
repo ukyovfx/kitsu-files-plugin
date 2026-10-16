@@ -314,7 +314,6 @@ onMounted(load)
         <p v-else class="muted">Drive setup is unavailable in the current state. No Drive files or permissions have been changed.</p>
       </template>
 
-      <a class="text-button drive-back" :href="`/api/plugins/vfx_files/frontend/?production_id=${encodeURIComponent(productionId)}`">Back to Files</a>
     </div>
   </section>
 </template>
@@ -327,7 +326,6 @@ onMounted(load)
 .drive-status > div:last-child { border-bottom: 0; }
 .drive-status dt { color: var(--muted); font-size: 11px; }
 .drive-status dd { margin: 0; font-size: 11px; font-weight: 600; text-transform: capitalize; }
-.drive-back { justify-self: start; text-decoration: none; }
 .drive-field { display: grid; gap: 6px; color: var(--muted); font-size: 11px; }
 .drive-field select { min-width: 0; padding: 9px 10px; color: var(--text); background: var(--surface); border: 1px solid var(--border); border-radius: 7px; }
 .drive-options { display: grid; gap: 10px; padding: 14px; border: 1px solid var(--border); border-radius: 8px; }

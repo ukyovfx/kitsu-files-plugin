@@ -1,5 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { createKitsuClient, parseProductionContext } from './kitsuClient.js'
+import {
+  applyTaskPluginPreferences,
+  createKitsuClient,
+  parseProductionContext
+} from './kitsuClient.js'
 
 describe('createKitsuClient', () => {
   afterEach(() => vi.restoreAllMocks())
@@ -76,5 +80,68 @@ describe('parseProductionContext', () => {
       darkTheme: false,
       locale: null
     })
+  })
+})
+
+describe('applyTaskPluginPreferences', () => {
+  const hostWindow = {
+    location: { origin: 'https://kitsu.example.test' },
+    parent: { postMessage: vi.fn() }
+  }
+
+  it('accepts theme and locale updates only from its same-origin Kitsu parent', () => {
+    const context = { taskId: 'task-1', darkTheme: false, locale: 'en' }
+    const event = {
+      source: hostWindow.parent,
+      origin: hostWindow.location.origin,
+      data: {
+        type: 'kitsu.task-plugin.preferences',
+        version: 1,
+        darkTheme: true,
+        locale: 'JA'
+      }
+    }
+
+    expect(applyTaskPluginPreferences(event, context, hostWindow)).toBe(true)
+    expect(context).toMatchObject({ darkTheme: true, locale: 'ja' })
+  })
+
+  it.each([
+    ['another origin', { origin: 'https://attacker.example.test' }],
+    ['another window', { source: {} }],
+    ['an invalid message version', { data: { type: 'kitsu.task-plugin.preferences', version: 2, darkTheme: true, locale: 'en' } }]
+  ])('rejects preferences from %s', (_label, changes) => {
+    const context = { taskId: 'task-1', darkTheme: false, locale: 'en' }
+    const event = {
+      source: hostWindow.parent,
+      origin: hostWindow.location.origin,
+      data: {
+        type: 'kitsu.task-plugin.preferences',
+        version: 1,
+        darkTheme: true,
+        locale: 'ja'
+      },
+      ...changes
+    }
+
+    expect(applyTaskPluginPreferences(event, context, hostWindow)).toBe(false)
+    expect(context).toMatchObject({ darkTheme: false, locale: 'en' })
+  })
+
+  it('does not apply preferences outside Task context', () => {
+    const context = { taskId: null, darkTheme: false, locale: 'en' }
+    const event = {
+      source: hostWindow.parent,
+      origin: hostWindow.location.origin,
+      data: {
+        type: 'kitsu.task-plugin.preferences',
+        version: 1,
+        darkTheme: true,
+        locale: 'ja'
+      }
+    }
+
+    expect(applyTaskPluginPreferences(event, context, hostWindow)).toBe(false)
+    expect(context.darkTheme).toBe(false)
   })
 })

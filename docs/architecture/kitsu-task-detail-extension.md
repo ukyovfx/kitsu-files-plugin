@@ -1,6 +1,14 @@
 # Kitsu Task Detail Files Extension Feasibility
 
-Status: proposal and plugin-side context support; no Kitsu/Zou core source is modified here.
+Status: Option A is the selected architecture. Plugin-side Task mode is combined with the Drive-authority branch below; the Kitsu hook and Zou metadata support remain unpublished dependencies.
+
+## Option A implementation update (2026-10-17)
+
+- The artist surface is the existing Shot/Asset Task drawer. Kitsu's local `TaskDetailExtensions` hook adds a Task-scoped plugin tab and embeds the Plugin frontend in a same-origin iframe. It passes Production, Task, entity, Task Type, locale, and theme context; these remain hints that the Plugin revalidates against Zou.
+- In Task mode, the Plugin frontend removes the standalone Production dashboard, page header, duplicate Task selection, and app footer. The inner sections stay bound to the selected Task. Share and Received Files remain visibly gated until their authenticated reference-sharing contract and receiver support clear the existing security gate.
+- The native Production Plugin page opens the Plugin-owned Drive settings panel directly. It is the only configuration surface and is restricted to authorized Production managers. The separate Files dashboard and its return navigation are removed from this candidate.
+- The Kitsu hook is local and unpublished at `f22aca711077910388816a4f438a225a52d96240`. Pinned Zou `v1.0.94` currently does not preserve `frontend_task_enabled` or `frontend_project_admin_enabled`; an additive default-false migration and serialization/static-route change is required before installing the Plugin exposes both pages correctly.
+- Native installed-host authenticated visual UAT has not been run on this combined candidate. The existing earlier UAT does not cover these exact Plugin, Kitsu, and Zou revisions.
 
 ## Pinned source examined
 
