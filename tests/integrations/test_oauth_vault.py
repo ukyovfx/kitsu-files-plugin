@@ -618,9 +618,11 @@ def test_plugin_configuration_and_activation_are_fenced_and_do_not_create_legacy
     assert active["activation"]["requested_enabled"] is True
     assert active["activation"]["transition_pending"] is True
     with sessions() as session:
+        from plugin.integrations.configuration import get_desired_config
         authority = session.get(ProductionDriveAuthority, PRODUCTION)
         assert authority.activation_epoch == 3 and not authority.activation_enabled
         assert authority.activation_transition_pending
+        assert get_desired_config(session, PRODUCTION)[0]["activation"]["enabled"] is False
         assert session.scalar(select(SharedTemplateConfiguration).where(
             SharedTemplateConfiguration.production_id == PRODUCTION,
         )).enabled is False
@@ -645,6 +647,8 @@ def test_plugin_configuration_and_activation_are_fenced_and_do_not_create_legacy
         session.expire_all()
         authority = session.get(ProductionDriveAuthority, PRODUCTION)
         assert authority.activation_enabled and not authority.activation_transition_pending
+        from plugin.integrations.configuration import get_desired_config
+        assert get_desired_config(session, PRODUCTION)[0]["activation"]["enabled"] is True
         assert session.scalar(select(SharedTemplateConfiguration).where(
             SharedTemplateConfiguration.production_id == PRODUCTION,
         )).enabled is True
