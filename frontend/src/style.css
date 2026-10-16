@@ -16,7 +16,7 @@ button { font: inherit; }
 .files-page[data-mode='task'] .task-navigation-item { flex: 0 0 auto; padding: 8px 10px 7px; border: 0; border-bottom: 2px solid transparent; background: transparent; color: var(--muted); cursor: pointer; white-space: nowrap; }
 .files-page[data-mode='task'] .task-navigation-item:hover { color: var(--text); }
 .files-page[data-mode='task'] .task-navigation-item:focus-visible { outline: 2px solid #397d78; outline-offset: -2px; }
-.files-page[data-mode='task'] .task-navigation-item[aria-current='page'] { border-bottom-color: #397d78; color: var(--text); }
+.files-page[data-mode='task'] .task-navigation-item[aria-selected='true'] { border-bottom-color: #397d78; color: var(--text); }
 .files-page[data-mode='task'] .task-section { display: grid; gap: 10px; }
 .files-page[data-mode='task'] .task-section .panel { border-radius: 3px; background: transparent; }
 .files-page[data-mode='task'] .task-folders { margin: 0; padding-bottom: 10px; }
