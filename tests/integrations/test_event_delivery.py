@@ -43,10 +43,34 @@ def _authority_event(event_type, *, event_id=None):
     }
 
 
+def _share_event(event_id=None):
+    event_id = event_id or uuid4()
+    target_id = uuid4()
+    object_id = "drive_file_01"
+    return {
+        "contract_version": "1.1", "producer_id": "vfx-files-plugin",
+        "event_id": str(event_id), "event_type": "file_share.created",
+        "occurred_at": "2026-10-17T01:02:03Z", "production_id": str(uuid4()),
+        "activation_epoch": 7,
+        "source": {"entity_type": "shot", "entity_id": str(uuid4()), "task_id": str(uuid4()), "task_type_id": str(uuid4())},
+        "recipient": {"task_id": str(uuid4()), "task_type_id": str(uuid4())},
+        "share": {
+            "id": str(uuid4()), "share_target_id": str(target_id), "revision": 1,
+            "shared_by_id": str(uuid4()), "shared_at": "2026-10-17T01:02:03Z",
+            "idempotency_key": f"share-target-{target_id}-create-v1",
+            "object": {"provider": "google_drive", "object_id": object_id, "object_type": "file", "url": f"https://drive.google.com/file/d/{object_id}/view"},
+            "metadata": {"status": "complete", "observed_at": "2026-10-17T01:02:03Z", "name": "plate.exr", "mime_type": "image/x-exr", "size_bytes": 42, "modified_at": None, "sha256": None},
+            "inventory": {"status": "unavailable", "observed_at": "2026-10-17T01:02:03Z", "scope": "object", "file_count": None, "observed_file_count_lower_bound": None, "frame_summary": None},
+            "access": {"status": "verified_service_only", "access_verified_at": "2026-10-17T01:02:03Z", "check_subject_type": "plugin_service_identity", "check_subject_id": "connection-1"},
+        },
+    }
+
+
 class FakeOutbox:
     def __init__(self, payload, *, current=True):
         self.row = type("Row", (), {
             "event_id": payload["event_id"], "payload": payload,
+            "event_type": payload.get("event_type"),
             "production_id": payload["production_id"], "attempts": 1,
             "lease_generation": 1, "state": "leased",
         })()
@@ -146,6 +170,50 @@ def test_signed_delivery_uses_producer_key_and_contract_batch_and_confirms_event
     assert replay.finalized == [("delivered", "202", None)]
     assert len(receiver.seen) == 1
     assert json.loads(receiver.calls[1][1])["events"][0]["event_id"] == payload["event_id"]
+
+
+def test_v1_1_share_uses_signed_homogeneous_batch_and_stable_transport_ack_envelope():
+    payload = _share_event()
+    outbox = FakeOutbox(payload)
+    config = EventDeliveryConfig(
+        endpoint="https://kitsusync.example.invalid/api/integrations/vfx-files/v1/events",
+        key_id="vfx-files-prod-key-01", secret=b"synthetic-event-key-" * 3,
+        contract_version_pin="1.1",
+    )
+    receiver = FakeReceiver((202, {
+        "contract_version": "1.0",
+        "results": [{"event_id": payload["event_id"], "outcome": "accepted", "code": None}],
+    }))
+
+    assert dispatch_one(outbox, receiver, config, worker_id=uuid4()) == "delivered"
+
+    _url, body, headers = receiver.calls[0]
+    assert json.loads(body) == {"contract_version": "1.1", "events": [payload]}
+    assert headers["Idempotency-Key"].startswith("vfx-share-batch-")
+    assert len(headers["Idempotency-Key"]) == len("vfx-share-batch-") + 64
+    signed = "\n".join((
+        headers["X-VFX-Timestamp"], headers["X-VFX-Nonce"],
+        hashlib.sha256(body).hexdigest(), headers["Idempotency-Key"],
+    )).encode("utf-8")
+    assert hmac.compare_digest(
+        headers["X-VFX-Signature"],
+        "sha256=" + hmac.new(config.secret, signed, hashlib.sha256).hexdigest(),
+    )
+    assert outbox.finalized == [("delivered", "202", None)]
+
+
+def test_event_delivery_pin_defaults_to_1_0_and_rejects_unknown_versions():
+    from plugin.integrations.event_delivery import EventDeliveryConfig
+
+    assert _config().contract_version_pin == "1.0"
+    try:
+        EventDeliveryConfig(
+            "https://kitsusync.example.invalid/api/integrations/vfx-files/v1/events",
+            "vfx-files-prod-key-01", b"synthetic-event-key-" * 3, "2.0",
+        )
+        raise AssertionError("Unknown event contract pins must be rejected")
+    except ValueError:
+        pass
 
 
 def test_matching_duplicate_is_success_but_receiver_quarantine_is_terminal():

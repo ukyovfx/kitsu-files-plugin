@@ -9,12 +9,12 @@ describe('Task Files navigation', () => {
     expect(taskSections.every((section) => section.label)).toBe(true)
   })
 
-  it('keeps Share and Received Files gated until their API and receiver are verified', () => {
+  it('exposes reference sharing and received files inside the selected Task context', () => {
     expect(taskSectionEnabled('files')).toBe(true)
     expect(taskSectionEnabled('working')).toBe(true)
     expect(taskSectionEnabled('publish')).toBe(true)
     expect(taskSectionEnabled('handoffs')).toBe(true)
-    expect(taskSectionEnabled('share')).toBe(false)
-    expect(taskSectionEnabled('received')).toBe(false)
+    expect(taskSectionEnabled('share')).toBe(true)
+    expect(taskSectionEnabled('received')).toBe(true)
   })
 })

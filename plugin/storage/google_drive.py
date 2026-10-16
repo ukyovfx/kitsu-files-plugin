@@ -283,7 +283,7 @@ class GoogleDriveStorageAdapter:
     def get(self, object_id: str):
         if not self._root_verified:
             raise PermissionFailure("Allowed root must be verified before lookup")
-        response = self._request("GET", f"{API}/files/{object_id}", params={"supportsAllDrives": "true", "fields": "id,name,mimeType,parents,driveId,size,md5Checksum,modifiedTime,trashed"})
+        response = self._request("GET", f"{API}/files/{object_id}", params={"supportsAllDrives": "true", "fields": "id,name,mimeType,parents,driveId,size,md5Checksum,modifiedTime,trashed,resourceKey"})
         if response.status_code == 404:
             raise AmbiguousOutcome("Drive 404 does not prove absence or distinguish inaccessible objects")
         if response.status_code in (401, 403):
@@ -392,6 +392,7 @@ class GoogleDriveStorageAdapter:
             name=data.get("name"),
             modified_time=data.get("modifiedTime"),
             md5_checksum=data.get("md5Checksum"),
+            resource_key=data.get("resourceKey"),
         )
 
 

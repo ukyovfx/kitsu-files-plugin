@@ -527,7 +527,7 @@ class TaskStorageObjects(MethodView):
                 abort(400)
             if parent_id != connection.allowed_root_id:
                 parent = adapter.get(parent_id)
-                if parent is None or parent.trashed or parent.mime_type != "folder":
+                if parent is None or parent.trashed or parent.mime_type not in ("folder", "application/vnd.google-apps.folder"):
                     abort(404)
             adapter.assert_parent_within_root(parent_id)
             page_token = request.args.get("page_token")
@@ -544,13 +544,275 @@ class TaskStorageObjects(MethodView):
             "sync_status": "confirmed" if listing.complete and listing.next_page_token is None else "partial",
             "items": [{
                 "id": item.object_id, "parent_id": item.parent_id, "name": item.name,
-                "mime_type": item.mime_type, "is_folder": item.mime_type == "folder",
+                "mime_type": item.mime_type,
+                "is_folder": item.mime_type in ("folder", "application/vnd.google-apps.folder"),
                 "size": item.size, "sha256": item.sha256, "trashed": item.trashed,
                 "modified_time": item.modified_time, "md5_checksum": item.md5_checksum,
             } for item in listing.items if not item.trashed],
             "next_page_token": listing.next_page_token,
             "complete": listing.complete,
         }
+
+
+class TaskShareCandidates(MethodView):
+    """List only current same-Production Tasks the actor may address."""
+    @jwt_required()
+    def get(self, task_id):
+        _require_enabled()
+        _assert_compatible()
+        try:
+            source_id = UUID(str(task_id))
+            from zou.app.models.task import Task, TaskPersonLink
+            from zou.app.models.task_type import TaskType
+            from zou.app.models.entity import Entity
+            from zou.app.models.person import Department
+            from zou.app.models.project import ProjectTaskTypeLink
+            source = Task.query.filter_by(id=source_id).one_or_none()
+            if source is None:
+                abort(404)
+            actor = _request_actor(str(source.project_id))
+            source_scope = _resolve_scope(actor, str(source.project_id), str(source.id))
+            authorize(actor, Capability.READ, source_scope)
+            from .compat import authorize_task_mutation
+            if not authorize_task_mutation(actor, source.id, "handoff"):
+                abort(403)
+            if actor.project_role in {"admin", "manager"}:
+                candidate_tasks = Task.query.filter_by(project_id=source.project_id).order_by(Task.id).limit(1001).all()
+            else:
+                candidate_tasks = Task.query.join(TaskPersonLink, TaskPersonLink.task_id == Task.id).filter(
+                    Task.project_id == source.project_id,
+                    TaskPersonLink.person_id == actor.actor_id,
+                ).order_by(Task.id).limit(1001).all()
+            truncated = len(candidate_tasks) > 1000
+            result = []
+            for candidate in candidate_tasks[:1000]:
+                if candidate.id == source.id:
+                    continue
+                task_type = TaskType.query.filter_by(id=candidate.task_type_id).one_or_none()
+                if task_type is None or task_type.for_entity not in ("Shot", "Asset"):
+                    continue
+                if ProjectTaskTypeLink.query.filter_by(project_id=source.project_id, task_type_id=task_type.id).one_or_none() is None:
+                    continue
+                entity = Entity.query.filter_by(id=candidate.entity_id, project_id=source.project_id).one_or_none()
+                if entity is None:
+                    continue
+                department = Department.query.filter_by(id=task_type.department_id).one_or_none() if task_type.department_id else None
+                result.append({
+                    "task_id": str(candidate.id), "entity_id": str(entity.id),
+                    "entity_type": task_type.for_entity.lower(), "entity_name": entity.name,
+                    "task_type_id": str(task_type.id), "task_type_name": task_type.name,
+                    "department_id": str(department.id) if department else None,
+                    "department_name": department.name if department else None,
+                })
+            return {"task_id": str(source.id), "recipients": result, "truncated": truncated}
+        except (PermissionDenied, NotFound):
+            abort(403)
+        except (ValueError, TypeError):
+            abort(404)
+
+
+class TaskLinkShares(MethodView):
+    @jwt_required()
+    def get(self, task_id):
+        _require_enabled()
+        _assert_compatible()
+        try:
+            parsed_task_id = UUID(str(task_id))
+            from zou.app.models.task import Task
+            task = Task.query.filter_by(id=parsed_task_id).one_or_none()
+            if task is None:
+                abort(404)
+            actor = _request_actor(str(task.project_id))
+            scope = _resolve_scope(actor, str(task.project_id), str(task.id))
+            authorize(actor, Capability.READ, scope)
+            from .compat import authorize_task_read
+            if not authorize_task_read(actor, task.id):
+                abort(403)
+            from .models import LinkShare, LinkShareTarget
+            from sqlalchemy import select
+            rows = current_app.extensions["sqlalchemy"].session.execute(
+                select(LinkShare, LinkShareTarget).join(LinkShareTarget, LinkShareTarget.share_id == LinkShare.id)
+                .where(
+                    LinkShare.production_id == task.project_id,
+                    LinkShare.source_task_id == task.id,
+                    LinkShare.state == "created",
+                )
+                .order_by(LinkShare.created_at.desc(), LinkShareTarget.created_at)
+                .limit(500)
+            ).all()
+            from .shares.service import event_share_payload
+            return {"task_id": str(task.id), "shares": [event_share_payload(target) for _share, target in rows]}
+        except (PermissionDenied, NotFound):
+            abort(403)
+        except (ValueError, TypeError):
+            abort(404)
+
+    @jwt_required()
+    def post(self, task_id):
+        _require_enabled()
+        _assert_compatible()
+        try:
+            _require_mutation_origin()
+            source_id = UUID(str(task_id))
+            from zou.app.models.task import Task
+            task = Task.query.filter_by(id=source_id).one_or_none()
+            if task is None:
+                abort(404)
+            actor = _request_actor(str(task.project_id))
+            scope = _resolve_scope(actor, str(task.project_id), str(task.id))
+            authorize(actor, Capability.HANDOFF, scope)
+            from .compat import authorize_task_mutation
+            if not authorize_task_mutation(actor, task.id, "handoff"):
+                abort(403)
+            payload = request.get_json(silent=False)
+            if not isinstance(payload, dict) or set(payload) != {"object_id", "recipient_task_ids"}:
+                abort(400, description="Request must contain only object_id and recipient_task_ids")
+            from .shares.service import (
+                ShareConflict, ShareDenied, canonical_request_sha256,
+                complete_share, reserve_share, target_response, validate_share_request,
+                resolve_authorized_tasks,
+            )
+            recipient_ids = validate_share_request(
+                payload["object_id"], payload["recipient_task_ids"],
+                request.headers.get("Idempotency-Key", ""),
+            )
+            task_context = resolve_authorized_tasks(
+                current_app.extensions["sqlalchemy"].session, actor=actor,
+                production_id=scope.production_id, source_task_id=task.id,
+                recipient_task_ids=recipient_ids,
+            )
+            connection = _production_storage_connection(scope.production_id)
+            from .integrations.event_producers import current_notification_epoch
+            if current_notification_epoch(
+                current_app.extensions["sqlalchemy"].session,
+                production_id=scope.production_id, selected_connection_id=connection.id,
+            ) is None:
+                abort(409, description="Production Drive activation is not current")
+
+            from sqlalchemy.orm import sessionmaker
+            database = current_app.extensions["sqlalchemy"]
+            sessions = sessionmaker(bind=database.engine, expire_on_commit=False)
+            key = request.headers.get("Idempotency-Key", "")
+            request_hash = canonical_request_sha256(
+                production_id=scope.production_id, source_task_id=task.id,
+                actor_id=actor.actor_id, object_id=payload["object_id"],
+                recipient_task_ids=recipient_ids,
+            )
+            with sessions.begin() as session:
+                operation, targets, existing = reserve_share(
+                    session, production_id=scope.production_id, source_task_id=task.id,
+                    actor_id=actor.actor_id, connection_id=connection.id,
+                    object_id=payload["object_id"],
+                    source_entity_id=task_context["entity"].id,
+                    source_entity_type=task_context["source_type"].for_entity.lower(),
+                    recipient_task_ids=recipient_ids,
+                    recipient_task_details={
+                        item["task"].id: {
+                            "task_type_id": item["task_type"].id,
+                            "department_id": item["department"].id if item["department"] else None,
+                        }
+                        for item in task_context["recipients"]
+                    },
+                    request_key=key, request_sha256=request_hash,
+                )
+                operation_id = operation.id
+                if existing:
+                    return target_response(operation, targets), 202
+
+            def fail_reservation():
+                from sqlalchemy import select
+                from .models import LinkShare
+                with sessions.begin() as session:
+                    row = session.scalar(select(LinkShare).where(LinkShare.id == operation_id).with_for_update())
+                    if row is not None and row.state == "verifying":
+                        row.state = "failed"
+
+            try:
+                adapter = _storage_adapter(connection)
+                current_app.extensions["sqlalchemy"].session.remove()
+                capabilities = adapter.capabilities(connection.allowed_root_id)
+                if not capabilities.root_visible or capabilities.root_id != connection.allowed_root_id:
+                    raise PermissionError("Configured Production root is not verified")
+                object_id = payload["object_id"]
+                drive_object = adapter.get(object_id)
+                if drive_object is None or drive_object.trashed:
+                    raise PermissionError("Drive object is unavailable")
+                if getattr(drive_object, "resource_key", None):
+                    raise PermissionError("Resource-key-protected Drive objects are unsupported")
+                if drive_object.mime_type == "application/vnd.google-apps.shortcut":
+                    raise PermissionError("Drive shortcuts cannot be shared as original objects")
+                if connection.drive_id and drive_object.drive_id != connection.drive_id:
+                    raise PermissionError("Drive object is outside the selected Production Drive")
+                if not connection.drive_id and drive_object.drive_id is not None:
+                    raise PermissionError("Drive object is outside the selected My Drive")
+                if drive_object.object_id != connection.allowed_root_id:
+                    if drive_object.parent_id is None:
+                        raise PermissionError("Drive object ancestry is not available")
+                    adapter.assert_parent_within_root(drive_object.parent_id)
+                else:
+                    if drive_object.mime_type not in ("folder", "application/vnd.google-apps.folder"):
+                        raise PermissionError("Production root is not an authorized folder")
+                pin = _setting("VFX_FILES_KITSUSYNC_EVENT_CONTRACT_VERSION", "1.0")
+                with sessions.begin() as session:
+                    operation, targets = complete_share(
+                        session, operation_id=operation_id, actor=actor,
+                        context=None, connection=connection, drive_object=drive_object,
+                        access_verified_at=datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
+                        notification_pin=pin,
+                    )
+                return target_response(operation, targets), 202
+            except ShareDenied as error:
+                fail_reservation()
+                abort(403, description=str(error))
+            except PermissionError:
+                fail_reservation()
+                abort(403, description="Drive object could not be verified within the authorized Production root")
+            except Exception:
+                fail_reservation()
+                raise
+        except ShareConflict as error:
+            abort(409, description=str(error))
+        except (PermissionDenied, NotFound, ShareDenied):
+            abort(403)
+        except (ValueError, TypeError, KeyError) as error:
+            abort(400, description=str(error))
+
+
+class TaskReceivedLinkShares(MethodView):
+    @jwt_required()
+    def get(self, task_id):
+        _require_enabled()
+        _assert_compatible()
+        try:
+            parsed_task_id = UUID(str(task_id))
+            from zou.app.models.task import Task
+            task = Task.query.filter_by(id=parsed_task_id).one_or_none()
+            if task is None:
+                abort(404)
+            actor = _request_actor(str(task.project_id))
+            scope = _resolve_scope(actor, str(task.project_id), str(task.id))
+            authorize(actor, Capability.READ, scope)
+            from .compat import authorize_task_read
+            if not authorize_task_read(actor, task.id):
+                abort(403)
+            from .models import LinkShare, LinkShareTarget
+            from sqlalchemy import select
+            rows = current_app.extensions["sqlalchemy"].session.execute(
+                select(LinkShare, LinkShareTarget).join(LinkShareTarget, LinkShareTarget.share_id == LinkShare.id)
+                .where(
+                    LinkShare.production_id == task.project_id,
+                    LinkShareTarget.recipient_task_id == task.id,
+                    LinkShare.state == "created",
+                )
+                .order_by(LinkShare.created_at.desc(), LinkShareTarget.created_at)
+                .limit(500)
+            ).all()
+            from .shares.service import event_share_payload
+            return {"task_id": str(task.id), "received_files": [event_share_payload(target) for _share, target in rows]}
+        except (PermissionDenied, NotFound):
+            abort(403)
+        except (ValueError, TypeError):
+            abort(404)
 
 
 class OutputPackageFiles(MethodView):
@@ -2447,6 +2709,9 @@ routes = [
     ("/tasks/<task_id>/output-packages", TaskOutputPackages),
     ("/tasks/<task_id>/output-package-options", TaskOutputPackageOptions),
     ("/tasks/<task_id>/storage-objects", TaskStorageObjects),
+    ("/tasks/<task_id>/share-candidates", TaskShareCandidates),
+    ("/tasks/<task_id>/link-shares", TaskLinkShares),
+    ("/tasks/<task_id>/received-link-shares", TaskReceivedLinkShares),
     ("/output-packages/<package_id>/files", OutputPackageFiles),
     ("/output-package-files/<package_file_id>/download", OutputPackageFileDownload),
     ("/tasks/<task_id>/publishes", TaskPublishes),

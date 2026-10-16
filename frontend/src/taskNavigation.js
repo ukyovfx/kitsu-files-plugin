@@ -2,8 +2,8 @@ export const taskSections = Object.freeze([
   { id: 'files', label: 'Files', enabled: true },
   { id: 'working', label: 'Working', enabled: true },
   { id: 'publish', label: 'Publish', enabled: true },
-  { id: 'share', label: 'Share', enabled: false },
-  { id: 'received', label: 'Received Files', enabled: false },
+  { id: 'share', label: 'Share', enabled: true },
+  { id: 'received', label: 'Received Files', enabled: true },
   { id: 'handoffs', label: 'Department Handoff', enabled: true }
 ])
 

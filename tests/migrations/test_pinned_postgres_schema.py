@@ -3,7 +3,7 @@
 from sqlalchemy import inspect, text
 
 
-def test_vxf_0011_to_0019_and_runtime_compatibility_are_installed_on_pinned_postgres(zou_app):
+def test_vxf_0011_to_0020_and_runtime_compatibility_are_installed_on_pinned_postgres(zou_app):
     from plugin.authz import assert_compatible_host
     from plugin.compat import HOST_ZOU_VERSION, SCHEMA_EPOCH, WORKER_BUILD, assert_runtime_host
     from plugin.models import PluginState
@@ -14,7 +14,7 @@ def test_vxf_0011_to_0019_and_runtime_compatibility_are_installed_on_pinned_post
         installed_epoch = db.session.execute(
             text("SELECT schema_epoch FROM plugin_vfx_files_state WHERE id = 1")
         ).scalar_one()
-        assert installed_epoch == 18
+        assert installed_epoch == 19
         assert installed_epoch == SCHEMA_EPOCH
         assert_runtime_host()
         assert_compatible_host(HOST_ZOU_VERSION, installed_epoch, WORKER_BUILD)
@@ -29,6 +29,8 @@ def test_vxf_0011_to_0019_and_runtime_compatibility_are_installed_on_pinned_post
             "plugin_vfx_files_drive_authorization_intent",
             "plugin_vfx_files_production_drive_authority",
             "plugin_vfx_files_production_drive_authority_event",
+            "plugin_vfx_files_link_share",
+            "plugin_vfx_files_link_share_target",
         }
         assert all(schema.has_table(table) for table in expected_tables)
         assert "storage_connection_id" in {

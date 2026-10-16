@@ -15,6 +15,7 @@ from urllib.parse import urlsplit
 from uuid import UUID
 
 from .v1 import canonical_json, signed_event_headers, validate_event_batch
+from .share_v1_1 import validate_file_share_batch
 
 MAX_ATTEMPTS = 8
 MAX_RESPONSE_BYTES = 16 * 1024
@@ -27,6 +28,7 @@ class EventDeliveryConfig:
     endpoint: str
     key_id: str
     secret: bytes
+    contract_version_pin: str = "1.0"
 
     def __post_init__(self):
         parsed = urlsplit(self.endpoint)
@@ -36,6 +38,7 @@ class EventDeliveryConfig:
             or parsed.path != "/api/integrations/vfx-files/v1/events"
             or not _KEY_ID.fullmatch(self.key_id)
             or not isinstance(self.secret, bytes) or len(self.secret) < 32
+            or self.contract_version_pin not in {"1.0", "1.1"}
         ):
             raise ValueError("KitsuSync event delivery configuration is invalid")
 
@@ -46,6 +49,7 @@ def load_event_delivery_config(environ=None) -> EventDeliveryConfig | None:
     endpoint = env.get("VFX_FILES_KITSUSYNC_EVENT_ENDPOINT")
     key_id = env.get("VFX_FILES_KITSUSYNC_EVENT_KEY_ID")
     secret_path = env.get("VFX_FILES_KITSUSYNC_EVENT_HMAC_KEY_FILE")
+    contract_version_pin = env.get("VFX_FILES_KITSUSYNC_EVENT_CONTRACT_VERSION", "1.0")
     if not endpoint and not key_id and not secret_path:
         return None
     if not endpoint or not key_id or not secret_path:
@@ -64,7 +68,7 @@ def load_event_delivery_config(environ=None) -> EventDeliveryConfig | None:
             secret = key_file.read(4097)
         if len(secret) > 4096 or len(secret) < 32:
             raise ValueError
-        return EventDeliveryConfig(endpoint, key_id, secret)
+        return EventDeliveryConfig(endpoint, key_id, secret, contract_version_pin)
     except (OSError, ValueError):
         raise RuntimeError("KitsuSync event delivery key file is unavailable or insufficiently protected") from None
 
@@ -138,16 +142,26 @@ def dispatch_one(repository, receiver, config: EventDeliveryConfig, *, worker_id
             row, worker_id, "quarantined", response_code="activation_fence_changed",
         ) else "lease_lost"
 
+    version = row.payload.get("contract_version")
     try:
-        validate_event_batch({"contract_version": "1.0", "events": [row.payload]})
+        if version == "1.1" and row.event_type == "file_share.created":
+            validate_file_share_batch({"contract_version": "1.1", "events": [row.payload]})
+        elif version == "1.0":
+            validate_event_batch({"contract_version": "1.0", "events": [row.payload]})
+        else:
+            raise ValueError
         if row.payload.get("event_id") != row.event_id:
             raise ValueError
-        body = canonical_json({"contract_version": "1.0", "events": [row.payload]})
+        body = canonical_json({"contract_version": version, "events": [row.payload]})
     except (TypeError, ValueError):
         return "quarantined" if repository.finish(
             row, worker_id, "quarantined", response_code="invalid_outbox_event",
         ) else "lease_lost"
     timestamp = (now or datetime.now(timezone.utc)).astimezone(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+    idempotency_key = row.event_id
+    if version == "1.1":
+        import hashlib
+        idempotency_key = f"vfx-share-batch-{hashlib.sha256(row.event_id.encode('ascii')).hexdigest()}"
     try:
         headers = signed_event_headers(
             key_id=config.key_id,
@@ -155,7 +169,7 @@ def dispatch_one(repository, receiver, config: EventDeliveryConfig, *, worker_id
             timestamp=timestamp,
             nonce=secrets.token_urlsafe(24).replace("=", ""),
             raw_body=body,
-            idempotency_key=row.event_id,
+            idempotency_key=idempotency_key,
         )
         status, response = receiver.post(config.endpoint, body, headers)
     except Exception:
@@ -193,11 +207,14 @@ def dispatch_one(repository, receiver, config: EventDeliveryConfig, *, worker_id
 class SqlAlchemyEventOutbox:
     """PostgreSQL row-locked and lease-fenced adapter for the existing outbox table."""
 
-    def __init__(self, session_factory, *, lease_seconds=60):
+    def __init__(self, session_factory, *, lease_seconds=60, contract_version_pin="1.0"):
         if not 15 <= lease_seconds <= 3600:
             raise ValueError("Event outbox lease duration is outside the allowed range")
+        if contract_version_pin not in {"1.0", "1.1"}:
+            raise ValueError("Event outbox contract version pin is invalid")
         self.session_factory = session_factory
         self.lease_seconds = lease_seconds
+        self.contract_version_pin = contract_version_pin
 
     def claim_next(self, worker_id):
         from datetime import timedelta
@@ -221,6 +238,7 @@ class SqlAlchemyEventOutbox:
                     KitsuSyncEventOutbox.state.in_(("queued", "retry", "leased")),
                     KitsuSyncEventOutbox.available_at <= func.now(),
                     KitsuSyncEventOutbox.attempts < MAX_ATTEMPTS,
+                    or_(KitsuSyncEventOutbox.event_type != "file_share.created", self.contract_version_pin == "1.1"),
                     or_(KitsuSyncEventOutbox.state != "leased", KitsuSyncEventOutbox.lease_expires_at < func.now()),
                 ).order_by(KitsuSyncEventOutbox.available_at, KitsuSyncEventOutbox.created_at, KitsuSyncEventOutbox.id)
                 .with_for_update(skip_locked=True).limit(1)
@@ -232,6 +250,11 @@ class SqlAlchemyEventOutbox:
             row.lease_generation += 1
             row.lease_expires_at = session.scalar(select(func.now())) + timedelta(seconds=self.lease_seconds)
             row.attempts += 1
+            if row.event_type == "file_share.created" and self.contract_version_pin == "1.1":
+                from ..models import LinkShareTarget
+                target = session.scalar(select(LinkShareTarget).where(LinkShareTarget.event_id == row.event_id).with_for_update())
+                if target is not None and target.notification_status == "blocked_receiver_version":
+                    target.notification_status = "pending"
             session.flush()
             from types import SimpleNamespace
             return SimpleNamespace(
@@ -296,6 +319,14 @@ class SqlAlchemyEventOutbox:
                 available_at=(func.now() + timedelta(seconds=retry_after_seconds)) if retry_after_seconds else func.now(),
             )
             changed = session.execute(query).rowcount == 1
+            if changed and getattr(row, "event_type", "") == "file_share.created":
+                from ..models import LinkShareTarget
+                target = session.scalar(select(LinkShareTarget).where(LinkShareTarget.event_id == row.event_id).with_for_update())
+                if target is not None:
+                    if state == "delivered":
+                        target.notification_status = "inbox_accepted"
+                    elif state == "quarantined":
+                        target.notification_status = "quarantined"
             if changed and state == "delivered" and getattr(row, "event_type", "") in {
                 "storage_authority.deactivation_requested", "storage_authority.activation_requested",
             }:

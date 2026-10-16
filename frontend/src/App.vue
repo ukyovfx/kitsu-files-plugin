@@ -6,6 +6,7 @@ import PublishWorkflow from './components/PublishWorkflow.vue'
 import OutputPackagePanel from './components/OutputPackagePanel.vue'
 import DriveSettingsPanel from './components/DriveSettingsPanel.vue'
 import UploadPanel from './components/UploadPanel.vue'
+import TaskLinkShares from './components/TaskLinkShares.vue'
 import { taskSections } from './taskNavigation.js'
 import { createRequestGeneration, filesSurfaceMode } from './taskContext.js'
 import { safeTaskFolderLinks } from './taskFolderLinks.js'
@@ -172,9 +173,12 @@ onUnmounted(() => requests.invalidate())
         <HandoffPanel :handoffs="receivedHandoffs" :busy-id="busyId" @respond="respond" />
       </section>
 
-      <section v-else class="task-section panel gated-task-section" :aria-label="`${activeTaskSection === 'share' ? 'Share' : 'Received Files'} availability`">
-        <h2>{{ activeTaskSection === 'share' ? 'Share a Drive reference' : 'Received Files' }}</h2>
-        <p class="muted">This Task-scoped feature is not enabled yet. It will remain unavailable until the authenticated reference-sharing API and receiver compatibility gate are verified. No Drive files are copied, moved, or shared by changing permissions.</p>
+      <section v-else-if="activeTaskSection === 'share'" class="task-section" aria-label="Share a Drive reference">
+        <TaskLinkShares :task-id="taskId" mode="share" :api="api" />
+      </section>
+
+      <section v-else-if="activeTaskSection === 'received'" class="task-section" aria-label="Received Files">
+        <TaskLinkShares :task-id="taskId" mode="received" :api="api" />
       </section>
       </div>
       </template>

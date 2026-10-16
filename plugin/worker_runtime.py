@@ -151,7 +151,10 @@ def build_runtime(app):
             "revoke_drive_credential": make_drive_credential_revoke_handler(sessions, app.config, app.extensions),
         },
         event_delivery=(
-            (SqlAlchemyEventOutbox(sessions), HttpsEventReceiver(), event_config)
+            (SqlAlchemyEventOutbox(
+                sessions,
+                contract_version_pin=event_config.contract_version_pin,
+            ), HttpsEventReceiver(), event_config)
             if event_config is not None else None
         ),
     )

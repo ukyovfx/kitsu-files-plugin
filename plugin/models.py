@@ -625,3 +625,52 @@ class OutputPackageDeliveryEvent(db.Model):
     feedback = db.Column(Text)
     idempotency_key = db.Column(String(255), nullable=False, unique=True)
     created_at = db.Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
+class LinkShare(db.Model):
+    """One immutable original-Drive-reference share operation."""
+    __tablename__ = "plugin_vfx_files_link_share"
+    id = db.Column(UUIDType(binary=False), primary_key=True, default=uuid4)
+    production_id = db.Column(UUIDType(binary=False), nullable=False, index=True)
+    source_task_id = db.Column(UUIDType(binary=False), nullable=False)
+    source_entity_id = db.Column(UUIDType(binary=False), nullable=False)
+    source_entity_type = db.Column(String(16), nullable=False)
+    actor_id = db.Column(UUIDType(binary=False), nullable=False)
+    storage_connection_id = db.Column(UUIDType(binary=False), ForeignKey("plugin_vfx_files_storage_connection.id"), nullable=False)
+    object_id = db.Column(String(200), nullable=False)
+    object_type = db.Column(String(16), nullable=False, default="file")
+    object_url = db.Column(String(512), nullable=False, default="")
+    object_snapshot = db.Column(JSONB, nullable=False, default=dict)
+    request_idempotency_key = db.Column(String(128), nullable=False)
+    request_sha256 = db.Column(String(64), nullable=False)
+    state = db.Column(String(24), nullable=False, default="verifying")
+    created_at = db.Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    __table_args__ = (
+        UniqueConstraint("production_id", "request_idempotency_key", name="plugin_vfx_files_link_share_idem_uc"),
+        Index("plugin_vfx_files_link_share_source_ix", "production_id", "source_task_id", "created_at"),
+        db.CheckConstraint("source_entity_type IN ('shot','asset')", name="plugin_vfx_files_link_share_entity_type_ck"),
+        db.CheckConstraint("object_type IN ('file','folder')", name="plugin_vfx_files_link_share_object_type_ck"),
+        db.CheckConstraint("state IN ('verifying','created','failed')", name="plugin_vfx_files_link_share_state_ck"),
+    )
+
+
+class LinkShareTarget(db.Model):
+    """One durable share receipt and one immutable event per recipient Task."""
+    __tablename__ = "plugin_vfx_files_link_share_target"
+    id = db.Column(UUIDType(binary=False), primary_key=True, default=uuid4)
+    share_id = db.Column(UUIDType(binary=False), ForeignKey("plugin_vfx_files_link_share.id", ondelete="CASCADE"), nullable=False)
+    recipient_task_id = db.Column(UUIDType(binary=False), nullable=False)
+    recipient_task_type_id = db.Column(UUIDType(binary=False), nullable=False)
+    recipient_department_id = db.Column(UUIDType(binary=False))
+    event_id = db.Column(String(36), nullable=False, unique=True)
+    idempotency_key = db.Column(String(128), nullable=False, unique=True)
+    event_payload = db.Column(JSONB)
+    event_payload_sha256 = db.Column(String(64))
+    notification_status = db.Column(String(32), nullable=False, default="blocked_receiver_version")
+    created_at = db.Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at = db.Column(DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now())
+    __table_args__ = (
+        UniqueConstraint("share_id", "recipient_task_id", name="plugin_vfx_files_link_share_recipient_uc"),
+        Index("plugin_vfx_files_link_share_target_task_ix", "recipient_task_id", "created_at"),
+        db.CheckConstraint("notification_status IN ('blocked_receiver_version','blocked_disclosure','pending','inbox_accepted','quarantined','delivered')", name="plugin_vfx_files_link_share_notify_state_ck"),
+    )
