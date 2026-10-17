@@ -879,17 +879,13 @@ def test_legacy_import_requires_verified_root_and_explicit_revisioned_confirmati
     assert stale.value.code == "invalid_event"
 
 
-def test_native_legacy_import_route_transfers_configuration_inactive(legacy_import_database, monkeypatch):
+def _native_legacy_import_client(sessions, models, connection_id, monkeypatch):
     from types import SimpleNamespace
     from sqlalchemy import select
     from flask_jwt_extended import JWTManager, create_access_token
 
     from plugin import resources
-    from plugin.authz import ResolvedScope, issue_csrf_token
-    from plugin.models import ProductionDriveAuthority, SharedTemplateConfiguration
-
-    sessions, models, connection_id, legacy_config, original_tree = legacy_import_database
-    monkeypatch.delenv("VFX_FILES_KITSUSYNC_EVENT_ENDPOINT", raising=False)
+    from plugin.authz import ResolvedScope
 
     app = Flask(__name__)
     app.config.update(
@@ -903,7 +899,13 @@ def test_native_legacy_import_route_transfers_configuration_inactive(legacy_impo
     JWTManager(app)
     app.extensions["sqlalchemy"] = SimpleNamespace(engine=sessions.kw["bind"])
     capabilities = SimpleNamespace(root_visible=True, root_id="legacy-root", can_add_children=True)
-    adapter = SimpleNamespace(verify_root_candidate=lambda root_id: capabilities)
+
+    class StorageAdapter:
+        def verify_root_candidate(self, root_id):
+            assert root_id == "legacy-root"
+            return capabilities
+
+    adapter = StorageAdapter()
     monkeypatch.setattr(resources, "_assert_compatible", lambda: None)
     monkeypatch.setattr(resources, "current_actor_role", lambda _production_id: "manager")
     monkeypatch.setattr(
@@ -933,7 +935,17 @@ def test_native_legacy_import_route_transfers_configuration_inactive(legacy_impo
     )
     with app.app_context():
         token = create_access_token(identity=str(ACTOR))
-    client = app.test_client()
+    return app.test_client(), token, capabilities
+
+
+def test_native_legacy_import_route_transfers_configuration_inactive(legacy_import_database, monkeypatch):
+    from sqlalchemy import select
+    from plugin.authz import issue_csrf_token
+    from plugin.models import ProductionDriveAuthority, SharedTemplateConfiguration
+
+    sessions, models, connection_id, legacy_config, original_tree = legacy_import_database
+    monkeypatch.delenv("VFX_FILES_KITSUSYNC_EVENT_ENDPOINT", raising=False)
+    client, token, _capabilities = _native_legacy_import_client(sessions, models, connection_id, monkeypatch)
     path = f"/api/plugins/vfx_files/productions/{PRODUCTION}/drive/legacy-import"
     authorization = {"Authorization": f"Bearer {token}"}
     preview = client.get(path, headers=authorization, base_url="https://kitsu.example.test")
@@ -983,6 +995,107 @@ def test_native_legacy_import_route_transfers_configuration_inactive(legacy_impo
         assert template.template_tree == original_tree and template.enabled is False
         assert audit.actor_id == ACTOR and audit.event_type == "legacy_configuration_imported"
         assert audit.idempotency_key == "native-legacy-import-confirm-0001"
+
+
+def test_native_integrated_legacy_import_waits_for_durable_barrier_ack(legacy_import_database, monkeypatch):
+    from sqlalchemy import select
+
+    from plugin.authz import issue_csrf_token
+    from plugin.integrations.event_delivery import SqlAlchemyEventOutbox
+    from plugin.models import ProductionDriveAuthority, SharedTemplateConfiguration
+
+    sessions, models, connection_id, legacy_config, original_tree = legacy_import_database
+    monkeypatch.setenv(
+        "VFX_FILES_KITSUSYNC_EVENT_ENDPOINT",
+        "https://kitsusync.example.invalid/api/integrations/vfx-files/v1/events",
+    )
+    client, token, _capabilities = _native_legacy_import_client(sessions, models, connection_id, monkeypatch)
+    path = f"/api/plugins/vfx_files/productions/{PRODUCTION}/drive/legacy-import"
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Origin": "https://kitsu.example.test",
+        "X-VFX-Files-CSRF": issue_csrf_token("synthetic-kitsu-secret", ACTOR),
+        "If-Match": '"legacy-7"',
+    }
+    payload = {"contract_version": "1.0", "source_revision": 7, "confirm": True}
+
+    def confirm(idempotency_key):
+        return client.post(
+            path,
+            json=payload,
+            headers={**headers, "Idempotency-Key": idempotency_key},
+            base_url="https://kitsu.example.test",
+        )
+
+    preview = client.get(
+        path,
+        headers={"Authorization": f"Bearer {token}"},
+        base_url="https://kitsu.example.test",
+    )
+    assert preview.status_code == 200 and preview.json["handoff_barrier_status"] == "required"
+    pending = confirm("native-integrated-import-first-0001")
+    assert pending.status_code == 202
+    assert pending.headers["ETag"] == '"legacy-7"'
+    assert pending.json["import_status"] == "deactivation_barrier_pending"
+    assert pending.json["requires_explicit_confirmation_after_barrier"] is True
+
+    with sessions() as session:
+        authority = session.get(ProductionDriveAuthority, PRODUCTION)
+        outbox_row = session.scalar(select(models.KitsuSyncEventOutbox))
+        template = session.scalar(select(SharedTemplateConfiguration).where(
+            SharedTemplateConfiguration.production_id == PRODUCTION,
+        ))
+        assert authority.owner == "legacy_kitsusync"
+        assert authority.activation_transition_pending is True
+        assert authority.activation_enabled is False and authority.activation_epoch == 5
+        assert outbox_row.event_type == "storage_authority.deactivation_requested"
+        assert outbox_row.state == "queued" and template.enabled is True
+
+    before_ack = confirm("native-integrated-import-before-ack-0001")
+    assert before_ack.status_code == 409
+    assert before_ack.json["code"] == "legacy_import_barrier_pending"
+
+    with sessions.begin() as session:
+        row = session.scalar(select(models.KitsuSyncEventOutbox))
+        row.available_at = datetime.now(timezone.utc) - timedelta(seconds=2)
+
+    outbox = SqlAlchemyEventOutbox(sessions)
+    worker_id = uuid4()
+    claimed = outbox.claim_next(worker_id)
+    assert claimed is not None and claimed.event_type == "storage_authority.deactivation_requested"
+    assert outbox.is_current_activation(claimed)
+    assert outbox.finish(claimed, worker_id, "delivered", response_code="202")
+
+    after_ack = confirm("native-integrated-import-after-ack-0001")
+    assert after_ack.status_code == 200
+    assert after_ack.headers["ETag"] == '"plugin-9"'
+    assert after_ack.json["import_status"] == "imported_inactive"
+    assert after_ack.json["activation_enabled"] is False
+    assert after_ack.json["drive_operations_performed"] is False
+
+    with sessions() as session:
+        authority = session.get(ProductionDriveAuthority, PRODUCTION)
+        legacy = session.get(models.KitsuSyncDesiredConfiguration, PRODUCTION)
+        connection = session.get(models.StorageConnection, connection_id)
+        credential = session.get(models.DriveCredential, connection_id)
+        barrier = session.scalar(select(models.KitsuSyncEventOutbox))
+        template = session.scalar(select(SharedTemplateConfiguration).where(
+            SharedTemplateConfiguration.production_id == PRODUCTION,
+        ))
+        audit = session.scalar(select(models.ProductionDriveAuthorityEvent).where(
+            models.ProductionDriveAuthorityEvent.production_id == PRODUCTION,
+        ))
+        assert authority.owner == "plugin" and authority.state == "configured"
+        assert authority.connection_id == connection_id and authority.root_id == "legacy-root"
+        assert authority.activation_epoch == 5 and authority.config_revision == 9
+        assert authority.activation_enabled is False and authority.activation_transition_pending is False
+        assert legacy.desired_config == legacy_config
+        assert connection.allowed_root_id == "legacy-root" and connection.enabled is True
+        assert credential.ciphertext == b"encrypted" and credential.state == "active"
+        assert barrier.state == "delivered"
+        assert template.template_tree == original_tree and template.enabled is False
+        assert audit.actor_id == ACTOR and audit.event_type == "legacy_configuration_imported"
+        assert audit.idempotency_key == "native-integrated-import-after-ack-0001"
 
 
 def test_integrated_legacy_import_waits_for_durable_deactivation_barrier(oauth_db, monkeypatch):
