@@ -2,6 +2,7 @@
 
 import base64
 import json
+import os
 import sys
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
@@ -846,7 +847,9 @@ def test_integrated_legacy_import_waits_for_durable_deactivation_barrier(oauth_d
     from sqlalchemy import select, update
 
     from plugin.integrations.configuration import ConfigurationError
-    from plugin.integrations.event_delivery import SqlAlchemyEventOutbox
+    from plugin.integrations.event_delivery import (
+        EventDeliveryConfig, HttpsEventReceiver, SqlAlchemyEventOutbox, dispatch_one,
+    )
     from plugin.integrations.legacy_import import import_legacy_configuration
     from plugin.integrations.storage_authority import effective_drive_authority
     from plugin.models import ProductionDriveAuthority, SharedTemplateConfiguration
@@ -890,7 +893,26 @@ def test_integrated_legacy_import_waits_for_durable_deactivation_barrier(oauth_d
     with sessions.begin() as session:
         session.add_all([connection, credential, authority, legacy, template])
 
-    monkeypatch.setenv("VFX_FILES_KITSUSYNC_EVENT_ENDPOINT", "https://kitsusync.example.invalid/api/integrations/vfx-files/v1/events")
+    cross_endpoint = os.environ.get("VFX_FILES_CROSS_REPO_TEST_ENDPOINT")
+    cross_key_file = os.environ.get("VFX_FILES_CROSS_REPO_TEST_HMAC_KEY_FILE")
+    cross_key_id = os.environ.get("VFX_FILES_CROSS_REPO_TEST_KEY_ID")
+    cross_control_url = os.environ.get("VFX_FILES_CROSS_REPO_TEST_CONTROL_URL")
+    cross_control_key = os.environ.get("VFX_FILES_CROSS_REPO_TEST_CONTROL_KEY")
+    cross_repo = any((cross_endpoint, cross_key_file, cross_key_id, cross_control_url, cross_control_key))
+    if cross_repo and not all((cross_endpoint, cross_key_file, cross_key_id, cross_control_url, cross_control_key)):
+        pytest.fail("Cross-repository barrier test configuration is incomplete")
+    monkeypatch.setenv(
+        "VFX_FILES_KITSUSYNC_EVENT_ENDPOINT",
+        cross_endpoint or "https://kitsusync.example.invalid/api/integrations/vfx-files/v1/events",
+    )
+    receiver = HttpsEventReceiver()
+    delivery_config = None
+    if cross_repo:
+        from pathlib import Path
+
+        delivery_config = EventDeliveryConfig(
+            cross_endpoint, cross_key_id, Path(cross_key_file).read_bytes(),
+        )
     caps = SimpleNamespace(root_visible=True, root_id="legacy-root", can_add_children=True)
     request = {"contract_version": "1.0", "source_revision": 7, "confirm": True}
     with sessions() as session:
@@ -923,26 +945,35 @@ def test_integrated_legacy_import_waits_for_durable_deactivation_barrier(oauth_d
         row = session.scalar(select(models.KitsuSyncEventOutbox))
         row.available_at = datetime.now(timezone.utc) - timedelta(seconds=2)
     worker_id = uuid4()
-    leased = outbox.claim_next(worker_id)
-    assert leased is not None and leased.event_type == "storage_authority.deactivation_requested"
-    assert outbox.is_current_activation(leased)
-    assert outbox.finish(leased, worker_id, "retry", response_code="503", retry_after_seconds=1)
+    if cross_repo:
+        # Send the real signed outbox event to the KitsuSync HTTP receiver. Its
+        # unresolved old Discord outcome must withhold the durable ACK.
+        assert dispatch_one(outbox, receiver, delivery_config, worker_id=worker_id) == "retry"
+    else:
+        leased = outbox.claim_next(worker_id)
+        assert leased is not None and leased.event_type == "storage_authority.deactivation_requested"
+        assert outbox.is_current_activation(leased)
+        assert outbox.finish(leased, worker_id, "retry", response_code="503", retry_after_seconds=1)
 
     # A newly constructed worker resumes from the persisted retry row, modeling
     # worker restart against the durable database rather than in-memory state.
     with sessions.begin() as session:
         # SQLite's `CURRENT_TIMESTAMP + interval` emulation may return a
         # numeric value for DateTime; set the test clock with a typed value.
+        row_id = session.scalar(select(models.KitsuSyncEventOutbox.id))
         assert session.execute(update(models.KitsuSyncEventOutbox).where(
-            models.KitsuSyncEventOutbox.id == leased.id,
+            models.KitsuSyncEventOutbox.id == row_id,
         ).values(available_at=datetime.now(timezone.utc) - timedelta(seconds=2))).rowcount == 1
-        row = session.scalar(select(models.KitsuSyncEventOutbox))
-        assert row.state == "retry"
+        state = session.scalar(select(models.KitsuSyncEventOutbox.state).where(
+            models.KitsuSyncEventOutbox.id == row_id,
+        ))
+        assert state == "retry"
     recovered_outbox = SqlAlchemyEventOutbox(sessions)
     recovered_worker_id = uuid4()
-    recovered = recovered_outbox.claim_next(recovered_worker_id)
-    assert recovered is not None and recovered.event_id == leased.event_id
-    assert recovered_outbox.is_current_activation(recovered)
+    if not cross_repo:
+        recovered = recovered_outbox.claim_next(recovered_worker_id)
+        assert recovered is not None and recovered.event_id == leased.event_id
+        assert recovered_outbox.is_current_activation(recovered)
 
     with sessions() as session, pytest.raises(ConfigurationError) as retrying:
         import_legacy_configuration(
@@ -951,7 +982,22 @@ def test_integrated_legacy_import_waits_for_durable_deactivation_barrier(oauth_d
         )
     assert retrying.value.code == "legacy_import_barrier_pending"
 
-    assert recovered_outbox.finish(recovered, recovered_worker_id, "delivered", response_code="202")
+    if cross_repo:
+        # Resolve the synthetic pre-existing dispatch through a loopback-only,
+        # random-key control route, then recover the persisted retry with a new
+        # worker and require the receiver's post-commit barrier ACK.
+        from urllib.request import Request, urlopen
+
+        control = Request(cross_control_url, data=b"", method="POST", headers={
+            "X-Test-Control-Key": cross_control_key,
+        })
+        with urlopen(control, timeout=10) as response:
+            assert response.status == 204
+        assert dispatch_one(
+            recovered_outbox, receiver, delivery_config, worker_id=recovered_worker_id,
+        ) == "delivered"
+    else:
+        assert recovered_outbox.finish(recovered, recovered_worker_id, "delivered", response_code="202")
 
     with sessions() as session:
         authority = session.get(ProductionDriveAuthority, PRODUCTION)
