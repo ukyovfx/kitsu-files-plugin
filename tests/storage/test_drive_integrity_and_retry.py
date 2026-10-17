@@ -278,8 +278,12 @@ def test_duplicate_reserved_folder_is_reconciled_to_the_existing_object():
 
 @pytest.mark.parametrize(
     "existing",
-    [folder("reserved-folder", ["other-parent"]), folder("reserved-folder", ["root-1"], mime_type="application/pdf")],
-    ids=["conflicting-parent", "conflicting-mime"],
+    [
+        folder("reserved-folder", ["other-parent"]),
+        folder("reserved-folder", ["root-1"], mime_type="application/pdf"),
+        folder("reserved-folder", ["root-1"], trashed=True),
+    ],
+    ids=["conflicting-parent", "conflicting-mime", "trashed-object"],
 )
 def test_duplicate_reserved_folder_with_conflicting_metadata_stays_ambiguous(existing):
     transport = FakeTransport(

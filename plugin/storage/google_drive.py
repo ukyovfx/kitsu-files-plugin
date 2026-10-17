@@ -207,7 +207,7 @@ class GoogleDriveStorageAdapter:
         response = self._request("POST", f"{API}/files", params={"supportsAllDrives": "true", "fields": "id,name,mimeType,parents,driveId,trashed"}, json=body)
         if response.status_code == 409:
             existing = self.get(reserved_id)
-            if existing and existing.parent_id == parent_id and existing.mime_type == FOLDER_MIME:
+            if existing and not existing.trashed and existing.parent_id == parent_id and existing.mime_type == FOLDER_MIME:
                 return existing
             raise AmbiguousOutcome("Reserved Drive ID exists with conflicting metadata")
         if response.status_code in (401, 403):
