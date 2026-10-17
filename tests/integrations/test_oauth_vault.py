@@ -428,6 +428,55 @@ def test_native_kitsu_authorization_requires_manager_role_and_same_origin_csrf(o
     assert allowed_preview.json["status"] == "no_legacy_configuration"
     assert allowed_preview.json["writes_performed"] is False
 
+    from plugin.integrations import legacy_import as legacy_import_module
+
+    connection_row = SimpleNamespace(id=uuid4(), production_id=PRODUCTION, account_mode="my_drive")
+    capabilities = SimpleNamespace(root_visible=True, root_id="verified-root", can_add_children=True)
+
+    class ConnectionQuery:
+        def filter_by(self, **filters):
+            assert filters == {"id": str(connection_row.id), "production_id": PRODUCTION}
+            return self
+
+        def one_or_none(self):
+            return connection_row
+
+    class StorageAdapter:
+        def verify_root_candidate(self, root_id):
+            assert root_id == "verified-root"
+            return capabilities
+
+    monkeypatch.setattr(models.StorageConnection, "query", ConnectionQuery(), raising=False)
+    monkeypatch.setattr(resources, "_storage_adapter", lambda _connection, **_kwargs: StorageAdapter())
+    monkeypatch.setattr(legacy_import_module, "preview_legacy_import", lambda _session, _production: {
+        "status": "ready_for_explicit_review",
+        "connection_id": str(connection_row.id),
+        "root_id": "verified-root",
+        "source_revision": 7,
+    })
+    import_calls = []
+
+    def confirm_import(_session, **kwargs):
+        import_calls.append(kwargs)
+        return {"import_status": "imported_inactive"}, 200, '"plugin-8"'
+
+    monkeypatch.setattr(legacy_import_module, "import_legacy_configuration", confirm_import)
+    confirmed = client.post(
+        legacy_import_path,
+        json={"contract_version": "1.0", "source_revision": 7, "confirm": True},
+        headers={**headers, "Idempotency-Key": "native-kitsu-legacy-import-admin-0001", "If-Match": '"legacy-7"'},
+        base_url="https://kitsu.example.test",
+    )
+    assert confirmed.status_code == 200
+    assert confirmed.json["import_status"] == "imported_inactive"
+    assert confirmed.headers["ETag"] == '"plugin-8"'
+    assert len(import_calls) == 1
+    assert import_calls[0]["actor_id"] == ACTOR
+    assert import_calls[0]["payload"] == {"contract_version": "1.0", "source_revision": 7, "confirm": True}
+    assert import_calls[0]["idempotency_key"] == "native-kitsu-legacy-import-admin-0001"
+    assert import_calls[0]["if_match"] == '"legacy-7"'
+    assert import_calls[0]["capabilities"] is capabilities
+
     role[0] = "user"
     hidden_status = client.get(
         f"/api/plugins/vfx_files/productions/{PRODUCTION}/drive/status",
