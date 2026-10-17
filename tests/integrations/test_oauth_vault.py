@@ -357,6 +357,11 @@ def test_native_kitsu_authorization_requires_manager_role_and_same_origin_csrf(o
         view_func=resources.NativeDriveConfiguration.as_view("native_drive_configuration"),
         methods=["GET"],
     )
+    app.add_url_rule(
+        "/api/plugins/vfx_files/productions/<production_id>/drive/legacy-import",
+        view_func=resources.NativeDriveLegacyImport.as_view("native_drive_legacy_import"),
+        methods=["GET", "POST"],
+    )
     with app.app_context():
         token = create_access_token(identity=str(ACTOR))
     client = app.test_client()
@@ -427,6 +432,20 @@ def test_native_kitsu_authorization_requires_manager_role_and_same_origin_csrf(o
         base_url="https://kitsu.example.test",
     )
     assert denied.status_code == 403
+    legacy_import_path = f"/api/plugins/vfx_files/productions/{PRODUCTION}/drive/legacy-import"
+    denied_preview = client.get(
+        legacy_import_path,
+        headers={"Authorization": f"Bearer {token}"},
+        base_url="https://kitsu.example.test",
+    )
+    assert denied_preview.status_code == 403
+    denied_import = client.post(
+        legacy_import_path,
+        json={"contract_version": "1.0", "source_revision": 1, "confirm": True},
+        headers={**headers, "Idempotency-Key": "native-kitsu-legacy-import-user-denied"},
+        base_url="https://kitsu.example.test",
+    )
+    assert denied_import.status_code == 403
     bad_origin = client.post(
         path,
         json={"contract_version": "1.0", "account_mode": "my_drive"},
