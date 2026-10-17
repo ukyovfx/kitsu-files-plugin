@@ -13,8 +13,8 @@ function json(route, body, status = 200) {
 }
 
 async function openFiles(page) {
-  await page.goto(`/?production_id=${productionId}`)
-  await expect(page.getByRole('heading', { name: 'Files', level: 1, exact: true })).toBeVisible()
+  await page.goto(`/?production_id=${productionId}&task_id=${taskId}`)
+  await expect(page.locator('.files-page[data-mode="task"]')).toBeVisible()
 }
 
 test('Working snapshot resumes after a deterministic part-transfer failure and finalizes once', async ({ page }) => {
@@ -32,6 +32,9 @@ test('Working snapshot resumes after a deterministic part-transfer failure and f
     const url = new URL(request.url())
     if (url.pathname.endsWith('/csrf-token')) return json(route, { csrf_token: 'synthetic-csrf', expires_in: 900 })
     if (url.pathname.endsWith('/overview')) return json(route, { production_id: productionId, tasks: [{ id: taskId, task_type_id: 'Animation', entity_id: 'SHOT010' }], upload_ready: true, publishes: [], handoffs: [] })
+    if (url.pathname.endsWith('/output-package-options')) return json(route, { task_id: taskId, output_types: [], storage_root_id: '' })
+    if (url.pathname.endsWith('/output-packages')) return json(route, [])
+    if (url.pathname.endsWith('/storage-objects')) return json(route, { task_id: taskId, parent_id: null, items: [], next_page_token: null })
     if (url.pathname.endsWith(`/tasks/${taskId}/working-revisions`) && request.method() === 'GET') return json(route, { task_id: taskId, latest_working_id: latestWorkingId, revisions: reserved ? [revision] : [] })
     if (url.pathname.endsWith(`/tasks/${taskId}/working-revisions`) && request.method() === 'POST') { reserved = true; return json(route, revision, 201) }
     if (url.pathname.endsWith(`/uploads/${uploadId}`) && request.method() === 'GET') return json(route, { ...session, parts: [...storedParts.values()] })
@@ -54,7 +57,7 @@ test('Working snapshot resumes after a deterministic part-transfer failure and f
   })
 
   await openFiles(page)
-  await page.getByLabel('Choose Task').selectOption(taskId)
+  await page.getByRole('tab', { name: 'Working', exact: true }).click()
   const fileInput = page.locator('input[type="file"]')
   await fileInput.setInputFiles({ name: 'plate.mov', mimeType: 'video/quicktime', buffer: Buffer.from('abc') })
   await expect(page.getByRole('alert')).toContainText('Files is temporarily unavailable')
@@ -84,6 +87,9 @@ test('Needs Fix requires feedback and Accepted persists after the page reloads',
       publishes: [{ id: 'p1', task_id: taskId, output_family_id: 'family1', output_family_name: 'Comp', version: 4, state: 'completed', qc_state: 'passed', latest_published: true, latest_approved: false }, { id: 'p2', task_id: taskId, output_family_id: 'family1', output_family_name: 'Comp', version: 3, state: 'completed', qc_state: 'passed', latest_published: false, latest_approved: true }],
       handoffs: [{ id: handoffId, task_id: taskId, publish_id: 'p1', recipient_id: 'synthetic-recipient', state }]
     })
+    if (url.pathname.endsWith('/output-package-options')) return json(route, { task_id: taskId, output_types: [], storage_root_id: '' })
+    if (url.pathname.endsWith('/output-packages')) return json(route, [])
+    if (url.pathname.endsWith('/storage-objects')) return json(route, { task_id: taskId, parent_id: null, items: [], next_page_token: null })
     if (url.pathname.endsWith(`/handoffs/${handoffId}/respond`)) {
       const payload = JSON.parse(request.postData())
       expect(payload).toMatchObject({ target: 'accepted', feedback: '' })
@@ -95,68 +101,41 @@ test('Needs Fix requires feedback and Accepted persists after the page reloads',
   })
 
   await openFiles(page)
-  await expect(page.getByText('Latest Published')).toHaveCount(2)
+  await page.getByRole('tab', { name: 'Department Handoff', exact: true }).click()
+  await expect(page.getByRole('heading', { name: 'Awaiting your response', exact: true })).toBeVisible()
   await expect(page.getByRole('button', { name: 'Needs Fix' })).toBeDisabled()
   await page.getByRole('button', { name: 'Accept' }).click()
   await expect(page.locator('[data-state="accepted"]')).toBeVisible()
   expect(responseCount).toBe(1)
 
   await page.reload()
+  await page.getByRole('tab', { name: 'Department Handoff', exact: true }).click()
   await expect(page.locator('[data-state="accepted"]')).toBeVisible()
-  await expect(page.getByText('Latest Published')).toHaveCount(2)
 })
 
-test('template setup stays disabled until activation and refreshes folder bindings', async ({ page }) => {
-  let config = { configured: false, enabled: false }
-  let bindingsReady = false
-  const tree = { folder_id: 'template-root', name: 'Studio Shared', children: [
-    { folder_id: 'shot-role', name: '{shot}', children: [{ folder_id: 'task-role', name: '{task}', children: [] }] }
-  ] }
+test('Production settings expose the Plugin Drive authority without a Task selector', async ({ page }) => {
   await page.route('**/api/plugins/vfx_files/**', async (route) => {
-    const request = route.request()
-    const url = new URL(request.url())
-    if (url.pathname.endsWith('/csrf-token')) return json(route, { csrf_token: 'synthetic-csrf', expires_in: 900 })
-    if (url.pathname.endsWith('/overview')) return json(route, { production_id: productionId, tasks: [{ id: taskId, task_type_id: 'comp', entity_id: 'shot-1' }], upload_ready: false, publishes: [], handoffs: [] })
-    if (url.pathname.endsWith('/shared-template/candidates')) return json(route, { templates: [tree] })
-    if (url.pathname.endsWith('/shared-template') && request.method() === 'GET') return json(route, config)
-    if (url.pathname.endsWith('/shared-template') && request.method() === 'POST') {
-      const payload = JSON.parse(request.postData())
-      expect(payload).toMatchObject({ template_folder_id: 'template-root', role_mappings: { shot: 'shot-role', task: 'task-role' } })
-      config = { configured: true, enabled: false, version: 1, allowed_root_id: 'authorized-root', template_folder_id: 'template-root', template_tree: tree, role_mappings: payload.role_mappings }
-      return json(route, { id: 'config-1', version: 1, enabled: false, template_folder_id: 'template-root' }, 201)
-    }
-    if (url.pathname.endsWith('/shared-template/activate')) {
-      config.enabled = JSON.parse(request.postData()).enabled
-      return json(route, { id: 'config-1', version: 1, enabled: config.enabled })
-    }
-    if (url.pathname.endsWith('/shared-folders') && request.method() === 'POST') return json(route, { job_id: 'job-1', state: 'queued' }, 202)
-    if (url.pathname.endsWith('/shared-folders') && request.method() === 'GET') {
-      const state = bindingsReady ? 'ready' : 'pending'
-      return json(route, { configured: true, enabled: true, folders: [
-        { scope_key: 'shot-1', name: 'sh010', state, url: bindingsReady ? 'https://drive.google.com/drive/folders/folder-1' : null },
-        { scope_key: 'task-1', name: 'comp', state, url: bindingsReady ? 'https://drive.google.com/drive/folders/folder-2' : null }
-      ] })
-    }
-    return json(route, { error: 'unexpected test request' }, 500)
+    const url = new URL(route.request().url())
+    if (url.pathname.endsWith('/drive/status')) return json(route, {
+      production_id: productionId,
+      owner: 'plugin',
+      state: 'unconfigured',
+      credential_state: 'none',
+      root_state: 'unconfigured',
+      activation_enabled: false,
+      activation_transition_pending: false,
+      config_revision: 0
+    })
+    if (url.pathname.endsWith('/drive/configuration')) return json(route, { production_id: productionId, configured: false })
+    if (url.pathname.endsWith('/drive/connections')) return json(route, { production_id: productionId, connections: [] })
+    return json(route, { error: 'unexpected request' }, 500)
   })
 
-  await openFiles(page)
-  await page.getByRole('button', { name: /Folder template setup/ }).click()
-  await page.getByLabel('Google Drive root URL').fill('https://drive.google.com/drive/folders/authorized-root')
-  await page.getByRole('button', { name: 'Discover' }).click()
-  await page.getByLabel('Folder template', { exact: true }).selectOption('template-root')
-  await page.getByLabel('Shot mapping').selectOption('shot-role')
-  await page.getByLabel('Task mapping').selectOption('task-role')
-  await page.getByRole('button', { name: 'Save disabled configuration' }).click()
-  await expect(page.getByText('Configuration v1 · disabled')).toBeVisible()
-  await page.getByRole('button', { name: 'Activate provisioning' }).click()
-  await page.getByLabel('Provision Task folders').selectOption(taskId)
-  await page.getByRole('button', { name: 'Create or reuse' }).click()
-  await expect(page.getByText('Folder job queued: job-1')).toBeVisible()
-  await expect(page.getByText('Waiting for worker')).toHaveCount(2)
-  bindingsReady = true
-  await page.getByRole('button', { name: 'Refresh bindings' }).click()
-  await expect(page.getByRole('link', { name: 'Open folder' })).toHaveCount(2)
-  await page.reload()
-  await expect(page.getByRole('link', { name: 'Open folder' })).toHaveCount(2)
+  await page.goto(`/?production_id=${productionId}`)
+  await expect(page.locator('.files-page[data-mode="admin"]')).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Google Drive', exact: true })).toBeVisible()
+  await expect(page.getByText('VFX Files Plugin', { exact: true })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Connect Google Drive', exact: true })).toBeVisible()
+  await expect(page.getByLabel('Choose Task')).toHaveCount(0)
+  await expect(page.getByText(/Folder template setup/)).toHaveCount(0)
 })

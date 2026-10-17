@@ -157,7 +157,7 @@ onUnmounted(() => requests.invalidate())
           <p v-else-if="verifiedFolderLinks.length" class="folder-links"><a v-for="folder in verifiedFolderLinks" :key="folder.scope_key" :href="folder.url" target="_blank" rel="noopener noreferrer">Open {{ folder.name }}</a></p>
           <p v-else class="muted">No verified Task folder bindings are ready yet. Folder setup is managed in VFX Files Plugin settings.</p>
         </section>
-        <OutputPackagePanel :tasks="overview.tasks" :publishes="overview.publishes" :fixed-task-id="taskId" :api="api" @changed="load" />
+        <OutputPackagePanel :task-id="taskId" :tasks="overview.tasks" :publishes="overview.publishes" :fixed-task-id="taskId" :api="api" @changed="load" />
       </section>
 
       <section v-else-if="activeTaskSection === 'working'" class="task-section" aria-label="Working files for this Task">
