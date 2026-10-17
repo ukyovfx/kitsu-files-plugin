@@ -428,55 +428,6 @@ def test_native_kitsu_authorization_requires_manager_role_and_same_origin_csrf(o
     assert allowed_preview.json["status"] == "no_legacy_configuration"
     assert allowed_preview.json["writes_performed"] is False
 
-    from plugin.integrations import legacy_import as legacy_import_module
-
-    connection_row = SimpleNamespace(id=uuid4(), production_id=PRODUCTION, account_mode="my_drive")
-    capabilities = SimpleNamespace(root_visible=True, root_id="verified-root", can_add_children=True)
-
-    class ConnectionQuery:
-        def filter_by(self, **filters):
-            assert filters == {"id": str(connection_row.id), "production_id": PRODUCTION}
-            return self
-
-        def one_or_none(self):
-            return connection_row
-
-    class StorageAdapter:
-        def verify_root_candidate(self, root_id):
-            assert root_id == "verified-root"
-            return capabilities
-
-    monkeypatch.setattr(models.StorageConnection, "query", ConnectionQuery(), raising=False)
-    monkeypatch.setattr(resources, "_storage_adapter", lambda _connection, **_kwargs: StorageAdapter())
-    monkeypatch.setattr(legacy_import_module, "preview_legacy_import", lambda _session, _production: {
-        "status": "ready_for_explicit_review",
-        "connection_id": str(connection_row.id),
-        "root_id": "verified-root",
-        "source_revision": 7,
-    })
-    import_calls = []
-
-    def confirm_import(_session, **kwargs):
-        import_calls.append(kwargs)
-        return {"import_status": "imported_inactive"}, 200, '"plugin-8"'
-
-    monkeypatch.setattr(legacy_import_module, "import_legacy_configuration", confirm_import)
-    confirmed = client.post(
-        legacy_import_path,
-        json={"contract_version": "1.0", "source_revision": 7, "confirm": True},
-        headers={**headers, "Idempotency-Key": "native-kitsu-legacy-import-admin-0001", "If-Match": '"legacy-7"'},
-        base_url="https://kitsu.example.test",
-    )
-    assert confirmed.status_code == 200
-    assert confirmed.json["import_status"] == "imported_inactive"
-    assert confirmed.headers["ETag"] == '"plugin-8"'
-    assert len(import_calls) == 1
-    assert import_calls[0]["actor_id"] == ACTOR
-    assert import_calls[0]["payload"] == {"contract_version": "1.0", "source_revision": 7, "confirm": True}
-    assert import_calls[0]["idempotency_key"] == "native-kitsu-legacy-import-admin-0001"
-    assert import_calls[0]["if_match"] == '"legacy-7"'
-    assert import_calls[0]["capabilities"] is capabilities
-
     role[0] = "user"
     hidden_status = client.get(
         f"/api/plugins/vfx_files/productions/{PRODUCTION}/drive/status",
@@ -826,15 +777,11 @@ def test_integrated_credential_loss_queues_deactivation_barrier(oauth_db, monkey
         assert row.payload["activation_epoch"] == 13 and row.payload["new_activation_epoch"] == 14
 
 
-def test_legacy_import_requires_verified_root_and_explicit_revisioned_confirmation(oauth_db):
-    from types import SimpleNamespace
-    from sqlalchemy import select
-
-    from plugin.integrations.configuration import ConfigurationError
-    from plugin.integrations.legacy_import import import_legacy_configuration
-    from plugin.models import ProductionDriveAuthority, SharedTemplateConfiguration
-
+@pytest.fixture
+def legacy_import_database(oauth_db):
     sessions, models, _keyring, _extensions = oauth_db
+    from plugin.models import SharedTemplateConfiguration
+
     connection_id = uuid4()
     original_tree = {"folder_id": "existing-tree", "name": "", "children": []}
     legacy_config = {
@@ -875,6 +822,19 @@ def test_legacy_import_requires_verified_root_and_explicit_revisioned_confirmati
     )
     with sessions.begin() as session:
         session.add_all([connection, credential, authority, legacy, template])
+
+    return sessions, models, connection_id, legacy_config, original_tree
+
+
+def test_legacy_import_requires_verified_root_and_explicit_revisioned_confirmation(legacy_import_database):
+    from types import SimpleNamespace
+    from sqlalchemy import select
+
+    from plugin.integrations.configuration import ConfigurationError
+    from plugin.integrations.legacy_import import import_legacy_configuration
+    from plugin.models import ProductionDriveAuthority, SharedTemplateConfiguration
+
+    sessions, models, _connection_id, legacy_config, original_tree = legacy_import_database
 
     caps = SimpleNamespace(root_visible=True, root_id="legacy-root", can_add_children=True)
     request = {"contract_version": "1.0", "source_revision": 7, "confirm": True}
@@ -917,6 +877,112 @@ def test_legacy_import_requires_verified_root_and_explicit_revisioned_confirmati
             idempotency_key="legacy-import-confirm-0002", if_match='"legacy-6"', capabilities=caps,
         )
     assert stale.value.code == "invalid_event"
+
+
+def test_native_legacy_import_route_transfers_configuration_inactive(legacy_import_database, monkeypatch):
+    from types import SimpleNamespace
+    from sqlalchemy import select
+    from flask_jwt_extended import JWTManager, create_access_token
+
+    from plugin import resources
+    from plugin.authz import ResolvedScope, issue_csrf_token
+    from plugin.models import ProductionDriveAuthority, SharedTemplateConfiguration
+
+    sessions, models, connection_id, legacy_config, original_tree = legacy_import_database
+    monkeypatch.delenv("VFX_FILES_KITSUSYNC_EVENT_ENDPOINT", raising=False)
+
+    app = Flask(__name__)
+    app.config.update(
+        TESTING=True,
+        SECRET_KEY="synthetic-kitsu-secret",
+        JWT_SECRET_KEY="synthetic-jwt-secret-with-more-than-32-bytes",
+        JWT_TOKEN_LOCATION=["headers"],
+        VFX_FILES_KITSU_ORIGIN="https://kitsu.example.test",
+        **SETTINGS,
+    )
+    JWTManager(app)
+    app.extensions["sqlalchemy"] = SimpleNamespace(engine=sessions.kw["bind"])
+    capabilities = SimpleNamespace(root_visible=True, root_id="legacy-root", can_add_children=True)
+    adapter = SimpleNamespace(verify_root_candidate=lambda root_id: capabilities)
+    monkeypatch.setattr(resources, "_assert_compatible", lambda: None)
+    monkeypatch.setattr(resources, "current_actor_role", lambda _production_id: "manager")
+    monkeypatch.setattr(
+        resources,
+        "_resolve_scope",
+        lambda _actor, _production_id: ResolvedScope(PRODUCTION, None, None),
+    )
+    monkeypatch.setattr(resources, "_storage_adapter", lambda _connection, **_kwargs: adapter)
+
+    class ConnectionQuery:
+        def filter_by(self, **filters):
+            assert filters == {"id": str(connection_id), "production_id": PRODUCTION}
+            return self
+
+        def one_or_none(self):
+            with sessions() as session:
+                return session.scalar(select(models.StorageConnection).where(
+                    models.StorageConnection.id == connection_id,
+                    models.StorageConnection.production_id == PRODUCTION,
+                ))
+
+    monkeypatch.setattr(models.StorageConnection, "query", ConnectionQuery(), raising=False)
+    app.add_url_rule(
+        "/api/plugins/vfx_files/productions/<production_id>/drive/legacy-import",
+        view_func=resources.NativeDriveLegacyImport.as_view("native_legacy_import_route"),
+        methods=["GET", "POST"],
+    )
+    with app.app_context():
+        token = create_access_token(identity=str(ACTOR))
+    client = app.test_client()
+    path = f"/api/plugins/vfx_files/productions/{PRODUCTION}/drive/legacy-import"
+    authorization = {"Authorization": f"Bearer {token}"}
+    preview = client.get(path, headers=authorization, base_url="https://kitsu.example.test")
+    assert preview.status_code == 200
+    assert preview.json["status"] == "ready_for_explicit_review"
+    assert preview.json["source_revision"] == 7
+    assert preview.json["proposed_activation_enabled"] is False
+    assert preview.json["writes_performed"] is False
+
+    response = client.post(
+        path,
+        json={"contract_version": "1.0", "source_revision": 7, "confirm": True},
+        headers={
+            **authorization,
+            "Origin": "https://kitsu.example.test",
+            "X-VFX-Files-CSRF": issue_csrf_token("synthetic-kitsu-secret", ACTOR),
+            "Idempotency-Key": "native-legacy-import-confirm-0001",
+            "If-Match": '"legacy-7"',
+        },
+        base_url="https://kitsu.example.test",
+    )
+    assert response.status_code == 200
+    assert response.headers["ETag"] == '"plugin-8"'
+    assert response.json["import_status"] == "imported_inactive"
+    assert response.json["activation_enabled"] is False
+    assert response.json["drive_operations_performed"] is False
+
+    with sessions() as session:
+        authority = session.get(ProductionDriveAuthority, PRODUCTION)
+        legacy = session.get(models.KitsuSyncDesiredConfiguration, PRODUCTION)
+        connection = session.get(models.StorageConnection, connection_id)
+        credential = session.get(models.DriveCredential, connection_id)
+        template = session.scalar(select(SharedTemplateConfiguration).where(
+            SharedTemplateConfiguration.production_id == PRODUCTION,
+        ))
+        audit = session.scalar(select(models.ProductionDriveAuthorityEvent).where(
+            models.ProductionDriveAuthorityEvent.production_id == PRODUCTION,
+        ))
+        assert authority.owner == "plugin" and authority.state == "configured"
+        assert authority.connection_id == connection_id and authority.root_id == "legacy-root"
+        assert authority.activation_epoch == 5 and authority.config_revision == 8
+        assert authority.activation_enabled is False and authority.activation_transition_pending is False
+        assert authority.desired_config["activation"]["enabled"] is False
+        assert legacy.desired_config == legacy_config
+        assert connection.allowed_root_id == "legacy-root" and connection.enabled is True
+        assert credential.ciphertext == b"encrypted" and credential.state == "active"
+        assert template.template_tree == original_tree and template.enabled is False
+        assert audit.actor_id == ACTOR and audit.event_type == "legacy_configuration_imported"
+        assert audit.idempotency_key == "native-legacy-import-confirm-0001"
 
 
 def test_integrated_legacy_import_waits_for_durable_deactivation_barrier(oauth_db, monkeypatch):
