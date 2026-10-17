@@ -843,7 +843,7 @@ def test_legacy_import_requires_verified_root_and_explicit_revisioned_confirmati
 
 def test_integrated_legacy_import_waits_for_durable_deactivation_barrier(oauth_db, monkeypatch):
     from types import SimpleNamespace
-    from sqlalchemy import select
+    from sqlalchemy import select, update
 
     from plugin.integrations.configuration import ConfigurationError
     from plugin.integrations.event_delivery import SqlAlchemyEventOutbox
@@ -908,6 +908,16 @@ def test_integrated_legacy_import_waits_for_durable_deactivation_barrier(oauth_d
         assert authority.owner == "legacy_kitsusync" and authority.activation_transition_pending
         assert authority.activation_epoch == 5 and template.enabled is True
 
+    # The first confirmation only requests a durable receiver fence. A second
+    # administrator confirmation must not transfer ownership while that ACK
+    # is absent, including after the outbox attempt has entered retry state.
+    with sessions() as session, pytest.raises(ConfigurationError) as unacknowledged:
+        import_legacy_configuration(
+            session, production_id=PRODUCTION, actor_id=ACTOR, payload=request,
+            idempotency_key="legacy-import-before-ack-0001", if_match='"legacy-7"', capabilities=caps,
+        )
+    assert unacknowledged.value.code == "legacy_import_barrier_pending"
+
     outbox = SqlAlchemyEventOutbox(sessions)
     with sessions.begin() as session:
         row = session.scalar(select(models.KitsuSyncEventOutbox))
@@ -916,13 +926,42 @@ def test_integrated_legacy_import_waits_for_durable_deactivation_barrier(oauth_d
     leased = outbox.claim_next(worker_id)
     assert leased is not None and leased.event_type == "storage_authority.deactivation_requested"
     assert outbox.is_current_activation(leased)
-    assert outbox.finish(leased, worker_id, "delivered", response_code="202")
+    assert outbox.finish(leased, worker_id, "retry", response_code="503", retry_after_seconds=1)
+
+    # A newly constructed worker resumes from the persisted retry row, modeling
+    # worker restart against the durable database rather than in-memory state.
+    with sessions.begin() as session:
+        # SQLite's `CURRENT_TIMESTAMP + interval` emulation may return a
+        # numeric value for DateTime; set the test clock with a typed value.
+        assert session.execute(update(models.KitsuSyncEventOutbox).where(
+            models.KitsuSyncEventOutbox.id == leased.id,
+        ).values(available_at=datetime.now(timezone.utc) - timedelta(seconds=2))).rowcount == 1
+        row = session.scalar(select(models.KitsuSyncEventOutbox))
+        assert row.state == "retry"
+    recovered_outbox = SqlAlchemyEventOutbox(sessions)
+    recovered_worker_id = uuid4()
+    recovered = recovered_outbox.claim_next(recovered_worker_id)
+    assert recovered is not None and recovered.event_id == leased.event_id
+    assert recovered_outbox.is_current_activation(recovered)
+
+    with sessions() as session, pytest.raises(ConfigurationError) as retrying:
+        import_legacy_configuration(
+            session, production_id=PRODUCTION, actor_id=ACTOR, payload=request,
+            idempotency_key="legacy-import-during-retry-0001", if_match='"legacy-7"', capabilities=caps,
+        )
+    assert retrying.value.code == "legacy_import_barrier_pending"
+
+    assert recovered_outbox.finish(recovered, recovered_worker_id, "delivered", response_code="202")
 
     with sessions() as session:
         authority = session.get(ProductionDriveAuthority, PRODUCTION)
         effective = effective_drive_authority(session, PRODUCTION)
         assert authority.owner == "legacy_kitsusync" and authority.activation_transition_pending
         assert effective["activation_epoch"] == 5 and not effective["activation_enabled"]
+        template = session.scalar(select(SharedTemplateConfiguration).where(
+            SharedTemplateConfiguration.production_id == PRODUCTION,
+        ))
+        assert template is not None and template.enabled is False
 
     with sessions() as session:
         body, status, etag = import_legacy_configuration(
