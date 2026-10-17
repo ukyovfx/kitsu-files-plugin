@@ -879,7 +879,7 @@ def test_legacy_import_requires_verified_root_and_explicit_revisioned_confirmati
     assert stale.value.code == "invalid_event"
 
 
-def _native_legacy_import_client(sessions, models, connection_id, monkeypatch):
+def _native_legacy_import_client(sessions, models, connection_id, monkeypatch, *, actor_role="manager"):
     from types import SimpleNamespace
     from sqlalchemy import select
     from flask_jwt_extended import JWTManager, create_access_token
@@ -907,7 +907,7 @@ def _native_legacy_import_client(sessions, models, connection_id, monkeypatch):
 
     adapter = StorageAdapter()
     monkeypatch.setattr(resources, "_assert_compatible", lambda: None)
-    monkeypatch.setattr(resources, "current_actor_role", lambda _production_id: "manager")
+    monkeypatch.setattr(resources, "current_actor_role", lambda _production_id: actor_role)
     monkeypatch.setattr(
         resources,
         "_resolve_scope",
@@ -1000,21 +1000,40 @@ def test_native_legacy_import_route_transfers_configuration_inactive(legacy_impo
 def test_native_integrated_legacy_import_waits_for_durable_barrier_ack(legacy_import_database, monkeypatch):
     import hashlib
     import hmac
-    from sqlalchemy import select
+    from sqlalchemy import select, update
 
     from plugin.authz import issue_csrf_token
-    from plugin.integrations.event_delivery import EventDeliveryConfig, SqlAlchemyEventOutbox, dispatch_one
+    from plugin.integrations.event_delivery import (
+        EventDeliveryConfig, HttpsEventReceiver, SqlAlchemyEventOutbox, dispatch_one,
+    )
     from plugin.integrations.v1 import validate_event_batch
     from plugin.models import ProductionDriveAuthority, SharedTemplateConfiguration
 
     sessions, models, connection_id, legacy_config, original_tree = legacy_import_database
-    delivery_config = EventDeliveryConfig(
-        endpoint="https://kitsusync.example.invalid/api/integrations/vfx-files/v1/events",
-        key_id="synthetic-files-key-01",
-        secret=b"synthetic-durable-barrier-key-material-000000",
-    )
+    cross_endpoint = os.environ.get("VFX_FILES_CROSS_REPO_TEST_ENDPOINT")
+    cross_key_file = os.environ.get("VFX_FILES_CROSS_REPO_TEST_HMAC_KEY_FILE")
+    cross_key_id = os.environ.get("VFX_FILES_CROSS_REPO_TEST_KEY_ID")
+    cross_control_url = os.environ.get("VFX_FILES_CROSS_REPO_TEST_CONTROL_URL")
+    cross_control_key = os.environ.get("VFX_FILES_CROSS_REPO_TEST_CONTROL_KEY")
+    cross_repo = any((cross_endpoint, cross_key_file, cross_key_id, cross_control_url, cross_control_key))
+    if cross_repo and not all((cross_endpoint, cross_key_file, cross_key_id, cross_control_url, cross_control_key)):
+        pytest.fail("Cross-repository barrier test configuration is incomplete")
+    if cross_repo:
+        from pathlib import Path
+
+        delivery_config = EventDeliveryConfig(cross_endpoint, cross_key_id, Path(cross_key_file).read_bytes())
+        receiver = HttpsEventReceiver()
+    else:
+        delivery_config = EventDeliveryConfig(
+            endpoint="https://kitsusync.example.invalid/api/integrations/vfx-files/v1/events",
+            key_id="synthetic-files-key-01",
+            secret=b"synthetic-durable-barrier-key-material-000000",
+        )
+        receiver = None
     monkeypatch.setenv("VFX_FILES_KITSUSYNC_EVENT_ENDPOINT", delivery_config.endpoint)
-    client, token, _capabilities = _native_legacy_import_client(sessions, models, connection_id, monkeypatch)
+    client, token, _capabilities = _native_legacy_import_client(
+        sessions, models, connection_id, monkeypatch, actor_role="admin",
+    )
     path = f"/api/plugins/vfx_files/productions/{PRODUCTION}/drive/legacy-import"
     headers = {
         "Authorization": f"Bearer {token}",
@@ -1065,7 +1084,9 @@ def test_native_integrated_legacy_import_waits_for_durable_barrier_ack(legacy_im
         row.available_at = datetime.now(timezone.utc) - timedelta(seconds=2)
 
     class SyntheticBarrierReceiver:
-        calls = []
+        def __init__(self):
+            self.calls = []
+            self.allow_ack = False
 
         def post(self, endpoint, body, headers):
             assert endpoint == delivery_config.endpoint
@@ -1086,6 +1107,8 @@ def test_native_integrated_legacy_import_waits_for_durable_barrier_ack(legacy_im
             assert event["event_type"] == "storage_authority.deactivation_requested"
             assert headers["Idempotency-Key"] == event["event_id"]
             self.calls.append((body, headers))
+            if not self.allow_ack:
+                return 503, {"code": "deactivation_barrier_pending"}
             return 202, {
                 "contract_version": "1.0",
                 "results": [{
@@ -1097,9 +1120,47 @@ def test_native_integrated_legacy_import_waits_for_durable_barrier_ack(legacy_im
 
     outbox = SqlAlchemyEventOutbox(sessions)
     worker_id = uuid4()
-    receiver = SyntheticBarrierReceiver()
-    assert dispatch_one(outbox, receiver, delivery_config, worker_id=worker_id) == "delivered"
-    assert len(receiver.calls) == 1
+    if receiver is None:
+        receiver = SyntheticBarrierReceiver()
+    assert dispatch_one(outbox, receiver, delivery_config, worker_id=worker_id) == "retry"
+    # SQLite's CURRENT_TIMESTAMP + interval emulation can return a numeric
+    # value for DateTime; restore a typed due timestamp before ORM readback.
+    with sessions.begin() as session:
+        session.execute(update(models.KitsuSyncEventOutbox).values(
+            available_at=datetime.now(timezone.utc) - timedelta(seconds=2),
+        ))
+    with sessions() as session:
+        retry_state, retry_attempts, retry_event_id = session.execute(select(
+            models.KitsuSyncEventOutbox.state,
+            models.KitsuSyncEventOutbox.attempts,
+            models.KitsuSyncEventOutbox.event_id,
+        )).one()
+        assert retry_state == "retry" and retry_attempts == 1
+
+    while_retrying = confirm("native-integrated-import-retry-pending-0001")
+    assert while_retrying.status_code == 409
+    assert while_retrying.json["code"] == "legacy_import_barrier_pending"
+
+    recovered_outbox = SqlAlchemyEventOutbox(sessions)
+    recovered_worker_id = uuid4()
+    if cross_repo:
+        from urllib.request import Request, urlopen
+
+        control = Request(cross_control_url, data=b"", method="POST", headers={
+            "X-Test-Control-Key": cross_control_key,
+        })
+        with urlopen(control, timeout=10) as response:
+            assert response.status == 204
+    else:
+        receiver.allow_ack = True
+    assert dispatch_one(
+        recovered_outbox, receiver, delivery_config, worker_id=recovered_worker_id,
+    ) == "delivered"
+    if not cross_repo:
+        assert len(receiver.calls) == 2
+        assert receiver.calls[0][0] == receiver.calls[1][0]
+        assert receiver.calls[0][1]["Idempotency-Key"] == retry_event_id
+        assert receiver.calls[1][1]["Idempotency-Key"] == retry_event_id
 
     after_ack = confirm("native-integrated-import-after-ack-0001")
     assert after_ack.status_code == 200
@@ -1127,7 +1188,7 @@ def test_native_integrated_legacy_import_waits_for_durable_barrier_ack(legacy_im
         assert legacy.desired_config == legacy_config
         assert connection.allowed_root_id == "legacy-root" and connection.enabled is True
         assert credential.ciphertext == b"encrypted" and credential.state == "active"
-        assert barrier.state == "delivered"
+        assert barrier.state == "delivered" and barrier.attempts == 2 and barrier.event_id == retry_event_id
         assert template.template_tree == original_tree and template.enabled is False
         assert audit.actor_id == ACTOR and audit.event_type == "legacy_configuration_imported"
         assert audit.idempotency_key == "native-integrated-import-after-ack-0001"
