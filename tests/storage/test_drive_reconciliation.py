@@ -4,6 +4,7 @@ from uuid import uuid4
 
 import pytest
 
+from plugin.compat import HOST_ZOU_VERSION, SCHEMA_EPOCH, WORKER_BUILD
 from plugin.storage.base import StorageObject
 from plugin.jobs.queue import PostgresJobQueue
 from plugin.storage.reconciliation import enqueue_drive_reconciliation, make_drive_reconciliation_handler, metadata_fingerprint, record_observations
@@ -153,7 +154,7 @@ def test_durable_worker_reconciliation_uses_fake_storage_and_persists_missing_mo
     from plugin.worker_runtime import _authorize_job
     runtime = WorkerRuntime(
         queue=PostgresJobQueue(zou_db_factory),
-        context=WorkerContext(uuid4(), "9", "1.0.94", 9),
+        context=WorkerContext(uuid4(), WORKER_BUILD, HOST_ZOU_VERSION, SCHEMA_EPOCH),
         authorize=_authorize_job,
         handlers={"reconcile_drive_objects": handler},
     )
