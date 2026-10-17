@@ -418,6 +418,16 @@ def test_native_kitsu_authorization_requires_manager_role_and_same_origin_csrf(o
     assert "credential_state" in status.json
     assert "refresh_token" not in status.get_data(as_text=True)
 
+    legacy_import_path = f"/api/plugins/vfx_files/productions/{PRODUCTION}/drive/legacy-import"
+    allowed_preview = client.get(
+        legacy_import_path,
+        headers={"Authorization": f"Bearer {token}"},
+        base_url="https://kitsu.example.test",
+    )
+    assert allowed_preview.status_code == 200
+    assert allowed_preview.json["status"] == "no_legacy_configuration"
+    assert allowed_preview.json["writes_performed"] is False
+
     role[0] = "user"
     hidden_status = client.get(
         f"/api/plugins/vfx_files/productions/{PRODUCTION}/drive/status",
@@ -432,7 +442,6 @@ def test_native_kitsu_authorization_requires_manager_role_and_same_origin_csrf(o
         base_url="https://kitsu.example.test",
     )
     assert denied.status_code == 403
-    legacy_import_path = f"/api/plugins/vfx_files/productions/{PRODUCTION}/drive/legacy-import"
     denied_preview = client.get(
         legacy_import_path,
         headers={"Authorization": f"Bearer {token}"},
