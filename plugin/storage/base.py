@@ -38,6 +38,7 @@ class StorageObject:
     name: str | None = None
     modified_time: str | None = None
     md5_checksum: str | None = None
+    resource_key: str | None = None
 
 
 @dataclass(frozen=True)

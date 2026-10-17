@@ -58,3 +58,32 @@ export function parseProductionContext(search) {
     locale: params.get('locale')
   }
 }
+
+/** Accept only same-origin visual preferences from the containing Kitsu Task panel. */
+export function applyTaskPluginPreferences(event, context, hostWindow = window) {
+  if (
+    !context?.taskId ||
+    !hostWindow ||
+    hostWindow.parent === hostWindow ||
+    event?.source !== hostWindow.parent ||
+    event?.origin !== hostWindow.location?.origin
+  ) {
+    return false
+  }
+
+  const message = event.data
+  if (
+    !message ||
+    message.type !== 'kitsu.task-plugin.preferences' ||
+    message.version !== 1 ||
+    typeof message.darkTheme !== 'boolean' ||
+    typeof message.locale !== 'string' ||
+    !/^[a-z]{2,8}$/i.test(message.locale)
+  ) {
+    return false
+  }
+
+  context.darkTheme = message.darkTheme
+  context.locale = message.locale.slice(0, 2).toLowerCase()
+  return true
+}

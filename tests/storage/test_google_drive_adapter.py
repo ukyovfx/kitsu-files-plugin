@@ -70,6 +70,20 @@ def test_shared_drive_uses_drive_scoped_listing_and_support_flags():
     assert listing.next_page_token == "next"
 
 
+def test_get_preserves_resource_key_for_fail_closed_link_sharing():
+    transport = FakeTransport([
+        Response(200, {"id": "root-1", "mimeType": FOLDER_MIME, "driveId": "drive-1", "capabilities": {"canAddChildren": True}}),
+        Response(200, {"id": "file-1", "name": "restricted.exr", "mimeType": "image/x-exr", "parents": ["root-1"], "driveId": "drive-1", "resourceKey": "synthetic-resource-key"}),
+    ])
+    adapter = drive(transport)
+    adapter.capabilities("root-1")
+
+    result = adapter.get("file-1")
+
+    assert result.resource_key == "synthetic-resource-key"
+    assert "resourceKey" in transport.calls[1][2]["params"]["fields"]
+
+
 def test_my_drive_owner_identity_must_match_configured_subject():
     transport = FakeTransport([Response(200, {"sub": "different-google-oidc-subject"})])
     adapter = drive(transport, "my_drive")

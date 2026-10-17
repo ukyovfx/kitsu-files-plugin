@@ -266,3 +266,18 @@ def test_activation_barrier_migration_tracks_pending_transitions_and_blocks_unsa
     assert "activation_transition_pending = true" in source
     assert "Drive deactivation barriers are pending" in source
     assert "schema_epoch = 18" in source and "schema_epoch = 17" in source
+
+
+def test_task_link_share_migration_adds_immutable_reference_history_without_drive_side_effects():
+    migration = ROOT / "plugin/migrations/versions/0020_task_link_shares.py"
+    source = migration.read_text(encoding="utf-8")
+    assert 'revision = "vxf_0020"' in source
+    assert 'down_revision = "vxf_0019"' in source
+    assert '"plugin_vfx_files_link_share"' in source
+    assert '"plugin_vfx_files_link_share_target"' in source
+    assert '"notification_status"' in source
+    assert "plugin_vfx_files_reject_link_share_identity_mutation" in source
+    assert "plugin_vfx_files_reject_link_share_target_mutation" in source
+    assert "restore a consistent snapshot instead of downgrading" in source
+    assert "schema_epoch = 19" in source
+    assert "INSERT INTO" not in source and "DELETE FROM" not in source

@@ -117,6 +117,22 @@ tbody tr:last-child td { border-bottom: 0; }
 .workflow-row .button { margin-bottom: 1px; }
 .file-state { display: block; margin-top: 4px; color: var(--muted); font-size: 9px; }
 .publish-manifest { max-width: 380px; max-height: 180px; overflow: auto; color: var(--muted); font: 9px/1.45 ui-monospace, SFMono-Regular, Consolas, monospace; white-space: pre-wrap; }
+.task-link-share, .task-received-files { padding: 0 18px 18px; }
+.task-link-share > .panel-heading, .task-received-files > .panel-heading { padding-left: 0; padding-right: 0; }
+.share-explanation { max-width: 850px; color: var(--muted); font-size: 11px; line-height: 1.55; }
+.task-share-browser { margin-top: 12px; padding: 0 12px 12px; border: 1px solid var(--border); border-radius: 9px; background: var(--surface); }
+.task-share-browser .folder-breadcrumb { border-bottom: 1px solid var(--border); }
+.share-recipients { display: grid; gap: 8px; max-height: 260px; overflow: auto; margin: 16px 0; padding: 12px; border: 1px solid var(--border); border-radius: 9px; }
+.share-recipients legend { padding: 0 5px; color: var(--muted); font-size: 11px; }
+.share-recipient { display: flex; align-items: center; gap: 8px; font-size: 11px; }
+.share-recipient input, .storage-object-row input[type='radio'] { accent-color: #62c6a9; }
+.share-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; padding: 11px 0 17px; border-bottom: 1px solid var(--border); font-size: 10px; }
+.share-history { margin-top: 14px; }
+.share-history h3 { margin-bottom: 8px; font-size: 13px; }
+.share-history .revision-list > li, .received-share-list > li { display: flex; flex-wrap: wrap; align-items: baseline; gap: 7px 12px; }
+.share-history a, .received-share-list a { color: #8fdbca; overflow-wrap: anywhere; }
+.share-notification { flex-basis: 100%; color: var(--muted); font-size: 10px; }
+.received-share-list small { color: var(--muted); }
 .notice { display: flex; align-items: center; gap: 9px; margin-top: 20px; padding: 12px 14px; border: 1px solid #765e37; border-radius: 9px; background: #332a1d; color: #f0d4a0; font-size: 12px; }
 .loading-state { padding: 28px 0; color: var(--muted); font-size: 12px; }
 .page-footer { display: flex; justify-content: space-between; gap: 12px; margin-top: 20px; padding-top: 13px; border-top: 1px solid var(--border); color: var(--muted); font-size: 9px; }

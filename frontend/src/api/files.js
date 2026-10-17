@@ -155,6 +155,31 @@ export function createFilesApi(client) {
       return readJson(await client.request('GET', `${ROOT}/tasks/${encodeURIComponent(taskId)}/storage-objects?${query}`))
     },
 
+    async listTaskShareCandidates(taskId) {
+      if (!taskId) throw new TypeError('A source Task ID is required')
+      return readJson(await client.request('GET', `${ROOT}/tasks/${encodeURIComponent(taskId)}/share-candidates`))
+    },
+
+    async createTaskLinkShare(taskId, objectId, recipientTaskIds, idempotencyKey) {
+      if (!taskId || !objectId || !Array.isArray(recipientTaskIds) || !recipientTaskIds.length || !idempotencyKey) {
+        throw new TypeError('A source Task, Drive object, recipient Tasks and idempotency key are required')
+      }
+      return readJson(await mutation('POST', `${ROOT}/tasks/${encodeURIComponent(taskId)}/link-shares`, {
+        headers: { 'Content-Type': 'application/json', 'Idempotency-Key': idempotencyKey },
+        body: JSON.stringify({ object_id: objectId, recipient_task_ids: recipientTaskIds })
+      }))
+    },
+
+    async listTaskLinkShares(taskId) {
+      if (!taskId) throw new TypeError('A source Task ID is required')
+      return readJson(await client.request('GET', `${ROOT}/tasks/${encodeURIComponent(taskId)}/link-shares`))
+    },
+
+    async listTaskReceivedLinkShares(taskId) {
+      if (!taskId) throw new TypeError('A recipient Task ID is required')
+      return readJson(await client.request('GET', `${ROOT}/tasks/${encodeURIComponent(taskId)}/received-link-shares`))
+    },
+
     async listTaskOutputPackages(taskId, offset = 0) {
       if (!taskId) throw new TypeError('A Task ID is required')
       const query = new URLSearchParams({ limit: '50', offset: String(offset) })
