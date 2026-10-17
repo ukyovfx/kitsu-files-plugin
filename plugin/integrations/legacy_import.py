@@ -5,7 +5,9 @@ preview means only that the stored identities are internally consistent and
 may be presented for a separately authorized import confirmation.
 """
 
-from uuid import UUID
+from datetime import datetime, timezone
+import os
+from uuid import UUID, uuid5
 
 from sqlalchemy import select
 
@@ -20,6 +22,7 @@ def preview_legacy_import(session, production_id):
     from ..models import (
         DriveCredential,
         KitsuSyncDesiredConfiguration,
+        KitsuSyncEventOutbox,
         ProductionDriveAuthority,
         SharedTemplateConfiguration,
     )
@@ -113,11 +116,26 @@ def preview_legacy_import(session, production_id):
         SharedTemplateConfiguration.production_id == production_id,
         SharedTemplateConfiguration.storage_connection_id == connection.id,
     ))
+    integrated = bool(os.environ.get("VFX_FILES_KITSUSYNC_EVENT_ENDPOINT", "").strip())
+    authority_pending = bool(getattr(authority, "activation_transition_pending", False))
+    barrier_acknowledged = False
+    if integrated and authority_pending:
+        previous_epoch = authority.activation_epoch - 1
+        transition_type = "storage_authority.deactivation_requested"
+        event_id = str(uuid5(
+            UUID("c1edfb56-6b81-4cc2-94bc-a388c0a19db4"),
+            f"{production_id}:{transition_type}:{previous_epoch}:{authority.activation_epoch}",
+        ))
+        barrier_row = session.scalar(select(KitsuSyncEventOutbox).where(
+            KitsuSyncEventOutbox.production_id == production_id,
+            KitsuSyncEventOutbox.event_id == event_id,
+        ))
+        barrier_acknowledged = bool(barrier_row is not None and barrier_row.state == "delivered")
     if (
         template is None
         or template.storage_connection_id != connection.id
         or template.allowed_root_id != connection.allowed_root_id
-        or bool(template.enabled) != activation_enabled
+        or bool(template.enabled) != (activation_enabled and not barrier_acknowledged)
     ):
         return _blocked(
             "execution_template_mismatch",
@@ -164,6 +182,12 @@ def preview_legacy_import(session, production_id):
         "template_version": template.version,
         "requires_explicit_admin_confirmation": True,
         "outstanding_work_review_required": True,
+        "handoff_barrier_status": (
+            "acknowledged_requires_explicit_confirmation" if barrier_acknowledged
+            else "pending" if authority_pending
+            else "required" if integrated
+            else "not_required"
+        ),
         "credentials_decrypted": False,
         "writes_performed": False,
         "drive_operations_performed": False,
@@ -188,6 +212,7 @@ def import_legacy_configuration(
         ProductionDriveAuthorityEvent,
         SharedTemplateConfiguration,
         StorageConnection,
+        KitsuSyncEventOutbox,
     )
     from .configuration import (
         ConfigurationError,
@@ -197,6 +222,7 @@ def import_legacy_configuration(
         _response_receipt,
     )
     from .storage_authority import production_drive_authority_status
+    from .v1 import canonical_json, sha256_hex, validate_event_batch
 
     try:
         production_id = UUID(str(production_id))
@@ -275,10 +301,76 @@ def import_legacy_configuration(
         if credential is None or credential.state != "active" or template is None:
             raise ConfigurationError(409, "legacy_import_blocked")
 
+        # An integrated import is a two-step handoff. First request a durable
+        # KitsuSync drain/fence and leave legacy ownership intact. A later,
+        # explicitly confirmed request may transfer ownership only after the
+        # outbox records the receiver's barrier ACK.
+        integrated = bool(os.environ.get("VFX_FILES_KITSUSYNC_EVENT_ENDPOINT", "").strip())
+        if integrated and authority.activation_transition_pending:
+            previous_epoch = authority.activation_epoch - 1
+            transition_type = "storage_authority.deactivation_requested"
+            event_id = str(uuid5(
+                UUID("c1edfb56-6b81-4cc2-94bc-a388c0a19db4"),
+                f"{production_id}:{transition_type}:{previous_epoch}:{authority.activation_epoch}",
+            ))
+            barrier_row = session.scalar(select(KitsuSyncEventOutbox).where(
+                KitsuSyncEventOutbox.production_id == production_id,
+                KitsuSyncEventOutbox.event_id == event_id,
+            ))
+            if barrier_row is None or barrier_row.state != "delivered":
+                raise ConfigurationError(409, "legacy_import_barrier_pending")
+        if integrated and not authority.activation_transition_pending:
+            previous_epoch = max(authority.activation_epoch, legacy.notification_epoch)
+            if previous_epoch < 1 or previous_epoch >= (2**64 - 1):
+                raise ConfigurationError(409, "legacy_import_barrier_unavailable")
+            new_epoch = previous_epoch + 1
+            new_revision = max(authority.config_revision, legacy.config_revision) + 1
+            authority.activation_epoch = new_epoch
+            authority.config_revision = new_revision
+            authority.activation_enabled = False
+            authority.activation_transition_pending = True
+            transition_type = "storage_authority.deactivation_requested"
+            event_id = str(uuid5(
+                UUID("c1edfb56-6b81-4cc2-94bc-a388c0a19db4"),
+                f"{production_id}:{transition_type}:{previous_epoch}:{new_epoch}",
+            ))
+            event = {
+                "contract_version": "1.0",
+                "events": [{
+                    "contract_version": "1.0", "producer_id": "vfx-files-plugin",
+                    "event_id": event_id, "event_type": transition_type,
+                    "occurred_at": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
+                    "production_id": str(production_id), "activation_epoch": previous_epoch,
+                    "config_revision": new_revision,
+                    "previous_activation_epoch": previous_epoch, "new_activation_epoch": new_epoch,
+                }],
+            }
+            validate_event_batch(event)
+            payload_row = event["events"][0]
+            session.add(KitsuSyncEventOutbox(
+                production_id=production_id, storage_connection_id=None,
+                event_id=event_id, event_type=transition_type, payload=payload_row,
+                payload_sha256=sha256_hex(canonical_json(payload_row)), state="queued", attempts=0,
+                lease_generation=0, available_at=datetime.now(timezone.utc),
+            ))
+            body = production_drive_authority_status(session, production_id)
+            body.update({
+                "contract_version": "1.0", "import_status": "deactivation_barrier_pending",
+                "source_revision": expected_revision, "legacy_source_preserved": True,
+                "requires_explicit_confirmation_after_barrier": True,
+                "drive_operations_performed": False,
+            })
+            etag = f'"legacy-{expected_revision}"'
+            _remember(session, production_id, actor_id, idempotency_key, operation, request_hash, 202, etag, body)
+            session.flush()
+            return body, 202, etag
         desired = dict(legacy.desired_config)
         desired.pop("activation", None)
         new_revision = max(authority.config_revision, legacy.config_revision) + 1
-        new_epoch = max(authority.activation_epoch, legacy.notification_epoch) + 1
+        new_epoch = (
+            authority.activation_epoch if integrated
+            else max(authority.activation_epoch, legacy.notification_epoch) + 1
+        )
         desired["activation"] = {
             "enabled": False,
             "activated_at": None,
@@ -292,6 +384,7 @@ def import_legacy_configuration(
         authority.root_id = connection.allowed_root_id
         authority.desired_config = desired
         authority.activation_enabled = False
+        authority.activation_transition_pending = False
         authority.updated_by = actor_id
         template.enabled = False
         template.version = new_revision

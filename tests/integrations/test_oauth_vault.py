@@ -177,6 +177,7 @@ def oauth_db(monkeypatch, tmp_path):
         lease_owner: Mapped[UUID | None] = mapped_column(Uuid, nullable=True)
         lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
         available_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+        created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
         last_response_code: Mapped[str | None] = mapped_column(String, nullable=True)
 
     models = ModuleType("plugin.models")
@@ -838,6 +839,102 @@ def test_legacy_import_requires_verified_root_and_explicit_revisioned_confirmati
             idempotency_key="legacy-import-confirm-0002", if_match='"legacy-6"', capabilities=caps,
         )
     assert stale.value.code == "invalid_event"
+
+
+def test_integrated_legacy_import_waits_for_durable_deactivation_barrier(oauth_db, monkeypatch):
+    from types import SimpleNamespace
+    from sqlalchemy import select
+
+    from plugin.integrations.configuration import ConfigurationError
+    from plugin.integrations.event_delivery import SqlAlchemyEventOutbox
+    from plugin.integrations.legacy_import import import_legacy_configuration
+    from plugin.integrations.storage_authority import effective_drive_authority
+    from plugin.models import ProductionDriveAuthority, SharedTemplateConfiguration
+
+    sessions, models, _keyring, _extensions = oauth_db
+    connection_id = uuid4()
+    legacy_config = {
+        "contract_version": "1.0", "connection_id": str(connection_id),
+        "drive": {"account_mode": "my_drive", "owner_subject": "oidc-subject-a", "root_id": "legacy-root", "root_state": "verified"},
+        "template_selection": {"selections": [
+            {"scope": "production", "template_id": "vfx-files.production.default", "revision": 1, "overrides": {}},
+            {"scope": "shot", "template_id": "vfx-files.shot.default", "revision": 1, "overrides": {}},
+            {"scope": "task", "template_id": "vfx-files.task.default", "revision": 1, "overrides": {}},
+        ]},
+        "sync_policy": {"mode": "future_only", "scope": {"episodes": False, "sequences": False, "shots": True, "assets": False, "tasks": True}, "notify_new_deliveries": True},
+        "activation": {"enabled": True, "activated_at": "2026-10-01T00:00:00Z", "notification_epoch": 4},
+    }
+    connection = models.StorageConnection(
+        id=connection_id, production_id=PRODUCTION, provider="google_drive", account_mode="my_drive",
+        owner_subject="oidc-subject-a", drive_id=None, allowed_root_id="legacy-root",
+        credential_ref=str(connection_id), enabled=True,
+    )
+    credential = models.DriveCredential(
+        connection_id=connection_id, production_id=PRODUCTION, account_mode="my_drive",
+        account_subject="oidc-subject-a", owner_subject="oidc-subject-a", drive_id=None,
+        key_id="test-key-1", nonce=b"n" * 12, ciphertext=b"encrypted", state="active",
+    )
+    authority = models.ProductionDriveAuthority(
+        production_id=PRODUCTION, owner="legacy_kitsusync", state="legacy_import_required",
+        config_revision=0, activation_epoch=4, connection_id=None, root_id=None,
+        desired_config=None, activation_enabled=False,
+    )
+    legacy = models.KitsuSyncDesiredConfiguration(
+        production_id=PRODUCTION, config_revision=7, notification_epoch=4, desired_config=legacy_config,
+    )
+    template = models.SharedTemplateConfiguration(
+        production_id=PRODUCTION, storage_connection_id=connection_id, allowed_root_id="legacy-root",
+        template_folder_id="existing-template", template_tree={"folder_id": "existing", "name": "", "children": []},
+        role_mappings={}, version=7, enabled=True, updated_by=ACTOR,
+    )
+    with sessions.begin() as session:
+        session.add_all([connection, credential, authority, legacy, template])
+
+    monkeypatch.setenv("VFX_FILES_KITSUSYNC_EVENT_ENDPOINT", "https://kitsusync.example.invalid/api/integrations/vfx-files/v1/events")
+    caps = SimpleNamespace(root_visible=True, root_id="legacy-root", can_add_children=True)
+    request = {"contract_version": "1.0", "source_revision": 7, "confirm": True}
+    with sessions() as session:
+        pending, status, etag = import_legacy_configuration(
+            session, production_id=PRODUCTION, actor_id=ACTOR, payload=request,
+            idempotency_key="legacy-import-barrier-0001", if_match='"legacy-7"', capabilities=caps,
+        )
+    assert status == 202 and etag == '"legacy-7"'
+    assert pending["import_status"] == "deactivation_barrier_pending"
+    with sessions() as session:
+        authority = session.get(ProductionDriveAuthority, PRODUCTION)
+        template = session.scalar(select(SharedTemplateConfiguration).where(
+            SharedTemplateConfiguration.production_id == PRODUCTION,
+        ))
+        assert authority.owner == "legacy_kitsusync" and authority.activation_transition_pending
+        assert authority.activation_epoch == 5 and template.enabled is True
+
+    outbox = SqlAlchemyEventOutbox(sessions)
+    with sessions.begin() as session:
+        row = session.scalar(select(models.KitsuSyncEventOutbox))
+        row.available_at = datetime.now(timezone.utc) - timedelta(seconds=2)
+    worker_id = uuid4()
+    leased = outbox.claim_next(worker_id)
+    assert leased is not None and leased.event_type == "storage_authority.deactivation_requested"
+    assert outbox.is_current_activation(leased)
+    assert outbox.finish(leased, worker_id, "delivered", response_code="202")
+
+    with sessions() as session:
+        authority = session.get(ProductionDriveAuthority, PRODUCTION)
+        effective = effective_drive_authority(session, PRODUCTION)
+        assert authority.owner == "legacy_kitsusync" and authority.activation_transition_pending
+        assert effective["activation_epoch"] == 5 and not effective["activation_enabled"]
+
+    with sessions() as session:
+        body, status, etag = import_legacy_configuration(
+            session, production_id=PRODUCTION, actor_id=ACTOR, payload=request,
+            idempotency_key="legacy-import-barrier-0002", if_match='"legacy-7"', capabilities=caps,
+        )
+    assert status == 200 and etag == '"plugin-9"'
+    assert body["owner"] == "plugin" and body["activation_enabled"] is False
+    assert body["activation_epoch"] == 5 and body["config_revision"] == 9
+    with sessions() as session:
+        legacy = session.get(models.KitsuSyncDesiredConfiguration, PRODUCTION)
+        assert legacy.desired_config == legacy_config
 
 
 def test_callback_query_rejects_duplicates_conflicting_results_and_unknown_parameters():

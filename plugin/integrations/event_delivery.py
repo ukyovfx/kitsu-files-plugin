@@ -259,7 +259,12 @@ class SqlAlchemyEventOutbox:
                     from ..models import ProductionDriveAuthority
                     authority = session.get(ProductionDriveAuthority, row.production_id)
                     return bool(
-                        authority is not None and authority.owner == "plugin"
+                        authority is not None
+                        and (authority.owner == "plugin" or (
+                            authority.owner == "legacy_kitsusync"
+                            and authority.state == "legacy_import_required"
+                            and not target_enabled
+                        ))
                         and authority.activation_transition_pending and not authority.activation_enabled
                         and state is not None and state["activation_epoch"] == next_epoch
                         and event_epoch + (0 if target_enabled else 1) == next_epoch
@@ -305,14 +310,19 @@ class SqlAlchemyEventOutbox:
                 if isinstance(new_epoch, int) and not isinstance(new_epoch, bool):
                     authority = session.scalar(select(ProductionDriveAuthority).where(
                         ProductionDriveAuthority.production_id == row.production_id,
-                        ProductionDriveAuthority.owner == "plugin",
+                        ProductionDriveAuthority.owner.in_(("plugin", "legacy_kitsusync")),
                         ProductionDriveAuthority.activation_epoch == new_epoch,
                         ProductionDriveAuthority.activation_transition_pending.is_(True),
                     ).with_for_update())
                     if authority is not None:
-                        requested = bool(authority.desired_config.get("activation", {}).get("enabled", False)) if isinstance(authority.desired_config, dict) else False
+                        requested = bool(
+                            authority.owner == "plugin"
+                            and isinstance(authority.desired_config, dict)
+                            and authority.desired_config.get("activation", {}).get("enabled", False)
+                        )
                         authority.activation_enabled = requested
-                        authority.activation_transition_pending = False
+                        if authority.owner == "plugin":
+                            authority.activation_transition_pending = False
                         from ..models import SharedTemplateConfiguration
                         template = session.scalar(select(SharedTemplateConfiguration).where(
                             SharedTemplateConfiguration.production_id == row.production_id,

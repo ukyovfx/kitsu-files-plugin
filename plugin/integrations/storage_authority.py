@@ -198,6 +198,21 @@ def effective_drive_authority(session, production_id, *, lock_legacy=False):
     activation = config.get("activation") or {}
     drive = config.get("drive") or {}
     epoch = desired.notification_epoch
+    if (
+        authority is not None
+        and authority.owner == "legacy_kitsusync"
+        and getattr(authority, "activation_transition_pending", False)
+    ):
+        # Once an integrated ownership handoff starts, old legacy events are
+        # no longer current. The bumped authority epoch remains fenced after
+        # the ACK until an administrator completes the explicit import.
+        return {
+            "owner": "legacy_kitsusync", "state": "legacy_import_required",
+            "config_revision": authority.config_revision,
+            "activation_epoch": authority.activation_epoch,
+            "activation_enabled": False, "connection_id": None, "root_id": None,
+            "account_mode": None, "root_state": None,
+        }
     try:
         connection_id = UUID(str(config["connection_id"]))
     except (KeyError, TypeError, ValueError, AttributeError):
