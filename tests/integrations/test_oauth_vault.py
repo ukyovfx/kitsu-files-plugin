@@ -968,6 +968,14 @@ def test_integrated_legacy_import_waits_for_durable_deactivation_barrier(oauth_d
             models.KitsuSyncEventOutbox.id == row_id,
         ))
         assert state == "retry"
+        retry_attempts = session.scalar(select(models.KitsuSyncEventOutbox.attempts).where(
+            models.KitsuSyncEventOutbox.id == row_id,
+        ))
+        retry_event_id = session.scalar(select(models.KitsuSyncEventOutbox.event_id).where(
+            models.KitsuSyncEventOutbox.id == row_id,
+        ))
+        assert retry_attempts == 1
+        assert retry_event_id
     recovered_outbox = SqlAlchemyEventOutbox(sessions)
     recovered_worker_id = uuid4()
     if not cross_repo:
@@ -998,6 +1006,12 @@ def test_integrated_legacy_import_waits_for_durable_deactivation_barrier(oauth_d
         ) == "delivered"
     else:
         assert recovered_outbox.finish(recovered, recovered_worker_id, "delivered", response_code="202")
+
+    with sessions() as session:
+        retried = session.scalar(select(models.KitsuSyncEventOutbox))
+        assert retried.event_id == retry_event_id
+        assert retried.attempts == retry_attempts + 1
+        assert retried.state == "delivered"
 
     with sessions() as session:
         authority = session.get(ProductionDriveAuthority, PRODUCTION)
