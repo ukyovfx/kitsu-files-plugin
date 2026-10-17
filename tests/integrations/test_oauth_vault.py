@@ -998,17 +998,22 @@ def test_native_legacy_import_route_transfers_configuration_inactive(legacy_impo
 
 
 def test_native_integrated_legacy_import_waits_for_durable_barrier_ack(legacy_import_database, monkeypatch):
+    import hashlib
+    import hmac
     from sqlalchemy import select
 
     from plugin.authz import issue_csrf_token
-    from plugin.integrations.event_delivery import SqlAlchemyEventOutbox
+    from plugin.integrations.event_delivery import EventDeliveryConfig, SqlAlchemyEventOutbox, dispatch_one
+    from plugin.integrations.v1 import validate_event_batch
     from plugin.models import ProductionDriveAuthority, SharedTemplateConfiguration
 
     sessions, models, connection_id, legacy_config, original_tree = legacy_import_database
-    monkeypatch.setenv(
-        "VFX_FILES_KITSUSYNC_EVENT_ENDPOINT",
-        "https://kitsusync.example.invalid/api/integrations/vfx-files/v1/events",
+    delivery_config = EventDeliveryConfig(
+        endpoint="https://kitsusync.example.invalid/api/integrations/vfx-files/v1/events",
+        key_id="synthetic-files-key-01",
+        secret=b"synthetic-durable-barrier-key-material-000000",
     )
+    monkeypatch.setenv("VFX_FILES_KITSUSYNC_EVENT_ENDPOINT", delivery_config.endpoint)
     client, token, _capabilities = _native_legacy_import_client(sessions, models, connection_id, monkeypatch)
     path = f"/api/plugins/vfx_files/productions/{PRODUCTION}/drive/legacy-import"
     headers = {
@@ -1059,12 +1064,42 @@ def test_native_integrated_legacy_import_waits_for_durable_barrier_ack(legacy_im
         row = session.scalar(select(models.KitsuSyncEventOutbox))
         row.available_at = datetime.now(timezone.utc) - timedelta(seconds=2)
 
+    class SyntheticBarrierReceiver:
+        calls = []
+
+        def post(self, endpoint, body, headers):
+            assert endpoint == delivery_config.endpoint
+            assert headers["X-VFX-Key-Id"] == delivery_config.key_id
+            body_digest = hashlib.sha256(body).hexdigest()
+            assert headers["X-VFX-Content-SHA256"] == body_digest
+            signing_input = "\n".join((
+                headers["X-VFX-Timestamp"], headers["X-VFX-Nonce"],
+                body_digest, headers["Idempotency-Key"],
+            )).encode("utf-8")
+            expected = "sha256=" + hmac.new(
+                delivery_config.secret, signing_input, hashlib.sha256,
+            ).hexdigest()
+            assert hmac.compare_digest(headers["X-VFX-Signature"], expected)
+            events = validate_event_batch(json.loads(body))
+            assert len(events) == 1
+            event = events[0]
+            assert event["event_type"] == "storage_authority.deactivation_requested"
+            assert headers["Idempotency-Key"] == event["event_id"]
+            self.calls.append((body, headers))
+            return 202, {
+                "contract_version": "1.0",
+                "results": [{
+                    "event_id": event["event_id"],
+                    "outcome": "accepted",
+                    "code": "activation_barrier_complete",
+                }],
+            }
+
     outbox = SqlAlchemyEventOutbox(sessions)
     worker_id = uuid4()
-    claimed = outbox.claim_next(worker_id)
-    assert claimed is not None and claimed.event_type == "storage_authority.deactivation_requested"
-    assert outbox.is_current_activation(claimed)
-    assert outbox.finish(claimed, worker_id, "delivered", response_code="202")
+    receiver = SyntheticBarrierReceiver()
+    assert dispatch_one(outbox, receiver, delivery_config, worker_id=worker_id) == "delivered"
+    assert len(receiver.calls) == 1
 
     after_ack = confirm("native-integrated-import-after-ack-0001")
     assert after_ack.status_code == 200
