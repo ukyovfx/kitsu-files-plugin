@@ -1,5 +1,6 @@
 <script setup>
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { outputPayloadTransferAvailable } from '../outputTransferAvailability.js'
 
 const props = defineProps({ taskId: { type: String, required: true }, api: { type: Object, required: true } })
 const emit = defineEmits(['changed'])
@@ -40,6 +41,7 @@ const packageTypes = [
 const sequencePackage = computed(() => ['low-res-sequence', 'lighting-aov', 'final-exr', 'final-dpx'].includes(packageType.value))
 const selectedFiles = computed(() => objects.value.filter((item) => selectedIds.value.includes(item.id)))
 const taskScope = computed(() => props.taskId)
+const fakeTransferAvailable = computed(() => outputPayloadTransferAvailable(options.value.storage_mode))
 
 async function loadObjects(parentId = currentParent.value, token = null, append = false, requestId = requestGeneration.value) {
   const result = await props.api.listTaskStorageObjects(taskScope.value, parentId, token)
@@ -190,12 +192,13 @@ onUnmounted(() => {
 <template>
   <section class="panel output-packages" aria-label="Output Packages">
     <div class="panel-heading">
-      <div><p class="eyebrow">Task deliverables</p><h2>Output Packages</h2></div>
+      <div><p class="eyebrow">Task deliverables</p><h2>Output registration</h2></div>
       <button class="button secondary" :disabled="loading" @click="refresh()">Refresh</button>
     </div>
     <p v-if="error" class="upload-error" role="alert">{{ error }}</p>
     <p v-if="loading" class="muted" role="status">Loading authorized Drive objects and package history…</p>
     <p v-if="driveCheckedAt" class="muted" role="status">Drive sync: {{ driveSyncStatus }} · last checked {{ new Date(driveCheckedAt).toLocaleString() }}. This check covers the currently opened folder listing.</p>
+    <p v-if="!fakeTransferAvailable" class="upload-error" role="status">Output payload transfer is disabled for external storage until a secure direct-to-Drive path is verified. Existing authorized references can still be shared below.</p>
     <template v-if="!loading">
       <div class="package-register">
         <label>Output Type
@@ -226,8 +229,8 @@ onUnmounted(() => {
         <p v-if="!objects.length" class="muted">This folder has no visible items.</p>
       </div>
       <button v-if="moreObjects" class="button secondary" @click="loadObjects(currentParent, pageToken, true)">Load next Drive page</button>
-      <button class="button primary" :disabled="submitting || !selectedFiles.length || !outputTypeId || (sequencePackage && (frameStart === '' || frameEnd === '' || Number(frameEnd) < Number(frameStart) || selectedFiles.some((item) => frameNumbers[item.id] === undefined || frameNumbers[item.id] === '')))" @click="registerPackage">{{ submitting ? 'Registering…' : `Register ${selectedFiles.length} selected file(s) as one immutable Version` }}</button>
-      <p class="muted">Files remain in Google Drive. The worker verifies their IDs, root ancestry, byte counts and SHA-256 before recording QC. Sequence files are one package version with explicit frame numbers.</p>
+      <button class="button primary" :disabled="!fakeTransferAvailable || submitting || !selectedFiles.length || !outputTypeId || (sequencePackage && (frameStart === '' || frameEnd === '' || Number(frameEnd) < Number(frameStart) || selectedFiles.some((item) => frameNumbers[item.id] === undefined || frameNumbers[item.id] === '')))" @click="registerPackage">{{ submitting ? 'Registering…' : `Register ${selectedFiles.length} selected file(s) as one immutable Output version` }}</button>
+      <p class="muted">Synthetic FakeStorage tests can verify immutable Output metadata and QC. External storage payloads are not transferred through the Plugin server.</p>
       <div class="package-history">
         <article v-for="item in packages" :key="item.id" class="package-row">
           <button class="text-button" @click="togglePackage(item)"><strong>{{ item.package_type }} v{{ String(item.version).padStart(3, '0') }}</strong></button>
@@ -237,7 +240,8 @@ onUnmounted(() => {
           <div v-if="expandedPackage === item.id" class="package-files">
             <div v-for="file in packageFiles[item.id]?.files || []" :key="file.id" class="storage-object-row">
               <span>{{ file.frame_number ?? file.file_name }} · {{ file.byte_count }} bytes · {{ file.sha256 }}</span>
-              <a v-if="file.download_url" :href="api.outputPackageDownloadUrl(file.id)">Download verified file</a>
+            <a v-if="file.download_url && fakeTransferAvailable" :href="api.outputPackageDownloadUrl(file.id)">Download FakeStorage test file</a>
+            <span v-else-if="file.download_url" class="muted">Direct external download is not available yet.</span>
             </div>
             <button v-if="packageFiles[item.id]?.next_offset !== null && packageFiles[item.id]?.next_offset !== undefined" class="button secondary" @click="morePackageFiles(item)">Load next file page</button>
           </div>

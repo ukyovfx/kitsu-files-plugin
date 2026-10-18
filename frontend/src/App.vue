@@ -2,10 +2,8 @@
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import HandoffPanel from './components/HandoffPanel.vue'
 import PublishList from './components/PublishList.vue'
-import PublishWorkflow from './components/PublishWorkflow.vue'
 import OutputPackagePanel from './components/OutputPackagePanel.vue'
 import DriveSettingsPanel from './components/DriveSettingsPanel.vue'
-import UploadPanel from './components/UploadPanel.vue'
 import TaskLinkShares from './components/TaskLinkShares.vue'
 import { taskSections } from './taskNavigation.js'
 import { createRequestGeneration, filesSurfaceMode } from './taskContext.js'
@@ -21,7 +19,7 @@ const taskId = computed(() => props.context.taskId || null)
 const taskMode = computed(() => filesSurfaceMode(props.context) === 'task')
 const scopeKey = computed(() => `${productionId.value || ''}:${taskId.value || ''}`)
 const folderState = ref(null)
-const activeTaskSection = ref('files')
+const activeTaskSection = ref('send')
 const verifiedFolderLinks = computed(() => safeTaskFolderLinks(folderState.value?.folders))
 const requests = createRequestGeneration()
 const receivedHandoffs = computed(() => (overview.value?.handoffs || []).filter((item) => item.recipient_id === overview.value?.actor_id || (taskId.value && item.recipient_task_id === taskId.value)))
@@ -69,7 +67,7 @@ async function load() {
 }
 
 watch(scopeKey, () => {
-  activeTaskSection.value = 'files'
+  activeTaskSection.value = 'send'
   load()
 })
 
@@ -132,7 +130,7 @@ onUnmounted(() => requests.invalidate())
       <div v-if="error" class="notice" role="alert"><span class="notice-dot"></span>{{ error }}</div>
       <div v-if="loading" class="loading-state" role="status">Loading Task files…</div>
       <template v-else-if="overview">
-      <nav class="task-navigation" role="tablist" aria-label="Task Files sections">
+      <nav class="task-navigation" role="tablist" aria-label="Task file operations">
         <button
           v-for="(section, index) in taskSections"
           :key="section.id"
@@ -150,7 +148,7 @@ onUnmounted(() => requests.invalidate())
       </nav>
 
       <div id="task-section-panel" role="tabpanel" :aria-labelledby="`task-tab-${activeTaskSection}`" tabindex="0">
-      <section v-if="activeTaskSection === 'files'" class="task-section" aria-label="Files for this Task">
+      <section v-if="activeTaskSection === 'send'" class="task-section" aria-label="Send files from this Task">
         <section v-if="taskId" class="panel task-folders" aria-label="Task shared folders">
           <div class="panel-heading"><div><h2>Task folders</h2></div></div>
           <p v-if="folderState?.error" class="upload-error" role="alert">{{ folderState.error }}</p>
@@ -158,27 +156,17 @@ onUnmounted(() => requests.invalidate())
           <p v-else class="muted">No verified Task folder bindings are ready yet. Folder setup is managed in VFX Files Plugin settings.</p>
         </section>
         <OutputPackagePanel :task-id="taskId" :tasks="overview.tasks" :publishes="overview.publishes" :fixed-task-id="taskId" :api="api" @changed="load" />
-      </section>
-
-      <section v-else-if="activeTaskSection === 'working'" class="task-section" aria-label="Working files for this Task">
-        <UploadPanel :enabled="overview.upload_ready" :tasks="overview.tasks" :fixed-task-id="taskId" :api="api" @uploaded="load" />
-      </section>
-
-      <section v-else-if="activeTaskSection === 'publish'" class="task-section" aria-label="Publish for this Task">
-        <PublishWorkflow :production-id="productionId" :tasks="overview.tasks" :publishes="overview.publishes" :fixed-task-id="taskId" :api="api" @changed="load" />
-        <PublishList :publishes="overview.publishes" :actor-id="overview.actor_id" :role="overview.role" :busy-id="busyId" @approve="approve" />
-      </section>
-
-      <section v-else-if="activeTaskSection === 'handoffs'" class="task-section" aria-label="Department handoffs for this Task">
-        <HandoffPanel :handoffs="receivedHandoffs" :busy-id="busyId" @respond="respond" />
-      </section>
-
-      <section v-else-if="activeTaskSection === 'share'" class="task-section" aria-label="Share a Drive reference">
         <TaskLinkShares :task-id="taskId" mode="share" :api="api" />
+        <section class="panel prior-output-history" aria-label="Existing Publish history and approvals">
+          <div class="panel-heading"><div><p class="eyebrow">Existing history</p><h2>Earlier versions and approvals</h2></div></div>
+          <p class="muted">Previously recorded Publish versions and approval decisions remain available here as history. New Output registration uses the Output workflow above.</p>
+          <PublishList :publishes="overview.publishes" :actor-id="overview.actor_id" :role="overview.role" :busy-id="busyId" @approve="approve" />
+        </section>
       </section>
 
-      <section v-else-if="activeTaskSection === 'received'" class="task-section" aria-label="Received Files">
+      <section v-else class="task-section" aria-label="Files received by this Task">
         <TaskLinkShares :task-id="taskId" mode="received" :api="api" />
+        <HandoffPanel :handoffs="receivedHandoffs" :busy-id="busyId" @respond="respond" />
       </section>
       </div>
       </template>
