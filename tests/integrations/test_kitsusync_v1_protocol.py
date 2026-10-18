@@ -3,6 +3,7 @@ import hmac
 
 import pytest
 
+from plugin.integrations.outbox import EventIdentityConflict, append_event_batch
 from plugin.integrations.v1 import (
     ContractValidationError,
     HierarchySnapshot,
@@ -11,8 +12,11 @@ from plugin.integrations.v1 import (
     signed_event_headers,
     validate_event_batch,
     validate_hierarchy,
+    validate_snapshot_complete_request,
+    validate_snapshot_page_request,
+    validate_snapshot_production,
+    validate_snapshot_start,
 )
-from plugin.integrations.outbox import EventIdentityConflict, append_event_batch
 
 
 def test_canonical_json_uses_rfc8785_key_order_and_number_rendering():
@@ -72,6 +76,32 @@ def test_snapshot_duplicate_page_with_different_content_is_security_conflict():
     snapshot.put_page(0, one, digest)
     with pytest.raises(SnapshotConflict):
         snapshot.put_page(0, two, hashlib.sha256(canonical_json(two)).hexdigest())
+
+
+def test_contract_snapshot_request_envelopes_are_strict_and_bound_to_route():
+    digest = "a" * 64
+    start = {
+        "contract_version": "1.0", "snapshot_id": "b0000000-0000-4000-8000-000000000001",
+        "config_revision": 2, "source_etag": "f" * 64, "page_count": 1,
+        "object_count": 1, "snapshot_sha256": digest,
+    }
+    assert validate_snapshot_start(start) == start
+    assert validate_snapshot_complete_request({
+        "contract_version": "1.0", "page_count": 1, "object_count": 1, "snapshot_sha256": digest,
+    })["page_count"] == 1
+    obj = {"object_type": "production", "id": "10000000-0000-4000-8000-000000000001", "parent_id": None, "name": "Synthetic", "included_in_sync": True}
+    page = {"contract_version": "1.0", "page_index": 0, "page_sha256": hashlib.sha256(canonical_json([obj])).hexdigest(), "objects": [obj]}
+    assert validate_snapshot_page_request(page, path_page_index=0) == page
+    with pytest.raises(ContractValidationError, match="route"):
+        validate_snapshot_page_request({**page, "page_index": 1}, path_page_index=0)
+    with pytest.raises(ContractValidationError, match="schema"):
+        validate_snapshot_start({**start, "ignored": True})
+    with pytest.raises(ContractValidationError, match="bounds"):
+        validate_snapshot_complete_request({"contract_version": "1.0", "page_count": 1001, "object_count": 1, "snapshot_sha256": digest})
+    with pytest.raises(ContractValidationError, match="more non-empty pages"):
+        validate_snapshot_start({**start, "page_count": 2})
+    with pytest.raises(ContractValidationError, match="reserved Production"):
+        validate_snapshot_production([obj], "10000000-0000-4000-8000-000000000099")
 
 
 def test_hierarchy_rejects_duplicate_unsorted_and_missing_parents():

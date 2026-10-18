@@ -71,9 +71,50 @@ def test_retryable_provider_failure_is_scheduled_without_provider_details():
     assert "synthetic private response" not in str(result)
 
 
-def test_run_forever_stops_cleanly_after_requested_shutdown(monkeypatch):
-    import threading
+def test_worker_dispatches_outbox_with_same_worker_even_when_product_queue_is_idle(monkeypatch):
+    from plugin.integrations import event_delivery
 
+    class EmptyQueue:
+        def claim_job(self, _worker_id):
+            return None
+
+    context = WorkerContext(uuid4(), WORKER_BUILD, "1.0.94", SCHEMA_EPOCH)
+    delivered = []
+    monkeypatch.setattr(
+        event_delivery, "dispatch_one",
+        lambda repository, receiver, config, *, worker_id: delivered.append(
+            (repository, receiver, config, worker_id)
+        ) or "delivered",
+    )
+    runtime_with_events = WorkerRuntime(
+        EmptyQueue(), context, lambda _payload: True, {},
+        event_delivery=("outbox", "synthetic-receiver", "synthetic-producer-key"),
+    )
+
+    assert process_one(runtime_with_events) is None
+    assert delivered == [("outbox", "synthetic-receiver", "synthetic-producer-key", context.worker_id)]
+
+
+def test_outbox_failure_does_not_fail_product_job_or_log_secret(caplog, monkeypatch):
+    from plugin.integrations import event_delivery
+
+    queue = Queue()
+    monkeypatch.setattr(
+        event_delivery, "dispatch_one",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("synthetic-hmac-secret")),
+    )
+    worker = runtime(queue, lambda _job: JobResult("completed"))
+    worker = WorkerRuntime(
+        worker.queue, worker.context, worker.authorize, worker.handlers,
+        event_delivery=("outbox", "synthetic-receiver", "synthetic-key"),
+    )
+
+    assert process_one(worker) == "completed"
+    assert "synthetic-hmac-secret" not in caplog.text
+    assert "synthetic-key" not in caplog.text
+
+
+def test_run_forever_stops_cleanly_after_requested_shutdown(monkeypatch):
     from plugin.worker import main as worker_main
 
     class StopAfterWaits:

@@ -200,6 +200,10 @@ def make_worker_storage_adapter_factory(
     fake_drive_id=None,
     credentials_dir=None,
     transport=None,
+    session_factory=None,
+    settings=None,
+    extensions=None,
+    allow_legacy_credentials=False,
 ):
     """Build an adapter factory that selects credentials and root per DB connection."""
     if storage_mode == "fake":
@@ -217,6 +221,28 @@ def make_worker_storage_adapter_factory(
 
         return fake_for_connection
     if storage_mode == "google_drive":
+        if session_factory is not None and settings is not None and extensions is not None:
+            def database_or_legacy(connection):
+                if not connection.enabled or not connection.allowed_root_id or connection.allowed_root_id.startswith("__pending__:"):
+                    raise DriveCredentialError("Google Drive storage connection is unavailable")
+                from sqlalchemy import select
+                from ..models import DriveCredential
+                with session_factory() as session:
+                    credential = session.scalar(select(DriveCredential).where(
+                        DriveCredential.connection_id == connection.id,
+                        DriveCredential.production_id == connection.production_id,
+                    ))
+                    if credential is not None:
+                        if credential.state != "active":
+                            raise DriveCredentialError("Google Drive credential is unavailable")
+                        from ..integrations.oauth import build_database_drive_adapter
+                        return build_database_drive_adapter(
+                            connection, session_factory, settings, extensions, transport=transport,
+                        )
+                if not allow_legacy_credentials or not credentials_dir:
+                    raise DriveCredentialError("Google Drive credentials are not configured")
+                return build_google_drive_adapter(connection, credentials_dir, transport=transport)
+            return database_or_legacy
         if not credentials_dir:
             raise DriveCredentialError("Drive credential directory must be an absolute configured path")
         validate_credentials_directory(credentials_dir)

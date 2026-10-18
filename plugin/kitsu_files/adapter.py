@@ -1,4 +1,4 @@
-"""Thin adapter over Zou 1.0.94's supported OutputFile revision service."""
+"""Thin adapter over the verified Zou 1.0.94/1.0.96 OutputFile service."""
 
 from contextlib import contextmanager
 from dataclasses import dataclass

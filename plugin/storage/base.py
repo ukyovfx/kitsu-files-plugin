@@ -36,6 +36,8 @@ class StorageObject:
     mime_type: str | None = None
     trashed: bool = False
     name: str | None = None
+    modified_time: str | None = None
+    md5_checksum: str | None = None
 
 
 @dataclass(frozen=True)

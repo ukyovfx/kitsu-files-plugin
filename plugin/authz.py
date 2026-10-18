@@ -4,15 +4,17 @@ The request's iframe query parameters never construct an Actor or grant access.
 The host adapter must supply the actor role and authoritative Zou lookups.
 """
 
-from dataclasses import dataclass
-from enum import Enum
 import base64
 import hashlib
 import hmac
 import secrets
 import time
+from dataclasses import dataclass
+from enum import Enum
 from typing import Callable
 from uuid import UUID
+
+from .compat import SUPPORTED_ZOU_VERSIONS, SCHEMA_EPOCH, WORKER_BUILD
 
 
 class NotFound(Exception):
@@ -149,5 +151,5 @@ def assert_bearer_header(authorization: str | None) -> str:
 
 
 def assert_compatible_host(host_version: str, schema_epoch: int, worker_build: str) -> None:
-    if host_version != "1.0.94" or schema_epoch != 8 or worker_build != "8":
+    if host_version not in SUPPORTED_ZOU_VERSIONS or schema_epoch != SCHEMA_EPOCH or worker_build != WORKER_BUILD:
         raise RuntimeError("Files plugin host/schema/worker compatibility mismatch")

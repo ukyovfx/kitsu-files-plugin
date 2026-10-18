@@ -2,6 +2,7 @@
 
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+import logging
 import threading
 from typing import Any
 
@@ -11,6 +12,7 @@ from .leases import WorkerContext, run_one
 
 
 JobHandler = Callable[[LeasedJob], JobResult]
+_logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -19,6 +21,7 @@ class WorkerRuntime:
     context: WorkerContext
     authorize: Callable[[Mapping[str, Any]], bool]
     handlers: Mapping[str, JobHandler]
+    event_delivery: tuple[Any, Any, Any] | None = None
 
 
 def process_one(runtime: WorkerRuntime):
@@ -46,7 +49,23 @@ def process_one(runtime: WorkerRuntime):
         except Exception:
             return JobResult("retry", error_code="worker_operation_failed")
 
-    return run_one(runtime.queue, runtime.context, runtime.authorize, execute)
+    result = run_one(runtime.queue, runtime.context, runtime.authorize, execute)
+    if runtime.event_delivery is not None:
+        from ..integrations.event_delivery import dispatch_one
+
+        repository, receiver, delivery_config = runtime.event_delivery
+        try:
+            # Outbox delivery has its own fenced leases in the existing durable
+            # table. A receiver outage never changes the completed product job.
+            dispatch_one(
+                repository, receiver, delivery_config,
+                worker_id=runtime.context.worker_id,
+            )
+        except Exception:
+            # Only a stable code is logged; provider response, URL, payload and
+            # HMAC key material remain outside diagnostics.
+            _logger.warning("kitsusync_event_outbox_unavailable")
+    return result
 
 
 def run_forever(runtime: WorkerRuntime, *, stop_event: threading.Event, idle_seconds: float = 2.0):

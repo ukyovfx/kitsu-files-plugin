@@ -32,46 +32,100 @@ export function createFilesApi(client) {
       return readJson(response)
     },
 
-    async getSharedTemplate(productionId) {
-      if (!productionId) throw new TypeError('A Production ID is required')
-      return readJson(await client.request('GET', `${ROOT}/productions/${encodeURIComponent(productionId)}/shared-template`))
-    },
-
-    async discoverSharedTemplates(productionId, rootUrl) {
-      if (!productionId || !rootUrl) throw new TypeError('A Production and Google Drive root URL are required')
-      const query = new URLSearchParams({ root_url: rootUrl })
-      return readJson(await client.request('GET', `${ROOT}/productions/${encodeURIComponent(productionId)}/shared-template/candidates?${query}`))
-    },
-
-    async saveSharedTemplate(productionId, configuration) {
-      if (!productionId) throw new TypeError('A Production ID is required')
-      return readJson(await mutation('POST', `${ROOT}/productions/${encodeURIComponent(productionId)}/shared-template`, {
-        headers: { 'Content-Type': 'application/json', 'Idempotency-Key': `template:${crypto.randomUUID()}` },
-        body: JSON.stringify(configuration)
-      }))
-    },
-
-    async setSharedTemplateEnabled(productionId, expectedVersion, enabled) {
-      if (!productionId || !Number.isInteger(expectedVersion) || typeof enabled !== 'boolean') {
-        throw new TypeError('Production, configuration version and enabled state are required')
-      }
-      return readJson(await mutation('POST', `${ROOT}/productions/${encodeURIComponent(productionId)}/shared-template/activate`, {
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ expected_version: expectedVersion, enabled })
-      }))
-    },
-
-    async provisionTaskFolders(productionId, taskId) {
-      if (!productionId || !taskId) throw new TypeError('A Production and Task are required')
-      return readJson(await mutation('POST', `${ROOT}/productions/${encodeURIComponent(productionId)}/tasks/${encodeURIComponent(taskId)}/shared-folders`, {
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({})
-      }))
-    },
-
     async getTaskSharedFolders(productionId, taskId) {
       if (!productionId || !taskId) throw new TypeError('A Production and Task are required')
       return readJson(await client.request('GET', `${ROOT}/productions/${encodeURIComponent(productionId)}/tasks/${encodeURIComponent(taskId)}/shared-folders`))
+    },
+
+    async getDriveAuthorityStatus(productionId) {
+      if (!productionId) throw new TypeError('A Production ID is required')
+      return readJson(await client.request('GET', `${ROOT}/productions/${encodeURIComponent(productionId)}/drive/status`))
+    },
+
+    async getDriveConfiguration(productionId) {
+      if (!productionId) throw new TypeError('A Production ID is required')
+      return readJson(await client.request('GET', `${ROOT}/productions/${encodeURIComponent(productionId)}/drive/configuration`))
+    },
+
+    async getLegacyDriveImportPreview(productionId) {
+      if (!productionId) throw new TypeError('A Production ID is required')
+      return readJson(await client.request('GET', `${ROOT}/productions/${encodeURIComponent(productionId)}/drive/legacy-import`))
+    },
+
+    async confirmLegacyDriveImport(productionId, sourceRevision, idempotencyKey) {
+      if (!productionId || !Number.isInteger(sourceRevision) || sourceRevision < 1 || !idempotencyKey) {
+        throw new TypeError('A Production, legacy revision and idempotency key are required')
+      }
+      return readJson(await mutation('POST', `${ROOT}/productions/${encodeURIComponent(productionId)}/drive/legacy-import`, {
+        headers: {
+          'Content-Type': 'application/json',
+          'Idempotency-Key': idempotencyKey,
+          'If-Match': `\"legacy-${sourceRevision}\"`
+        },
+        body: JSON.stringify({ contract_version: '1.0', source_revision: sourceRevision, confirm: true })
+      }))
+    },
+
+    async listDriveConnections(productionId) {
+      if (!productionId) throw new TypeError('A Production ID is required')
+      return readJson(await client.request('GET', `${ROOT}/productions/${encodeURIComponent(productionId)}/drive/connections`))
+    },
+
+    async listDriveRootCandidates(productionId, connectionId) {
+      if (!productionId || !connectionId) throw new TypeError('A Production and Drive connection are required')
+      return readJson(await client.request('GET', `${ROOT}/productions/${encodeURIComponent(productionId)}/drive/connections/${encodeURIComponent(connectionId)}/roots`))
+    },
+
+    async createDriveAuthorization(productionId, accountMode, idempotencyKey) {
+      if (!productionId || accountMode !== 'my_drive' || !idempotencyKey) {
+        throw new TypeError('A Production, Drive account mode and idempotency key are required')
+      }
+      return readJson(await mutation('POST', `${ROOT}/productions/${encodeURIComponent(productionId)}/drive/authorizations`, {
+        headers: { 'Content-Type': 'application/json', 'Idempotency-Key': idempotencyKey },
+        body: JSON.stringify({ contract_version: '1.0', account_mode: accountMode })
+      }))
+    },
+
+    async selectDriveRoot(productionId, connectionId, rootId, configRevision, idempotencyKey) {
+      if (!productionId || !connectionId || !rootId || !Number.isInteger(configRevision) || configRevision < 0 || !idempotencyKey) {
+        throw new TypeError('A Production, connection, root, revision and idempotency key are required')
+      }
+      return readJson(await mutation('POST', `${ROOT}/productions/${encodeURIComponent(productionId)}/drive/connections/${encodeURIComponent(connectionId)}/roots`, {
+        headers: {
+          'Content-Type': 'application/json',
+          'Idempotency-Key': idempotencyKey,
+          'If-Match': `"${configRevision}"`
+        },
+        body: JSON.stringify({ contract_version: '1.0', root_id: rootId })
+      }))
+    },
+
+    async saveDriveConfiguration(productionId, payload, configRevision, idempotencyKey) {
+      if (!productionId || !Number.isInteger(configRevision) || configRevision < 0 || !idempotencyKey) {
+        throw new TypeError('A Production, revision and idempotency key are required')
+      }
+      return readJson(await mutation('POST', `${ROOT}/productions/${encodeURIComponent(productionId)}/drive/configuration`, {
+        headers: {
+          'Content-Type': 'application/json',
+          'Idempotency-Key': idempotencyKey,
+          'If-Match': `"${configRevision}"`
+        },
+        body: JSON.stringify(payload)
+      }))
+    },
+
+    async setDriveActivation(productionId, enabled, configRevision, idempotencyKey) {
+      if (!productionId || typeof enabled !== 'boolean' || !Number.isInteger(configRevision) || configRevision < 1 || !idempotencyKey) {
+        throw new TypeError('A Production, activation state, revision and idempotency key are required')
+      }
+      return readJson(await mutation('POST', `${ROOT}/productions/${encodeURIComponent(productionId)}/drive/activation`, {
+        headers: {
+          'Content-Type': 'application/json',
+          'Idempotency-Key': idempotencyKey,
+          'If-Match': `"${configRevision}"`
+        },
+        body: JSON.stringify({ contract_version: '1.0', enabled })
+      }))
     },
 
     async listTaskUploads(taskId) {
@@ -171,8 +225,12 @@ export function createFilesApi(client) {
       return `/api/${ROOT}/working-files/${encodeURIComponent(fileId)}/download`
     },
 
-    async stageWorkingSnapshot(taskId, files, baseRevisionId = null, onProgress = () => {}) {
+    async stageWorkingSnapshot(taskId, files, baseRevisionId = null, onProgress = () => {}, fileType = 'working', includeIntermediate = false) {
       if (!taskId || !files?.length) throw new TypeError('A Task and at least one file are required')
+      if (typeof fileType !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9 _-]{0,31}$/.test(fileType)) {
+        throw new TypeError('File type must be 1 to 32 letters, digits, spaces, underscores or hyphens')
+      }
+      if (typeof includeIntermediate !== 'boolean') throw new TypeError('Intermediate file opt-in must be explicit')
       const descriptors = []
       for (const file of files) {
         const digest = sha256.create()
@@ -180,11 +238,11 @@ export function createFilesApi(client) {
         for (let offset = 0; offset < file.size; offset += blockSize) {
           digest.update(new Uint8Array(await file.slice(offset, Math.min(offset + blockSize, file.size)).arrayBuffer()))
         }
-        descriptors.push({ name: file.name, size: file.size, sha256: bytesToHex(digest.digest()), category: 'working' })
+        descriptors.push({ name: file.name, size: file.size, sha256: bytesToHex(digest.digest()), category: fileType })
       }
       const revision = await readJson(await mutation('POST', `${ROOT}/tasks/${encodeURIComponent(taskId)}/working-revisions`, {
         headers: { 'Content-Type': 'application/json', 'Idempotency-Key': `working:${crypto.randomUUID()}` },
-        body: JSON.stringify({ base_revision_id: baseRevisionId, files: descriptors, dependencies: [] })
+        body: JSON.stringify({ base_revision_id: baseRevisionId, files: descriptors, dependencies: [], include_intermediate: includeIntermediate })
       }))
       const jobs = []
       let completedBytes = 0

@@ -12,6 +12,7 @@ from .base import AmbiguousOutcome, Listing, PermissionFailure, RetryableStorage
 
 API = "https://www.googleapis.com/drive/v3"
 UPLOAD_API = "https://www.googleapis.com/upload/drive/v3"
+OIDC_USERINFO_API = "https://openidconnect.googleapis.com/v1/userinfo"
 FOLDER_MIME = "application/vnd.google-apps.folder"
 
 
@@ -44,7 +45,10 @@ class GoogleDriveStorageAdapter:
         response = self._send(method, url, token, params=params, json=json, data=data, headers=headers)
         refresh = getattr(self.token_provider, "refresh_after_unauthorized", None)
         if response.status_code == 401 and refresh is not None:
-            token = refresh()
+            if getattr(self.token_provider, "refresh_after_unauthorized_accepts_token", False):
+                token = refresh(token)
+            else:
+                token = refresh()
             if not retry_unauthorized:
                 # Upload bodies are generators over durable staging streams. A
                 # second attempt here would replay an exhausted generator.
@@ -75,14 +79,8 @@ class GoogleDriveStorageAdapter:
     def capabilities(self, root_id):
         if root_id != self.config.allowed_root_id:
             raise PermissionFailure("Requested root differs from configured root")
-        if self.config.account_mode == "my_drive":
-            account = self._request("GET", f"{API}/about", params={"fields": "user(permissionId,emailAddress)"})
-            if account.status_code != 200:
-                raise PermissionFailure("Drive account identity could not be verified")
-            user = account.json().get("user", {})
-            if self.config.owner_subject not in (user.get("permissionId"), user.get("emailAddress")):
-                raise PermissionFailure("Drive token belongs to a different My Drive owner")
-        response = self._request("GET", f"{API}/files/{root_id}", params={"supportsAllDrives": "true", "fields": "id,name,mimeType,driveId,parents,trashed,capabilities(canAddChildren)"})
+        self._verify_my_drive_owner()
+        response = self._request("GET", f"{API}/files/{root_id}", params={"supportsAllDrives": "true", "fields": "id,name,mimeType,driveId,parents,trashed,modifiedTime,md5Checksum,capabilities(canAddChildren)"})
         if response.status_code != 200:
             raise PermissionFailure("Configured Drive root is not readable")
         data = response.json()
@@ -95,6 +93,97 @@ class GoogleDriveStorageAdapter:
         self._root_can_add_children = bool(data.get("capabilities", {}).get("canAddChildren"))
         return StorageCapabilities(
             can_add_children=self._root_can_add_children,
+            root_id=root_id,
+            drive_id=drive_id,
+            shared_drive=self.config.account_mode == "shared_drive",
+            root_visible=True,
+            root_ancestors=tuple(data.get("parents", ())) + (root_id,),
+        )
+
+    def _verify_my_drive_owner(self):
+        if self.config.account_mode != "my_drive":
+            return None
+        account = self._request("GET", OIDC_USERINFO_API, headers={"Accept": "application/json"})
+        if account.status_code != 200:
+            raise PermissionFailure("Drive account identity could not be verified")
+        try:
+            owner_subject = account.json().get("sub")
+        except Exception:
+            raise PermissionFailure("Drive account identity could not be verified") from None
+        if not isinstance(owner_subject, str) or not owner_subject or len(owner_subject) > 255:
+            raise PermissionFailure("Drive account identity could not be verified")
+        if owner_subject != self.config.owner_subject:
+            raise PermissionFailure("Drive token belongs to a different My Drive owner")
+        return owner_subject
+
+    def list_root_candidates(self, page_token: str | None = None):
+        """List only top-level folders in this connection's verified account/drive."""
+        self._verify_my_drive_owner()
+        params = {
+            "q": "'root' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false",
+            "pageSize": 501,
+            "supportsAllDrives": "true",
+            "includeItemsFromAllDrives": "true",
+            "fields": "nextPageToken,incompleteSearch,files(id,name,mimeType,parents,driveId,trashed)",
+        }
+        if self.config.account_mode == "shared_drive":
+            params.update({
+                "q": f"'{self.config.drive_id}' in parents and mimeType = '{FOLDER_MIME}' and trashed = false",
+                "corpora": "drive",
+                "driveId": self.config.drive_id,
+            })
+        if page_token:
+            params["pageToken"] = page_token
+        response = self._request("GET", f"{API}/files", params=params)
+        if response.status_code in (401, 403):
+            raise PermissionFailure("Drive root listing permission was denied")
+        if response.status_code != 200:
+            raise AmbiguousOutcome("Drive root listing result is not confirmed")
+        data = response.json()
+        if data.get("incompleteSearch"):
+            return Listing((), complete=False, next_page_token=data.get("nextPageToken"))
+        folders = []
+        for value in data.get("files", ()):
+            if (
+                value.get("mimeType") != FOLDER_MIME
+                or value.get("trashed")
+                or not value.get("parents")
+                or (self.config.account_mode == "shared_drive" and value.get("driveId") != self.config.drive_id)
+                or (self.config.account_mode == "my_drive" and value.get("driveId") is not None)
+            ):
+                continue
+            folders.append(self._object(value))
+        if len(folders) > 500:
+            return Listing(tuple(folders[:500]), complete=False, next_page_token=data.get("nextPageToken"))
+        next_token = data.get("nextPageToken")
+        return Listing(tuple(folders), complete=next_token is None, next_page_token=next_token)
+
+    def verify_root_candidate(self, root_id: str):
+        """Read and verify a candidate without widening this adapter's worker root."""
+        if not isinstance(root_id, str) or not root_id or len(root_id) > 255:
+            raise PermissionFailure("Drive root candidate is invalid")
+        self._verify_my_drive_owner()
+        response = self._request(
+            "GET", f"{API}/files/{root_id}",
+            params={
+                "supportsAllDrives": "true",
+                "fields": "id,name,mimeType,driveId,parents,trashed,capabilities(canAddChildren)",
+            },
+        )
+        if response.status_code in (401, 403, 404):
+            raise PermissionFailure("Drive root candidate is not accessible")
+        if response.status_code != 200:
+            raise AmbiguousOutcome("Drive root candidate verification is not confirmed")
+        data = response.json()
+        if data.get("id") != root_id or data.get("trashed") or data.get("mimeType") != FOLDER_MIME:
+            raise PermissionFailure("Drive root candidate is not an active folder")
+        drive_id = data.get("driveId")
+        if self.config.account_mode == "my_drive" and drive_id is not None:
+            raise PermissionFailure("Candidate belongs to a Shared Drive, not My Drive")
+        if self.config.account_mode == "shared_drive" and drive_id != self.config.drive_id:
+            raise PermissionFailure("Candidate belongs to a different Shared Drive")
+        return StorageCapabilities(
+            can_add_children=bool(data.get("capabilities", {}).get("canAddChildren")),
             root_id=root_id,
             drive_id=drive_id,
             shared_drive=self.config.account_mode == "shared_drive",
@@ -118,7 +207,7 @@ class GoogleDriveStorageAdapter:
         response = self._request("POST", f"{API}/files", params={"supportsAllDrives": "true", "fields": "id,name,mimeType,parents,driveId,trashed"}, json=body)
         if response.status_code == 409:
             existing = self.get(reserved_id)
-            if existing and existing.parent_id == parent_id and existing.mime_type == FOLDER_MIME:
+            if existing and not existing.trashed and existing.parent_id == parent_id and existing.mime_type == FOLDER_MIME:
                 return existing
             raise AmbiguousOutcome("Reserved Drive ID exists with conflicting metadata")
         if response.status_code in (401, 403):
@@ -194,7 +283,7 @@ class GoogleDriveStorageAdapter:
     def get(self, object_id: str):
         if not self._root_verified:
             raise PermissionFailure("Allowed root must be verified before lookup")
-        response = self._request("GET", f"{API}/files/{object_id}", params={"supportsAllDrives": "true", "fields": "id,name,mimeType,parents,driveId,size,md5Checksum,trashed"})
+        response = self._request("GET", f"{API}/files/{object_id}", params={"supportsAllDrives": "true", "fields": "id,name,mimeType,parents,driveId,size,md5Checksum,modifiedTime,trashed"})
         if response.status_code == 404:
             raise AmbiguousOutcome("Drive 404 does not prove absence or distinguish inaccessible objects")
         if response.status_code in (401, 403):
@@ -252,7 +341,7 @@ class GoogleDriveStorageAdapter:
             "pageSize": 1000,
             "supportsAllDrives": "true",
             "includeItemsFromAllDrives": "true",
-            "fields": "nextPageToken,incompleteSearch,files(id,name,mimeType,parents,driveId,size,trashed)",
+            "fields": "nextPageToken,incompleteSearch,files(id,name,mimeType,parents,driveId,size,md5Checksum,modifiedTime,trashed)",
         }
         if self.config.account_mode == "shared_drive":
             params.update({"corpora": "drive", "driveId": self.config.drive_id})
@@ -301,6 +390,8 @@ class GoogleDriveStorageAdapter:
             mime_type=data.get("mimeType"),
             trashed=bool(data.get("trashed", False)),
             name=data.get("name"),
+            modified_time=data.get("modifiedTime"),
+            md5_checksum=data.get("md5Checksum"),
         )
 
 

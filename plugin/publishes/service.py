@@ -3,7 +3,7 @@
 from dataclasses import dataclass
 from uuid import UUID, uuid4
 
-from sqlalchemy import func, select, update
+from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert
 
 from ..models import (
@@ -11,10 +11,8 @@ from ..models import (
     Job,
     OutputFamilyMapping,
     Publish,
-    PublishCheckpoint,
     PublishPointer,
     ReconciliationFinding,
-    StorageConnection,
     WorkingRevision,
     WorkingRevisionFile,
     NativeCreateEvent,
@@ -135,15 +133,11 @@ def reserve_working_revision_publish(
         if not family.publish_folder_id:
             raise PublishConflict("Output family has no configured Publish folder")
 
-        connections = session.scalars(
-            select(StorageConnection).where(
-                StorageConnection.production_id == family.production_id,
-                StorageConnection.enabled.is_(True),
-            )
-        ).all()
-        if len(connections) != 1:
-            raise PublishConflict("Production must have exactly one enabled StorageConnection")
-        connection = connections[0]
+        from ..integrations.storage_authority import selected_storage_connection
+
+        connection = selected_storage_connection(session, family.production_id)
+        if connection is None:
+            raise PublishConflict("KitsuSync Production storage selection is unavailable")
         binding = session.scalar(
             select(FolderBinding).where(
                 FolderBinding.storage_connection_id == connection.id,

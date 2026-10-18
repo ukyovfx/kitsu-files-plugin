@@ -1,137 +1,17 @@
 {
   "bomFormat": "CycloneDX",
   "specVersion": "1.5",
-  "serialNumber": "urn:uuid:1057020f-7c01-4f6a-a034-f23a9a1e13da",
-  "version": 1,
+  "serialNumber": "urn:uuid:f3780869-6d13-4c7a-9309-883243286c13",
+  "version": 6,
   "metadata": {
-    "timestamp": "2026-10-12T00:00:00Z",
+    "timestamp": "2026-10-14T02:12:18Z",
     "component": {
       "type": "application",
       "name": "vfx-kitsu-files-plugin",
-      "version": "0.5.0",
-      "hashes": [
-        {
-          "alg": "SHA-256",
-          "content": "2cd3141dcfc2d1a24c7e9ad9c111810872a1470ce26fc21f9558bc5cff068bc5"
-        }
-      ]
+      "version": "0.5.0"
     }
   },
   "components": [
-    {
-      "type": "library",
-      "name": "vue",
-      "version": "3.5.43",
-      "purl": "pkg:npm/vue@3.5.43",
-      "licenses": [
-        {
-          "license": {
-            "id": "MIT"
-          }
-        }
-      ],
-      "hashes": [
-        {
-          "alg": "SHA512",
-          "content": "o5qZoksdnjIKvW1srZ3ab7pcDNYAerBjRe54D0LBLfRdCYFrSgBHVXokMas35czQc0//lmx4/tuY4ZNQ+Rf2Ng=="
-        }
-      ]
-    },
-    {
-      "type": "library",
-      "name": "@vue/runtime-dom",
-      "version": "3.5.43",
-      "purl": "pkg:npm/@vue%2fruntime-dom@3.5.43",
-      "licenses": [
-        {
-          "license": {
-            "id": "MIT"
-          }
-        }
-      ],
-      "hashes": [
-        {
-          "alg": "SHA512",
-          "content": "Bb2Jc0YjjJdMt1SJmb9b2L/IWd3I8lIT9x9eS/xvvP9CiVgna0ffua74xKRmt4/uSJ+0r4iN8ex1jrqkhQGWQw=="
-        }
-      ]
-    },
-    {
-      "type": "library",
-      "name": "@vue/runtime-core",
-      "version": "3.5.43",
-      "purl": "pkg:npm/@vue%2fruntime-core@3.5.43",
-      "licenses": [
-        {
-          "license": {
-            "id": "MIT"
-          }
-        }
-      ],
-      "hashes": [
-        {
-          "alg": "SHA512",
-          "content": "hU6U6VnVhBGQDpvlnnDlIB8ZGJBiOcgk2lh/0InltHiz3D8oSkluvuvY+do1G2H3+udeKFsmaBlgVYP7gXQzEw=="
-        }
-      ]
-    },
-    {
-      "type": "library",
-      "name": "@vue/reactivity",
-      "version": "3.5.43",
-      "purl": "pkg:npm/@vue%2freactivity@3.5.43",
-      "licenses": [
-        {
-          "license": {
-            "id": "MIT"
-          }
-        }
-      ],
-      "hashes": [
-        {
-          "alg": "SHA512",
-          "content": "G/c9GyOZNI2jVaaS6OX1EF1SSFSv7H0ERqNTl4+DTFMlZmB5eVAB53aLQNam/7NL2NPtaDD7RdVrzf8uJzMuOA=="
-        }
-      ]
-    },
-    {
-      "type": "library",
-      "name": "@vue/shared",
-      "version": "3.5.43",
-      "purl": "pkg:npm/@vue%2fshared@3.5.43",
-      "licenses": [
-        {
-          "license": {
-            "id": "MIT"
-          }
-        }
-      ],
-      "hashes": [
-        {
-          "alg": "SHA512",
-          "content": "uksS7YGMR5NZyr4JNq0Rp+QyLns0ueaz20KwzIPW9R0LH1Vnt4E+XUM29PNseEbf1www2gOuhuDi5AKOIXag9Q=="
-        }
-      ]
-    },
-    {
-      "type": "library",
-      "name": "@noble/hashes",
-      "version": "1.8.0",
-      "purl": "pkg:npm/@noble%2fhashes@1.8.0",
-      "licenses": [
-        {
-          "license": {
-            "id": "MIT"
-          }
-        }
-      ],
-      "hashes": [
-        {
-          "alg": "SHA512",
-          "content": "jCs9ldd7NwzpgXDIf6P3+NrHh9/sD6CQdxHyjQI+h/6rDNo88ypBxxz45UDuZHz9r3tNz7N/VInSVoVdtXEI4A=="
-        }
-      ]
-    },
     {
       "type": "file",
       "name": "plugin/__init__.py",
@@ -168,7 +48,7 @@
       "hashes": [
         {
           "alg": "SHA-256",
-          "content": "e6b8ece05e3c71c836b560f888d289a927b8433efda81cb8ce7842d6baa3e9e1"
+          "content": "3ee59441db87312a1def8aecd5aaeee327440c37742fefc85f231ed05672bd0b"
         }
       ]
     },
@@ -178,7 +58,7 @@
       "hashes": [
         {
           "alg": "SHA-256",
-          "content": "b16f9e8a9ceabbd11b56c2c5232446fb59f64a12bae8f782b18f4b34ef790a59"
+          "content": "a1c7dc40972f59712b75886ee952656fc1988084c3a6f3104b5534d704b25ad0"
         }
       ]
     },
@@ -208,7 +88,7 @@
       "hashes": [
         {
           "alg": "SHA-256",
-          "content": "c1b5c7357057ffc4bebf35e3bedecec4df0cd2c3ca90f23f3c8f52842e743b67"
+          "content": "485f5bae9b1257f996b241ebd3c6b1748d099f6d0b1d290fb0f61c0d97b3ec72"
         }
       ]
     },
@@ -218,7 +98,7 @@
       "hashes": [
         {
           "alg": "SHA-256",
-          "content": "696ad0c24f541e3cc2eeaa766c59f321800ac3154ba6d4d4722f6d5e2ff6b1ed"
+          "content": "f7e7c9e292b401e0ca6962ad0c4383b66db7df3e8198bc9db7d0644ddd3b8c9c"
         }
       ]
     },
@@ -228,7 +108,7 @@
       "hashes": [
         {
           "alg": "SHA-256",
-          "content": "472ce9fd29b85a012eed3971ef3c8372a811c02d342634b855db2ca6893033e0"
+          "content": "88c2933d14fdcad1a3c6d2e04c8b07ae6ee3ad1bf6e20c7a889efaeec586245f"
         }
       ]
     },
@@ -238,27 +118,27 @@
       "hashes": [
         {
           "alg": "SHA-256",
-          "content": "c3725f2c78aa33cd0dfe01bc98390cd4b10b0d97bd7b8f8392e8485a732ccbc5"
+          "content": "280d01406638c2a58569d9b00627214cf3b541a3d8c8da4b33c3865c4246dbf1"
         }
       ]
     },
     {
       "type": "file",
-      "name": "plugin/frontend/dist/assets/index-BzYD_Fuw.js",
+      "name": "plugin/frontend/dist/assets/index-C3IBcxkh.css",
       "hashes": [
         {
           "alg": "SHA-256",
-          "content": "91a1925a07f00e171ee96ba9bb9ffc72de0fcc169a9480da9de3d9eb70ef8484"
+          "content": "b4f7e37e36bdde8887ede14afb9c0918c46d24437b764357620dac9c26d92d18"
         }
       ]
     },
     {
       "type": "file",
-      "name": "plugin/frontend/dist/assets/index-DDoIgL2h.css",
+      "name": "plugin/frontend/dist/assets/index-CHZJV9TK.js",
       "hashes": [
         {
           "alg": "SHA-256",
-          "content": "8b7e1e44d9e84b65db08ab8324e4f42991e4285bf2e57a588951ad5366b563b3"
+          "content": "b299faaeb443dfa82f21ec7e207d1d1908ceadcff9d22ab7e3f8b39e15678fb1"
         }
       ]
     },
@@ -268,7 +148,7 @@
       "hashes": [
         {
           "alg": "SHA-256",
-          "content": "b68f84880b4169940e36652849b7c2f86354c2e2c142f8ee6b7b6d86cc556d8a"
+          "content": "1a602b3b886903d82167038b1357df536368ae716dc751a600104fb57df68e86"
         }
       ]
     },
@@ -288,7 +168,177 @@
       "hashes": [
         {
           "alg": "SHA-256",
-          "content": "7afd35cdf3f5473220cfc16e1b071b7c73dc0eb7cbd1518e4b48e403375c7889"
+          "content": "e09f33ec046266f91963163f959a81d8f05cb8110f6e69d775cbecc647653b73"
+        }
+      ]
+    },
+    {
+      "type": "file",
+      "name": "plugin/handoffs/targets.py",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "54b7b88eef5fd76529d71dd170dd5657b79f347b882e67126c271fecf22a39e1"
+        }
+      ]
+    },
+    {
+      "type": "file",
+      "name": "plugin/integrations/__init__.py",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "6b3c0842c6f0dda008231f103005842dbc880385b615ec62a1bfd955e66a9521"
+        }
+      ]
+    },
+    {
+      "type": "file",
+      "name": "plugin/integrations/configuration.py",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "570f0bf60c5e8f46cfa46f71b68e4538a30569a2504ecced69fc94e6fb1b630a"
+        }
+      ]
+    },
+    {
+      "type": "file",
+      "name": "plugin/integrations/event_delivery.py",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "77fc9b5bd5970e1f004cc1268e5d7997c2d7a0eeabd313afd8e784c444af04d9"
+        }
+      ]
+    },
+    {
+      "type": "file",
+      "name": "plugin/integrations/event_producers.py",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "91e4d070d89f8662f3cef8aebf83366970ef2c9f444700626e2addd9350f4a48"
+        }
+      ]
+    },
+    {
+      "type": "file",
+      "name": "plugin/integrations/http.py",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "ffbf9ed377200f8fc8e0de331935ceca4667f735cb52a84881b9513e69fd4d30"
+        }
+      ]
+    },
+    {
+      "type": "file",
+      "name": "plugin/integrations/kitsusync_contract.py",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "ed9726a41e37a4b46f46ce59a455830c16c28b21c943aa3f6bc741a1d8ad62c0"
+        }
+      ]
+    },
+    {
+      "type": "file",
+      "name": "plugin/integrations/oauth.py",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "3ab0a392489103a120afeba56d8e2d6119ccb727a1348030f7befcf6b2556e1d"
+        }
+      ]
+    },
+    {
+      "type": "file",
+      "name": "plugin/integrations/outbox.py",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "616808af6d0c2225d231104abb47e5e70090ce74c223dcc0f6f2eda149c46421"
+        }
+      ]
+    },
+    {
+      "type": "file",
+      "name": "plugin/integrations/providers.py",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "950f07a3a3de620bd26ba53fea56f7f6ebd06df6778d2c6e5c2b9547dee0d124"
+        }
+      ]
+    },
+    {
+      "type": "file",
+      "name": "plugin/integrations/service_auth.py",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "f6b3ea800fc560ce07251fb994f6cc4838dd6f539ed1f650b525af9fc849f803"
+        }
+      ]
+    },
+    {
+      "type": "file",
+      "name": "plugin/integrations/snapshots.py",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "95b333c586886e260536060fdd5df5a403705c1a2939741a8eb8baa48db27fbc"
+        }
+      ]
+    },
+    {
+      "type": "file",
+      "name": "plugin/integrations/storage_authority.py",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "b8b3960a1158b2fa7fe92045ed32a19045ca55762f97dc8e12f8d490c0407f44"
+        }
+      ]
+    },
+    {
+      "type": "file",
+      "name": "plugin/integrations/sync.py",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "16278d4317d1dbcdfa178e7617c5ee5bff50941609c5dcde45d77f52ffcf3f0f"
+        }
+      ]
+    },
+    {
+      "type": "file",
+      "name": "plugin/integrations/template_materialization.py",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "3b359269158fe556b655cf5c0ffdc3831db52a2da2fc43efeccbdbfd90be89b0"
+        }
+      ]
+    },
+    {
+      "type": "file",
+      "name": "plugin/integrations/v1.py",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "5b3fb9d9d485a3d36d98b41fd13d1c9f3e9da6d6c9be7b3f5017a7a12d62e101"
+        }
+      ]
+    },
+    {
+      "type": "file",
+      "name": "plugin/integrations/worker.py",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "e3be2baa50e33ada173167c2d1bf06454b393681e7c5962efe0388b5e07ab1d4"
         }
       ]
     },
@@ -308,7 +358,7 @@
       "hashes": [
         {
           "alg": "SHA-256",
-          "content": "f66971adc36755a9b3a1406e8320ae5a6e9a9c238cb9c31b1c672e34b5fff498"
+          "content": "9d9852e4a728b763bf05c8ea2cb98e786418699223074c9d589c2e1a3619fda6"
         }
       ]
     },
@@ -338,7 +388,7 @@
       "hashes": [
         {
           "alg": "SHA-256",
-          "content": "afec8d929b35772c8cd4614d5b6a65570ecf4778951588ddad5c039009ac8651"
+          "content": "a1a15aac1859bcbe7dfac2ae5364b2883b73152f9ad13b3602c7cc97526b66c5"
         }
       ]
     },
@@ -404,11 +454,91 @@
     },
     {
       "type": "file",
+      "name": "plugin/migrations/versions/0007_task_outputs_and_department_handoffs.py",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "1c5381160fcaadd87094497efe25b952fe000ea7cb4359e0db07c81351b5a58f"
+        }
+      ]
+    },
+    {
+      "type": "file",
+      "name": "plugin/migrations/versions/0008_output_package_qc.py",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "2b14a48064b39b990f0e46d954d63b97738ab166351c024030309d587620138d"
+        }
+      ]
+    },
+    {
+      "type": "file",
+      "name": "plugin/migrations/versions/0009_kitsusync_contract_and_package_deliveries.py",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "844f80bc200d197ecfc09e39f96c9f8adae70eba5c40ee83647710eb87f90bdd"
+        }
+      ]
+    },
+    {
+      "type": "file",
+      "name": "plugin/migrations/versions/0010_drive_reconciliation_observations.py",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "e6946640c4f08df686a3c1be0155dc9f6748c83202802475b5ede182b838cf02"
+        }
+      ]
+    },
+    {
+      "type": "file",
+      "name": "plugin/migrations/versions/0011_kitsusync_management_idempotency.py",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "5feb4b93df95a5160e68197ebd9c1075b4e699d58c621a0bddacc15ecd212c56"
+        }
+      ]
+    },
+    {
+      "type": "file",
+      "name": "plugin/migrations/versions/0012_kitsusync_hierarchy_sync.py",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "61fac39e000fbc340eadbebe73abad34635016d433adad69ef660489d97e8003"
+        }
+      ]
+    },
+    {
+      "type": "file",
+      "name": "plugin/migrations/versions/0013_encrypted_drive_oauth.py",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "57a3ef1c4024dd4e90b57187420a65c9c4718ec4741e2c2b8a0b6daafdb31b01"
+        }
+      ]
+    },
+    {
+      "type": "file",
+      "name": "plugin/migrations/versions/0014_event_outbox_connection_binding.py",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "1c9c1874385f8517e12e77e0263661bcd5963e3d59c1855619afceaed2a34617"
+        }
+      ]
+    },
+    {
+      "type": "file",
       "name": "plugin/models.py",
       "hashes": [
         {
           "alg": "SHA-256",
-          "content": "7222ce18df41a79557c8ef3990ca55aa4bad848f770d45006c5ff86ef5287d00"
+          "content": "e1e1a916121669f78c65ab2b7568ebc5ee346bced9c85b1f88ee0d1fc8a54cd8"
         }
       ]
     },
@@ -429,6 +559,46 @@
         {
           "alg": "SHA-256",
           "content": "9424aca85250f01278f097db82e42141ed4501f52d7834ab67ec5d1d6ada1815"
+        }
+      ]
+    },
+    {
+      "type": "file",
+      "name": "plugin/packages/__init__.py",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "57bb59a92378ccafc93aefbf2591838930fda76bdc0731d2f755190f551f2bcb"
+        }
+      ]
+    },
+    {
+      "type": "file",
+      "name": "plugin/packages/manifest.py",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "4c6ceabf5381837358ac2aa3b03aded9bc1cefb4c76872f6f5a9011f47010811"
+        }
+      ]
+    },
+    {
+      "type": "file",
+      "name": "plugin/packages/service.py",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "5a989bd416ea93ea0860aa5d820e3887a6589c904e8dc3b24b4d3a1ca68fa5e4"
+        }
+      ]
+    },
+    {
+      "type": "file",
+      "name": "plugin/packages/worker.py",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "5fe072acd6f7be254237f7091a1fedc32920af423c65901b3017c8557ca8aa5e"
         }
       ]
     },
@@ -478,7 +648,7 @@
       "hashes": [
         {
           "alg": "SHA-256",
-          "content": "ad1679d8456148c70275249336b2765ffd920a786e8626a5067a0cc1df6a8965"
+          "content": "af3ef23a2e341b3c76bc8f36033e24524e5b5be79575f22d2cb89d7a55c0671a"
         }
       ]
     },
@@ -488,7 +658,7 @@
       "hashes": [
         {
           "alg": "SHA-256",
-          "content": "27e65935737dcd7322516259fea8af0629a9b37cb7c9b2ba30df780e3238a92d"
+          "content": "8f404fc97fd7f52da9dc7eff461e7558ab39517ad8f59ee5fe29baf3a374ba06"
         }
       ]
     },
@@ -498,7 +668,7 @@
       "hashes": [
         {
           "alg": "SHA-256",
-          "content": "c7df62d472ff6e46d6c726a87e170a18db5d0351d21d139d89e61998b1458086"
+          "content": "8e252280b3b265f6b81eb37a6a3f1067191c8c56c4ca90fff056798567bac7ea"
         }
       ]
     },
@@ -518,7 +688,7 @@
       "hashes": [
         {
           "alg": "SHA-256",
-          "content": "74dc5e98275600817593e4c82d74d53aa1d1a122deaa08110c5cbb7ab2956eab"
+          "content": "0020589fc5be63728f35cfcc7704c20a88a73eec79afa608f8f68ac93b2c4c73"
         }
       ]
     },
@@ -538,7 +708,7 @@
       "hashes": [
         {
           "alg": "SHA-256",
-          "content": "6de2f361d0c15c2fd2c9136c7337882b3466631b9c6224aba5ac5dea998c8e43"
+          "content": "9c2f8daad99eb42b893550d8e1eff6a2150091f33cafc828fff9a3ddd652e602"
         }
       ]
     },
@@ -548,7 +718,27 @@
       "hashes": [
         {
           "alg": "SHA-256",
-          "content": "b854c1ae56cfb77741defbf5f5dc1432bf46a5fda8c53983042abbeacab9d860"
+          "content": "f925fbc7eecd222ed0a0151c7f8c6a0a3ab6559eaf459d1888546137fa8084a1"
+        }
+      ]
+    },
+    {
+      "type": "file",
+      "name": "plugin/storage/reconciliation.py",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "38c929711c0722ba4266fcb56efef91997479a5f680541a4b0cb7cfb87eda9b5"
+        }
+      ]
+    },
+    {
+      "type": "file",
+      "name": "plugin/storage/worker_factory.py",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "8928b6cf55f111bf1ff11b47381a17dbf9de2c930213e330ed86643478c2cd61"
         }
       ]
     },
@@ -588,7 +778,7 @@
       "hashes": [
         {
           "alg": "SHA-256",
-          "content": "5ebbbc6caea25d1250c3ec513d397939959877ece150543d9770faa402321c38"
+          "content": "6201d648e4389d2f0c33e9df34913bbb1bcda2388a5252bd0d4150a4d0a7424c"
         }
       ]
     },
@@ -618,37 +808,7 @@
       "hashes": [
         {
           "alg": "SHA-256",
-          "content": "4b651a516ec7b7dd89a2b6c4992eeb4aef247c6338ef2b3318d194a814e38256"
-        }
-      ]
-    },
-    {
-      "type": "file",
-      "name": "plugin/worker_runtime.py",
-      "hashes": [
-        {
-          "alg": "SHA-256",
-          "content": "ce3865a64b23aaad168b69edc9a69875eb2c9772a82b3bf00ba94174c33f4466"
-        }
-      ]
-    },
-    {
-      "type": "file",
-      "name": "plugin/working_files/service.py",
-      "hashes": [
-        {
-          "alg": "SHA-256",
-          "content": "c76f102b5d5e46762711854215026dec9d9f7043a3eabc4754bcd3fe98039a71"
-        }
-      ]
-    },
-    {
-      "type": "file",
-      "name": "plugin/storage/worker_factory.py",
-      "hashes": [
-        {
-          "alg": "SHA-256",
-          "content": "1200b75b1960c4bcf6c42b121504b94242588e83905e0db71637b1dbd0d23af0"
+          "content": "e72be162fe0f7b57f0568ca4320429acc88669ccde3f5416987de95d259953fb"
         }
       ]
     },
@@ -659,6 +819,140 @@
         {
           "alg": "SHA-256",
           "content": "ffac22631ee862ac4449f606596e5efb022f4833e3757aaaa420da4e8aa7d489"
+        }
+      ]
+    },
+    {
+      "type": "file",
+      "name": "plugin/worker_runtime.py",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "0f19d488c7213feef09e27066d03146f4192b58abeca9d143ce8d7965528c1e0"
+        }
+      ]
+    },
+    {
+      "type": "file",
+      "name": "plugin/working_files/service.py",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "54ab70c771057c7329949f2d7a2ea204c2a9c67a711e63d1c2ba7fb9f231d991"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "@noble/hashes",
+      "version": "1.8.0",
+      "purl": "pkg:npm/@noble%2fhashes@1.8.0",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA512",
+          "content": "jCs9ldd7NwzpgXDIf6P3+NrHh9/sD6CQdxHyjQI+h/6rDNo88ypBxxz45UDuZHz9r3tNz7N/VInSVoVdtXEI4A=="
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "@vue/reactivity",
+      "version": "3.5.43",
+      "purl": "pkg:npm/@vue%2freactivity@3.5.43",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA512",
+          "content": "G/c9GyOZNI2jVaaS6OX1EF1SSFSv7H0ERqNTl4+DTFMlZmB5eVAB53aLQNam/7NL2NPtaDD7RdVrzf8uJzMuOA=="
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "@vue/runtime-core",
+      "version": "3.5.43",
+      "purl": "pkg:npm/@vue%2fruntime-core@3.5.43",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA512",
+          "content": "hU6U6VnVhBGQDpvlnnDlIB8ZGJBiOcgk2lh/0InltHiz3D8oSkluvuvY+do1G2H3+udeKFsmaBlgVYP7gXQzEw=="
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "@vue/runtime-dom",
+      "version": "3.5.43",
+      "purl": "pkg:npm/@vue%2fruntime-dom@3.5.43",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA512",
+          "content": "Bb2Jc0YjjJdMt1SJmb9b2L/IWd3I8lIT9x9eS/xvvP9CiVgna0ffua74xKRmt4/uSJ+0r4iN8ex1jrqkhQGWQw=="
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "@vue/shared",
+      "version": "3.5.43",
+      "purl": "pkg:npm/@vue%2fshared@3.5.43",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA512",
+          "content": "uksS7YGMR5NZyr4JNq0Rp+QyLns0ueaz20KwzIPW9R0LH1Vnt4E+XUM29PNseEbf1www2gOuhuDi5AKOIXag9Q=="
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "vue",
+      "version": "3.5.43",
+      "purl": "pkg:npm/vue@3.5.43",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA512",
+          "content": "o5qZoksdnjIKvW1srZ3ab7pcDNYAerBjRe54D0LBLfRdCYFrSgBHVXokMas35czQc0//lmx4/tuY4ZNQ+Rf2Ng=="
         }
       ]
     }

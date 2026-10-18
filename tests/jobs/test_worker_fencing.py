@@ -56,3 +56,17 @@ def test_external_job_completion_requires_verified_transfer_evidence(job_environ
     assert lease is not None
     with pytest.raises(ValueError):
         queue.complete_job(job_id, lease.worker_id, lease.generation, JobResult("completed", external_mutation=True))
+
+
+def test_retry_state_becomes_claimable_after_backoff(job_environment):
+    factory, queue, job_id = job_environment
+    with factory.begin() as session:
+        session.execute(
+            update(Job)
+            .where(Job.id == job_id)
+            .values(state="retry", available_at=func.now() - text("interval '1 second'"))
+        )
+    lease = queue.claim_job(uuid4())
+    assert lease is not None
+    assert lease.job_id == job_id
+    assert lease.generation == 1

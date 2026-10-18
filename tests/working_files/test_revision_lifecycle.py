@@ -94,3 +94,47 @@ def test_each_working_file_respects_the_production_file_limit(synthetic_upload_t
             files=[{"name": "too-large.bin", "size": len(content), "sha256": hashlib.sha256(content).hexdigest()}],
             dependencies=[],
         )
+
+
+def test_custom_working_file_type_is_persisted_without_changing_legacy_version_identity(synthetic_upload_task, zou_db_factory):
+    from plugin.models import WorkingRevision, WorkingRevisionFile
+    from plugin.working_files.service import reserve_working_revision
+    from sqlalchemy import select
+
+    production_id, _entity_type, _task_type, _entity, task_id, connection_id, actor_id = synthetic_upload_task
+    receipt = reserve_working_revision(
+        zou_db_factory,
+        production_id=production_id,
+        task_id=task_id,
+        storage_connection_id=connection_id,
+        actor_id=actor_id,
+        base_revision_id=None,
+        idempotency_key=f"working:{uuid4()}",
+        files=[{"name": "camera-track.csv", "size": 3, "sha256": hashlib.sha256(b"csv").hexdigest(), "category": "Tracking Data"}],
+        dependencies=[],
+    )
+    with zou_db_factory() as session:
+        revision = session.get(WorkingRevision, receipt.id)
+        file_row = session.scalar(select(WorkingRevisionFile).where(WorkingRevisionFile.revision_id == receipt.id))
+        assert revision.version == 1
+        assert receipt.version_label == "w001"
+        assert file_row.category == "Tracking Data"
+
+
+@pytest.mark.parametrize("file_type", ["", "../outside", "x" * 33, "type\\escape"])
+def test_custom_working_file_type_rejects_unsafe_or_unbounded_labels(synthetic_upload_task, zou_db_factory, file_type):
+    from plugin.working_files.service import reserve_working_revision
+
+    production_id, _entity_type, _task_type, _entity, task_id, connection_id, actor_id = synthetic_upload_task
+    with pytest.raises(ValueError, match="file type"):
+        reserve_working_revision(
+            zou_db_factory,
+            production_id=production_id,
+            task_id=task_id,
+            storage_connection_id=connection_id,
+            actor_id=actor_id,
+            base_revision_id=None,
+            idempotency_key=f"working:{uuid4()}",
+            files=[{"name": "custom.dat", "size": 1, "sha256": hashlib.sha256(b"x").hexdigest(), "category": file_type}],
+            dependencies=[],
+        )

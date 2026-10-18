@@ -23,7 +23,10 @@ const frameEnd = ref('')
 const colorSpace = ref('')
 const expandedPackage = ref('')
 const packageFiles = ref({})
+const driveCheckedAt = ref('')
+const driveSyncStatus = ref('not checked')
 let pollTimer
+let driveSyncTimer
 let pendingKey = ''
 
 const packageTypes = [
@@ -41,6 +44,8 @@ const taskScope = computed(() => props.taskId)
 async function loadObjects(parentId = currentParent.value, token = null, append = false, requestId = requestGeneration.value) {
   const result = await props.api.listTaskStorageObjects(taskScope.value, parentId, token)
   if (requestId !== requestGeneration.value || result.task_id !== taskScope.value) return
+  driveCheckedAt.value = result.checked_at || ''
+  driveSyncStatus.value = result.sync_status || 'unknown'
   currentParent.value = result.parent_id
   objects.value = append ? [...objects.value, ...result.items] : result.items
   pageToken.value = result.next_page_token
@@ -51,6 +56,8 @@ async function refresh(requestId = ++requestGeneration.value) {
   if (!taskScope.value) return
   loading.value = true
   error.value = ''
+  driveCheckedAt.value = ''
+  driveSyncStatus.value = 'not checked'
   selectedIds.value = []
   folders.value = []
   packageFiles.value = {}
@@ -166,10 +173,17 @@ onMounted(() => {
       refreshPackageList().catch(() => {})
     }
   }, 3000)
+  driveSyncTimer = window.setInterval(() => {
+    if (taskScope.value && !loading.value) {
+      loadObjects(currentParent.value || options.value.storage_root_id, null, false, requestGeneration.value)
+        .catch((cause) => { error.value = cause.message || 'Drive revalidation failed.' })
+    }
+  }, 5 * 60 * 1000)
 })
 onUnmounted(() => {
   requestGeneration.value += 1
   window.clearInterval(pollTimer)
+  window.clearInterval(driveSyncTimer)
 })
 </script>
 
@@ -181,7 +195,8 @@ onUnmounted(() => {
     </div>
     <p v-if="error" class="upload-error" role="alert">{{ error }}</p>
     <p v-if="loading" class="muted" role="status">Loading authorized Drive objects and package history…</p>
-    <template v-else>
+    <p v-if="driveCheckedAt" class="muted" role="status">Drive sync: {{ driveSyncStatus }} · last checked {{ new Date(driveCheckedAt).toLocaleString() }}. This check covers the currently opened folder listing.</p>
+    <template v-if="!loading">
       <div class="package-register">
         <label>Output Type
           <select v-model="outputTypeId" aria-label="Output Type">
@@ -205,7 +220,7 @@ onUnmounted(() => {
         <div v-for="item in objects" :key="item.id" class="storage-object-row">
           <button v-if="item.is_folder" class="text-button object-name" @click="openFolder(item)">📁 {{ item.name }}</button>
           <label v-else class="object-name"><input type="checkbox" :checked="selectedIds.includes(item.id)" :disabled="item.size === null" @change="toggleSelected(item)"> {{ item.name }}</label>
-          <span class="muted">{{ item.is_folder ? 'Folder' : `${item.size ?? 'Unknown size'} bytes` }}</span>
+          <span class="muted">{{ item.is_folder ? 'Folder' : `${item.size ?? 'Unknown size'} bytes` }}<template v-if="item.modified_time"> · Drive modified {{ new Date(item.modified_time).toLocaleString() }}</template></span>
           <label v-if="sequencePackage && selectedIds.includes(item.id)" class="frame-number">Frame<input v-model="frameNumbers[item.id]" type="number" step="1" :aria-label="`Frame number ${item.name}`"></label>
         </div>
         <p v-if="!objects.length" class="muted">This folder has no visible items.</p>

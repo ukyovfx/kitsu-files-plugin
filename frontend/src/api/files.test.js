@@ -21,6 +21,80 @@ describe('Files API', () => {
     expect(client.request).toHaveBeenCalledWith('GET', 'plugins/vfx_files/overview?production_id=p-1&task_id=t-1')
   })
 
+  it('reads sanitized Plugin authority status and starts native OAuth with CSRF and idempotency', async () => {
+    const client = { request: vi.fn()
+      .mockResolvedValueOnce(response({ owner: 'plugin', state: 'unconfigured' }))
+      .mockResolvedValueOnce(response({ csrf_token: 'drive-csrf' }))
+      .mockResolvedValueOnce(response({ authorization_url: 'https://accounts.google.test/oauth', authorization_id: 'auth-1' })) }
+    const api = createFilesApi(client)
+    await expect(api.getDriveAuthorityStatus('prod/a')).resolves.toMatchObject({ owner: 'plugin' })
+    await api.createDriveAuthorization('prod/a', 'my_drive', 'native-drive:prod/a:one')
+    expect(client.request.mock.calls[0]).toEqual(['GET', 'plugins/vfx_files/productions/prod%2Fa/drive/status'])
+    expect(client.request.mock.calls[1]).toEqual(['GET', 'plugins/vfx_files/csrf-token'])
+    const [method, path, options] = client.request.mock.calls[2]
+    expect(method).toBe('POST')
+    expect(path).toBe('plugins/vfx_files/productions/prod%2Fa/drive/authorizations')
+    expect(options.csrfToken).toBe('drive-csrf')
+    expect(options.headers['Idempotency-Key']).toBe('native-drive:prod/a:one')
+    expect(JSON.parse(options.body)).toEqual({ contract_version: '1.0', account_mode: 'my_drive' })
+    await expect(api.createDriveAuthorization('prod/a', 'drive', 'key')).rejects.toThrow('account mode')
+    await expect(api.createDriveAuthorization('prod/a', 'shared_drive', 'key')).rejects.toThrow('account mode')
+  })
+
+  it('lists Plugin-owned Drive candidates and verifies root selection with revision fencing', async () => {
+    const client = { request: vi.fn()
+      .mockResolvedValueOnce(response({ connections: [{ id: 'conn-1', state: 'connected' }] }))
+      .mockResolvedValueOnce(response({ roots: [{ id: 'root-1', name: 'App authorized root' }] }))
+      .mockResolvedValueOnce(response({ csrf_token: 'drive-csrf' }))
+      .mockResolvedValueOnce(response({ owner: 'plugin', config_revision: 1, root_id: 'root-1' })) }
+    const api = createFilesApi(client)
+    await expect(api.listDriveConnections('prod-1')).resolves.toMatchObject({ connections: [{ id: 'conn-1' }] })
+    await expect(api.listDriveRootCandidates('prod-1', 'conn-1')).resolves.toMatchObject({ roots: [{ id: 'root-1' }] })
+    await api.selectDriveRoot('prod-1', 'conn-1', 'root-1', 0, 'native-root-selection-0001')
+    const [method, path, options] = client.request.mock.calls[3]
+    expect(method).toBe('POST')
+    expect(path).toBe('plugins/vfx_files/productions/prod-1/drive/connections/conn-1/roots')
+    expect(options.csrfToken).toBe('drive-csrf')
+    expect(options.headers['If-Match']).toBe('"0"')
+    expect(options.headers['Idempotency-Key']).toBe('native-root-selection-0001')
+    expect(JSON.parse(options.body)).toEqual({ contract_version: '1.0', root_id: 'root-1' })
+    await expect(api.selectDriveRoot('prod-1', 'conn-1', 'root-1', -1, 'key')).rejects.toThrow('revision')
+  })
+
+  it('saves native Drive configuration, activates explicitly, and confirms legacy import with exact revisions', async () => {
+    const client = { request: vi.fn()
+      .mockResolvedValueOnce(response({ configured: true, config_revision: 2 }))
+      .mockResolvedValueOnce(response({ csrf_token: 'config-csrf' }))
+      .mockResolvedValueOnce(response({ config_revision: 3 }))
+      .mockResolvedValueOnce(response({ csrf_token: 'activate-csrf' }))
+      .mockResolvedValueOnce(response({ activation: { enabled: true } }))
+      .mockResolvedValueOnce(response({ status: 'ready_for_explicit_review', source_revision: 7 }))
+      .mockResolvedValueOnce(response({ csrf_token: 'import-csrf' }))
+      .mockResolvedValueOnce(response({ import_status: 'imported_inactive' })) }
+    const api = createFilesApi(client)
+    const config = {
+      contract_version: '1.0',
+      template_selection: { selections: [] },
+      sync_policy: { mode: 'future_only', scope: {}, notify_new_deliveries: false },
+    }
+    await api.saveDriveConfiguration('prod-1', config, 2, 'native-config-save-0001')
+    await api.setDriveActivation('prod-1', true, 3, 'native-activate-save-0001')
+    await api.getLegacyDriveImportPreview('prod-1')
+    await api.confirmLegacyDriveImport('prod-1', 7, 'legacy-import-confirm-0001')
+    const save = client.request.mock.calls[1]
+    expect(save[1]).toBe('plugins/vfx_files/productions/prod-1/drive/configuration')
+    expect(save[2].headers['If-Match']).toBe('"2"')
+    expect(JSON.parse(save[2].body)).toEqual(config)
+    const activation = client.request.mock.calls[3]
+    expect(activation[1]).toBe('plugins/vfx_files/productions/prod-1/drive/activation')
+    expect(activation[2].headers['If-Match']).toBe('"3"')
+    expect(JSON.parse(activation[2].body)).toEqual({ contract_version: '1.0', enabled: true })
+    const legacyImport = client.request.mock.calls[6]
+    expect(legacyImport[1]).toBe('plugins/vfx_files/productions/prod-1/drive/legacy-import')
+    expect(legacyImport[2].headers['If-Match']).toBe('"legacy-7"')
+    expect(JSON.parse(legacyImport[2].body)).toEqual({ contract_version: '1.0', source_revision: 7, confirm: true })
+  })
+
   it('fetches a CSRF token and submits an idempotent handoff response', async () => {
     const client = { request: vi.fn()
       .mockResolvedValueOnce(response({ csrf_token: 'signed-token' }))
@@ -78,37 +152,24 @@ describe('Files API', () => {
     await expect(createFilesApi(client).listProduction('p-1')).rejects.toMatchObject({ status: 503 })
   })
 
-  it('discovers, saves, activates and queues Production-scoped shared folders', async () => {
-    const client = { request: vi.fn()
-      .mockResolvedValueOnce(response({ configured: false }))
-      .mockResolvedValueOnce(response({ allowed_root_id: 'root/a', templates: [] }))
-      .mockResolvedValueOnce(response({ csrf_token: 'save-csrf' }))
-      .mockResolvedValueOnce(response({ version: 1, enabled: false }))
-      .mockResolvedValueOnce(response({ csrf_token: 'activate-csrf' }))
-      .mockResolvedValueOnce(response({ enabled: true }))
-      .mockResolvedValueOnce(response({ csrf_token: 'queue-csrf' }))
-      .mockResolvedValueOnce(response({ job_id: 'job-1', state: 'queued' }))
-      .mockResolvedValueOnce(response({ configured: true, folders: [] })) }
+  it('reads Task folder bindings without exposing Drive configuration mutations', async () => {
+    const client = { request: vi.fn(async () => response({
+      configured: true,
+      managed_by_kitsusync: true,
+      folders: [{ scope_key: 'production:p:task:t', name: 'main', state: 'ready', url: 'https://drive.google.com/drive/folders/folder-1' }]
+    })) }
     const api = createFilesApi(client)
-    await api.getSharedTemplate('prod/a')
-    await api.discoverSharedTemplates('prod/a', 'https://drive.google.com/drive/folders/root/a')
-    await api.saveSharedTemplate('prod/a', { template_folder_id: 'template-1' })
-    await api.setSharedTemplateEnabled('prod/a', 1, true)
-    await api.provisionTaskFolders('prod/a', 'task/1')
-    await api.getTaskSharedFolders('prod/a', 'task/1')
-    expect(client.request.mock.calls.map(([method, path]) => [method, path])).toEqual([
-      ['GET', 'plugins/vfx_files/productions/prod%2Fa/shared-template'],
-      ['GET', 'plugins/vfx_files/productions/prod%2Fa/shared-template/candidates?root_url=https%3A%2F%2Fdrive.google.com%2Fdrive%2Ffolders%2Froot%2Fa'],
-      ['GET', 'plugins/vfx_files/csrf-token'],
-      ['POST', 'plugins/vfx_files/productions/prod%2Fa/shared-template'],
-      ['GET', 'plugins/vfx_files/csrf-token'],
-      ['POST', 'plugins/vfx_files/productions/prod%2Fa/shared-template/activate'],
-      ['GET', 'plugins/vfx_files/csrf-token'],
-      ['POST', 'plugins/vfx_files/productions/prod%2Fa/tasks/task%2F1/shared-folders'],
-      ['GET', 'plugins/vfx_files/productions/prod%2Fa/tasks/task%2F1/shared-folders']
-    ])
-    expect(JSON.parse(client.request.mock.calls[3][2].body)).toMatchObject({ template_folder_id: 'template-1' })
-    expect(JSON.parse(client.request.mock.calls[5][2].body)).toEqual({ expected_version: 1, enabled: true })
+    await expect(api.getTaskSharedFolders('prod/a', 'task/1')).resolves.toMatchObject({
+      managed_by_kitsusync: true,
+      folders: [{ state: 'ready' }]
+    })
+    expect(client.request.mock.calls).toEqual([[
+      'GET', 'plugins/vfx_files/productions/prod%2Fa/tasks/task%2F1/shared-folders'
+    ]])
+    expect(api.getSharedTemplate).toBeUndefined()
+    expect(api.saveSharedTemplate).toBeUndefined()
+    expect(api.setSharedTemplateEnabled).toBeUndefined()
+    expect(api.provisionTaskFolders).toBeUndefined()
   })
 
   it('uploads fixed chunks with checksums and finalizes only after server readback status', async () => {
@@ -154,8 +215,34 @@ describe('Files API', () => {
     expect(reserve[1]).toBe('plugins/vfx_files/tasks/task-1/working-revisions')
     expect(reserve[2].headers['Idempotency-Key']).toMatch(/^working:/)
     expect(JSON.parse(reserve[2].body)).toMatchObject({ base_revision_id: null, files: [{ name: 'comp.nk', size: 3, category: 'working' }] })
+    expect(JSON.parse(reserve[2].body).include_intermediate).toBe(false)
     expect(client.request.mock.calls.filter(([method]) => method === 'PUT')).toHaveLength(1)
     expect(client.request.mock.calls.at(-1)[1]).toBe('plugins/vfx_files/uploads/session-1/finalize')
+  })
+
+  it('sends a bounded custom Working file type without changing the revision API label', async () => {
+    const client = { request: vi.fn()
+      .mockResolvedValueOnce(response({ csrf_token: 'working-csrf' }))
+      .mockResolvedValueOnce(response({ id: 'revision-2', version_label: 'w002', files: [{ upload_session_id: 'session-2' }] }))
+      .mockResolvedValueOnce(response({ id: 'session-2', max_chunk_bytes: 8, parts: [] }))
+      .mockResolvedValueOnce(response({ csrf_token: 'part-csrf' }))
+      .mockResolvedValueOnce(response({ index: 0, state: 'staged' }))
+      .mockResolvedValueOnce(response({ csrf_token: 'finalize-csrf' }))
+      .mockResolvedValueOnce(response({ job_id: 'job-2', state: 'queued' })) }
+    const file = new File(['abc'], 'track.csv')
+    const result = await createFilesApi(client).stageWorkingSnapshot('task-1', [file], 'revision-1', () => {}, 'Tracking Data', true)
+    const reserve = client.request.mock.calls.find(([, path]) => path.endsWith('/working-revisions'))
+    expect(JSON.parse(reserve[2].body).files[0]).toMatchObject({ category: 'Tracking Data' })
+    expect(JSON.parse(reserve[2].body).include_intermediate).toBe(true)
+    expect(result.revision.version_label).toBe('w002')
+  })
+
+  it('rejects unsafe custom Working file types before making an API request', async () => {
+    const client = { request: vi.fn() }
+    const api = createFilesApi(client)
+    const file = new File(['abc'], 'track.csv')
+    await expect(api.stageWorkingSnapshot('task-1', [file], null, () => {}, '../outside')).rejects.toThrow('File type')
+    expect(client.request).not.toHaveBeenCalled()
   })
 
   it('resumes only when every selected file matches the reserved snapshot', async () => {

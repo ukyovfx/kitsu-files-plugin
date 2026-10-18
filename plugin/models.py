@@ -2,10 +2,21 @@
 
 from uuid import uuid4
 
-from sqlalchemy import BigInteger, Boolean, DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint, func, text
+from sqlalchemy import (
+    BigInteger,
+    Boolean,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
+    text,
+)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy_utils import UUIDType
-
 from zou.app import db
 
 
@@ -19,7 +30,7 @@ class PluginState(db.Model):
 class StorageConnection(db.Model):
     __tablename__ = "plugin_vfx_files_storage_connection"
     id = db.Column(UUIDType(binary=False), primary_key=True, default=uuid4)
-    production_id = db.Column(UUIDType(binary=False), nullable=False, index=True)
+    production_id = db.Column(UUIDType(binary=False), nullable=False)
     provider = db.Column(String(32), nullable=False)
     account_mode = db.Column(String(24), nullable=False)
     owner_subject = db.Column(String(255))
@@ -31,6 +42,57 @@ class StorageConnection(db.Model):
     used_bytes = db.Column(BigInteger, nullable=False, default=0)
     enabled = db.Column(Boolean, nullable=False, default=False)
     created_at = db.Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
+class DriveCredential(db.Model):
+    """Encrypted provider grant; plaintext credentials exist only in process memory."""
+    __tablename__ = "plugin_vfx_files_drive_credential"
+    connection_id = db.Column(UUIDType(binary=False), ForeignKey("plugin_vfx_files_storage_connection.id"), primary_key=True)
+    production_id = db.Column(UUIDType(binary=False), nullable=False, index=True)
+    account_mode = db.Column(String(24), nullable=False)
+    account_subject = db.Column(String(255), nullable=False)
+    owner_subject = db.Column(String(255))
+    drive_id = db.Column(String(255))
+    key_id = db.Column(String(64), nullable=False)
+    nonce = db.Column(db.LargeBinary(12), nullable=False)
+    ciphertext = db.Column(db.LargeBinary, nullable=True)
+    state = db.Column(String(24), nullable=False, default="active")
+    updated_at = db.Column(DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now())
+    __table_args__ = (
+        db.CheckConstraint("account_mode IN ('my_drive','shared_drive')", name="plugin_vfx_files_credential_account_mode_ck"),
+        db.CheckConstraint("state IN ('active','revoking','revoke_pending','revoked','reauth_required')", name="plugin_vfx_files_credential_state_ck"),
+        db.CheckConstraint("(account_mode = 'my_drive' AND owner_subject = account_subject AND drive_id IS NULL) OR (account_mode = 'shared_drive' AND owner_subject IS NULL)", name="plugin_vfx_files_credential_identity_ck"),
+    )
+
+
+class DriveAuthorizationIntent(db.Model):
+    """Single-use OAuth handoff bound to actor, Production and return surface."""
+    __tablename__ = "plugin_vfx_files_drive_authorization_intent"
+    id = db.Column(UUIDType(binary=False), primary_key=True, default=uuid4)
+    production_id = db.Column(UUIDType(binary=False), nullable=False, index=True)
+    actor_id = db.Column(UUIDType(binary=False), nullable=False)
+    connection_id = db.Column(UUIDType(binary=False), ForeignKey("plugin_vfx_files_storage_connection.id"), nullable=False)
+    account_mode = db.Column(String(24), nullable=False)
+    return_surface = db.Column(String(24), nullable=False, default="kitsusync")
+    state_sha256 = db.Column(String(64), nullable=False, unique=True)
+    key_id = db.Column(String(64), nullable=False)
+    verifier_nonce = db.Column(db.LargeBinary(12), nullable=False)
+    verifier_ciphertext = db.Column(db.LargeBinary, nullable=False)
+    response_nonce = db.Column(db.LargeBinary(12), nullable=False)
+    response_ciphertext = db.Column(db.LargeBinary, nullable=False)
+    idempotency_key = db.Column(String(128), nullable=False)
+    request_sha256 = db.Column(String(64), nullable=False)
+    status = db.Column(String(24), nullable=False, default="pending")
+    expires_at = db.Column(DateTime(timezone=True), nullable=False)
+    consumed_at = db.Column(DateTime(timezone=True))
+    created_at = db.Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    __table_args__ = (
+        UniqueConstraint("production_id", "idempotency_key", name="plugin_vfx_files_drive_auth_idem_uc"),
+        db.CheckConstraint("account_mode IN ('my_drive','shared_drive')", name="plugin_vfx_files_drive_auth_mode_ck"),
+        db.CheckConstraint("return_surface IN ('kitsusync','kitsu_plugin')", name="plugin_vfx_files_drive_auth_return_surface_ck"),
+        db.CheckConstraint("status IN ('pending','processing','connected','failed','expired')", name="plugin_vfx_files_drive_auth_state_ck"),
+        Index("plugin_vfx_files_drive_auth_expiry_ix", "expires_at"),
+    )
 
 
 class FolderBinding(db.Model):
@@ -175,6 +237,7 @@ class Job(db.Model):
     lease_expires_at = db.Column(DateTime(timezone=True))
     last_error_code = db.Column(String(64))
     created_at = db.Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at = db.Column(DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now())
 
 
 class OutputFamilyMapping(db.Model):
@@ -240,6 +303,7 @@ class OutputPackage(db.Model):
     state = db.Column(String(24), nullable=False, default="receiving")
     manifest_bytes = db.Column(db.LargeBinary, nullable=False)
     manifest_sha256 = db.Column(String(64), nullable=False)
+    event_activation_epoch = db.Column(Integer)
     source_working_revision_id = db.Column(UUIDType(binary=False), ForeignKey("plugin_vfx_files_working_revision.id"))
     provider_folder_id = db.Column(String(255))
     created_by = db.Column(UUIDType(binary=False), nullable=False)
@@ -378,6 +442,71 @@ class KitsuSyncDesiredConfiguration(db.Model):
     updated_at = db.Column(DateTime(timezone=True), nullable=False, server_default=func.now())
 
 
+class ProductionDriveAuthority(db.Model):
+    """Explicit per-Production Drive owner and activation fence.
+
+    Legacy KitsuSync rows remain preserved and marked for reviewed import;
+    they are never silently promoted to Plugin ownership.
+    """
+    __tablename__ = "plugin_vfx_files_production_drive_authority"
+    production_id = db.Column(UUIDType(binary=False), primary_key=True)
+    owner = db.Column(String(32), nullable=False)
+    state = db.Column(String(32), nullable=False)
+    config_revision = db.Column(Integer, nullable=False, default=0)
+    activation_epoch = db.Column(Integer, nullable=False, default=0)
+    connection_id = db.Column(UUIDType(binary=False), ForeignKey("plugin_vfx_files_storage_connection.id"))
+    root_id = db.Column(String(255))
+    desired_config = db.Column(JSONB)
+    activation_enabled = db.Column(Boolean, nullable=False, default=False)
+    activation_transition_pending = db.Column(Boolean, nullable=False, default=False)
+    updated_by = db.Column(UUIDType(binary=False))
+    updated_at = db.Column(DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now())
+    __table_args__ = (
+        db.CheckConstraint("owner IN ('plugin','legacy_kitsusync')", name="plugin_vfx_files_drive_authority_owner_ck"),
+        db.CheckConstraint("state IN ('unconfigured','configured','legacy_import_required')", name="plugin_vfx_files_drive_authority_state_ck"),
+        db.CheckConstraint("config_revision >= 0 AND activation_epoch >= 0", name="plugin_vfx_files_drive_authority_revision_epoch_ck"),
+        db.CheckConstraint("(state = 'configured' AND owner = 'plugin' AND connection_id IS NOT NULL AND root_id IS NOT NULL) OR (state = 'unconfigured' AND owner = 'plugin' AND connection_id IS NULL AND root_id IS NULL AND activation_enabled = false) OR (state = 'legacy_import_required' AND owner = 'legacy_kitsusync' AND connection_id IS NULL AND root_id IS NULL AND activation_enabled = false)", name="plugin_vfx_files_drive_authority_state_owner_ck"),
+    )
+
+
+class ProductionDriveAuthorityEvent(db.Model):
+    """Immutable, secret-free record of explicit Drive ownership changes."""
+    __tablename__ = "plugin_vfx_files_production_drive_authority_event"
+    id = db.Column(UUIDType(binary=False), primary_key=True, default=uuid4)
+    production_id = db.Column(UUIDType(binary=False), nullable=False)
+    actor_id = db.Column(UUIDType(binary=False), nullable=False)
+    event_type = db.Column(String(64), nullable=False)
+    source_revision = db.Column(BigInteger, nullable=False)
+    config_revision = db.Column(BigInteger, nullable=False)
+    activation_epoch = db.Column(BigInteger, nullable=False)
+    idempotency_key = db.Column(String(128), nullable=False)
+    created_at = db.Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    __table_args__ = (
+        UniqueConstraint("production_id", "idempotency_key", name="plugin_vfx_files_drive_authority_event_idem_uc"),
+        Index("plugin_vfx_files_drive_authority_event_production_ix", "production_id", "created_at"),
+    )
+
+
+class KitsuSyncManagementIdempotency(db.Model):
+    """Durable replay result for authenticated management mutations."""
+    __tablename__ = "plugin_vfx_files_kitsusync_management_idempotency"
+    id = db.Column(UUIDType(binary=False), primary_key=True, default=uuid4)
+    production_id = db.Column(UUIDType(binary=False), nullable=False)
+    actor_id = db.Column(UUIDType(binary=False), nullable=False)
+    idempotency_key = db.Column(String(128), nullable=False)
+    operation = db.Column(String(64), nullable=False)
+    request_sha256 = db.Column(String(64), nullable=False)
+    response_status = db.Column(Integer, nullable=False)
+    response_etag = db.Column(String(32))
+    response_body = db.Column(JSONB, nullable=False)
+    created_at = db.Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    __table_args__ = (
+        UniqueConstraint("production_id", "idempotency_key", name="plugin_vfx_files_ks_mgmt_idem_scope_uc"),
+        Index("plugin_vfx_files_ks_mgmt_idem_created_ix", "created_at"),
+        db.CheckConstraint("response_status BETWEEN 200 AND 299", name="plugin_vfx_files_ks_mgmt_idem_status_ck"),
+    )
+
+
 class KitsuSyncHierarchySnapshot(db.Model):
     """Bounded, KitsuSync-supplied hierarchy snapshot for one desired revision."""
     __tablename__ = "plugin_vfx_files_kitsusync_snapshot"
@@ -391,7 +520,27 @@ class KitsuSyncHierarchySnapshot(db.Model):
     state = db.Column(String(24), nullable=False, default="uploading")
     created_at = db.Column(DateTime(timezone=True), nullable=False, server_default=func.now())
     expires_at = db.Column(DateTime(timezone=True), nullable=False)
-    __table_args__ = (UniqueConstraint("production_id", "config_revision", "hierarchy_sha256", name="plugin_vfx_files_kitsusync_snapshot_revision_sha_uc"),)
+
+
+class KitsuSyncSyncPreview(db.Model):
+    """Short-lived immutable read-only hierarchy diff bound to one snapshot/root/config epoch."""
+    __tablename__ = "plugin_vfx_files_kitsusync_sync_preview"
+    id = db.Column(UUIDType(binary=False), primary_key=True, default=uuid4)
+    production_id = db.Column(UUIDType(binary=False), nullable=False)
+    snapshot_id = db.Column(UUIDType(binary=False), ForeignKey("plugin_vfx_files_kitsusync_snapshot.id"), nullable=False)
+    template_configuration_id = db.Column(UUIDType(binary=False), ForeignKey("plugin_vfx_files_shared_template.id"), nullable=False)
+    template_version = db.Column(Integer, nullable=False)
+    config_revision = db.Column(Integer, nullable=False)
+    activation_epoch = db.Column(Integer, nullable=False)
+    storage_connection_id = db.Column(UUIDType(binary=False), ForeignKey("plugin_vfx_files_storage_connection.id"), nullable=False)
+    root_id = db.Column(String(255), nullable=False)
+    summary = db.Column(JSONB, nullable=False)
+    changes = db.Column(JSONB, nullable=False)
+    state = db.Column(String(24), nullable=False, default="preview_ready")
+    expires_at = db.Column(DateTime(timezone=True), nullable=False)
+    created_by = db.Column(UUIDType(binary=False), nullable=False)
+    created_at = db.Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    __table_args__ = (Index("plugin_vfx_files_ks_preview_scope_ix", "production_id", "expires_at"),)
 
 
 class KitsuSyncHierarchySnapshotPage(db.Model):
@@ -408,6 +557,7 @@ class KitsuSyncEventOutbox(db.Model):
     __tablename__ = "plugin_vfx_files_kitsusync_event_outbox"
     id = db.Column(UUIDType(binary=False), primary_key=True, default=uuid4)
     production_id = db.Column(UUIDType(binary=False), nullable=False, index=True)
+    storage_connection_id = db.Column(UUIDType(binary=False), ForeignKey("plugin_vfx_files_storage_connection.id"))
     event_id = db.Column(String(255), nullable=False)
     event_type = db.Column(String(128), nullable=False)
     payload = db.Column(JSONB, nullable=False)
@@ -423,6 +573,28 @@ class KitsuSyncEventOutbox(db.Model):
     __table_args__ = (
         UniqueConstraint("event_id", name="plugin_vfx_files_kitsusync_event_id_uc"),
         UniqueConstraint("production_id", "event_id", name="plugin_vfx_files_kitsusync_event_production_uc"),
+    )
+
+
+class DriveReconciliationObservation(db.Model):
+    """Append-only provider readback evidence for one bounded reconciliation."""
+    __tablename__ = "plugin_vfx_files_drive_observation"
+    id = db.Column(UUIDType(binary=False), primary_key=True, default=uuid4)
+    reconciliation_id = db.Column(UUIDType(binary=False), nullable=False)
+    production_id = db.Column(UUIDType(binary=False), nullable=False, index=True)
+    storage_connection_id = db.Column(UUIDType(binary=False), ForeignKey("plugin_vfx_files_storage_connection.id"), nullable=False)
+    allowed_root_id = db.Column(String(255), nullable=False)
+    provider_object_id = db.Column(String(255), nullable=False)
+    state = db.Column(String(24), nullable=False)
+    metadata_fingerprint = db.Column(String(64))
+    provider_modified_at = db.Column(String(64))
+    byte_count = db.Column(BigInteger)
+    error_code = db.Column(String(64))
+    observed_at = db.Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    __table_args__ = (
+        UniqueConstraint("reconciliation_id", "provider_object_id", name="plugin_vfx_files_drive_observation_identity_uc"),
+        Index("plugin_vfx_files_drive_observation_scope_ix", "storage_connection_id", "allowed_root_id", "observed_at"),
+        db.CheckConstraint("state IN ('present','missing','modified','inaccessible','stale')", name="plugin_vfx_files_drive_observation_state_ck"),
     )
 
 

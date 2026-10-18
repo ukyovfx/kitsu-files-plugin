@@ -32,12 +32,12 @@ Run from a clean, committed source worktree. `init.ps1` and `build.ps1` reject d
 .\deploy\uat\scripts\install-plugin.ps1 -Unit demo
 ```
 
-Then create the synthetic Manager / Artist A / Artist B / Supervisor, Production, Sequence, Shot, Task and FakeStorage bindings. Enable the Files feature, log in as the Manager, and complete the template and permission configuration in the Files page before starting the Worker:
+Then create the synthetic Manager / Artist A / Artist B / Supervisor, Production, Sequence, Shot, Task and FakeStorage bindings. Enable the Files feature for Files workflow checks. This local package does not install or seed KitsuSync. The native Plugin Production settings provide the Drive OAuth start, app-visible root verification, configuration save, and explicit activation workflow. Keep the synthetic UAT egress blocked: do not start Google OAuth, use a real Drive, or start the Worker for Drive sync from this package.
 
 ```powershell
 .\deploy\uat\scripts\seed.ps1 -Unit demo
 .\deploy\uat\scripts\activate.ps1 -Unit demo
-# Configure and review the template through the Kitsu Files page first.
+# Start only after the isolated KitsuSync integration handoff is complete.
 .\deploy\uat\scripts\start-worker.ps1 -Unit demo
 ```
 
@@ -70,22 +70,29 @@ Compose's `cpus`, `mem_limit`, and `pids_limit` are per-container limits enforce
 
 This deployment template is intended for local review. Any VFX Studio Server UAT still needs a separately authorized, compatible isolated server instance, owner-approved synthetic identity policy, verified backups/restore, disk quota enforcement, patched-host approval, and a scoped change window. No Production or Staging installation is included.
 
-## Human acceptance in the installed Kitsu page
+## Native Kitsu pages and synthetic acceptance
 
-The Kitsu home page at the unit's loopback URL is the normal landing page after standard Kitsu login. Use the Manager email and shared synthetic password from the protected `ACCOUNTS.txt`; never paste the password into an issue or report. The seeded Manager is a member of the seeded synthetic Production with the `manager` project role. The plugin metadata must show `frontend_project_enabled=true`, and API readiness now probes the authenticated Files health route instead of accepting the Kitsu home page alone.
+The Files Plugin is the sole Drive configuration authority for each Production. A manager configures it from the native, manager-only Production Plugin settings page. Artists enter through the **Files** tab inside the selected Shot/Asset Task drawer; that Task supplies the Production, entity, Task and Task Type context. The embedded page must not expose the general Production Files application or ask artists to choose the Task again. KitsuSync consumes sanitized Drive status and remains the Discord dispatcher.
 
-Follow this screen path:
+The pinned Kitsu 1.0.70 / Zou 1.0.94 host does not persist or return `frontend_task_enabled` and `frontend_project_admin_enabled`. Until upstream Zou metadata/model/API support and the Kitsu Task-detail hook are adopted, the stock installed host cannot discover either native page. Do not treat a standalone Project Files route, direct iframe URL, or fixture-only browser test as native Task-drawer acceptance. The installed-page Task and manager-route UAT below is **BLOCKED** on that host dependency.
 
-1. In Kitsu, open **Productions** and select `VFX Files Installed E2E <suffix>`.
-2. Open the Production's **Assets** section and choose **VFX Files**. If the menu link is absent, use the authenticated fallback `/api/plugins/vfx_files/frontend/?production_id=<Production UUID>` on the same loopback origin. The ordinary `/` page is only the Kitsu home page.
-3. As Manager, expand **Folder template setup**. For this FakeStorage-only unit use `https://drive.google.com/drive/folders/synthetic-root-id`, select **Discover**, choose **Shared Production Template**, map Sequence to `{sequence}`, Shot to `{shot}`, and Task to `{task}`. Save the disabled configuration, review the hierarchy, then select **Activate provisioning**.
-4. Select the seeded Kitsu Task and use **Create or reuse**. Refresh bindings until folders show `ready` and **Open folder** links appear.
-5. Sign out and sign in as Artist A. In **Working Files**, choose the seeded Task and upload a small synthetic text file. Confirm `w001` is completed and Latest Working. Do not use Production media.
-6. Sign out and sign in as Artist B. Download Artist A's `w001`, then upload a distinct synthetic text file for the same Task. Confirm `w002` becomes Latest Working while `w001` remains listed and downloadable.
-7. Sign in as Artist A. In **Publish and hand off**, select the Task, a completed file from `w002`, and **Synthetic Main**; choose **Publish Working File**. Wait for the immutable Publish to complete and QC to show `passed`.
-8. Sign in as the separate Supervisor, refresh Files, and approve that exact Publish. Confirm Latest Approved and Latest Published identify the expected version. A publisher attempting to approve their own work must be rejected.
-9. As an authorized Task participant, create a Handoff for the completed Publish addressed to Artist B. Sign in as Artist B, open the Production's Files page, and use **Accept** (or **Needs Fix** with feedback if testing rejection).
-10. Refresh after each identity change. Confirm `w001`, `w002`, the Publish manifest and both pointers remain persisted. Worker restart and snapshot restore are separate operational checks; restore into a new disposable unit and keep its Worker stopped until the snapshot integrity review is complete.
+After the host dependency is available, use the authenticated Manager account from the protected `ACCOUNTS.txt` only for native Production Plugin settings and diagnostics; use synthetic Artist and Supervisor identities for Task work. Keep account passwords and browser tokens out of terminal transcripts, issues, and reports.
+
+The native Manager page must show the sanitized Plugin-owned authority status and offer the existing server-side OAuth flow, verified root selection, templates, and explicit activation. OAuth retains `openid` and `drive.file`, with credentials held server-side. This egress-blocked UAT has no Google account and cannot prove live OAuth or Drive access. Synthetic root tests use FakeStorage; arbitrary existing roots that are not already app-authorized remain blocked.
+
+In the Task drawer, verify Working upload/download and revision history, authorized Task-folder browsing, Publish/QC/approval, and Department Handoff without leaving the Task context. General original Drive file/folder Share and Received Files reference flows are not implemented here; keep `file_share.created` v1.1 disabled until receiver support and security semantics are verified. Do not use Production media or real Drive objects.
+
+Worker restart and snapshot restore remain separate synthetic operational checks. Restore only into a new disposable unit, keep its Worker stopped until snapshot integrity has been reviewed, and preserve the source unit.
+
+### KitsuSync integration handoff (synthetic service only)
+
+- The management base path is `/api/plugins/vfx_files/integrations/v1`; it uses the agreed KitsuSync service bearer/JWKS contract. The Files Plugin owns the Production Drive authority in standalone and integrated deployments. KitsuSync's Drive view is read-only; its existing Task-Type Discord routes and signed event dispatcher remain KitsuSync-owned. Legacy KitsuSync configuration is retained as `legacy_import_required` until an authorized manager previews and explicitly confirms a revision-fenced import.
+- The API-side service verifier requires `VFX_FILES_KITSUSYNC_ISSUER` and `VFX_FILES_KITSUSYNC_AUDIENCE`; it fetches keys only from `<issuer>/.well-known/vfx-files-jwks.json` over HTTPS. Use the synthetic issuer/JWKS and scoped RS256 tokens for isolated tests. Never print or share signing keys or bearer tokens.
+- The Plugin-to-KitsuSync business-event receiver is a separate trust direction: configure an HTTPS endpoint ending at `/api/integrations/vfx-files/v1/events`, producer key ID `vfx-files-plugin`, and a synthetic HMAC key file readable only by the Worker. Never reuse the RS256 management bearer as the event key.
+- OAuth server settings are `VFX_FILES_GOOGLE_CLIENT_ID`, `VFX_FILES_GOOGLE_CLIENT_SECRET`, `VFX_FILES_GOOGLE_OAUTH_REDIRECT_URI`, and the fixed `VFX_FILES_KITSU_PLUGIN_RETURN_URI` / `VFX_FILES_KITSUSYNC_RETURN_URI`. Return URIs are server allowlist values with no query or fragment; the client cannot select a redirect URL. The native callback remains server-side with PKCE and exactly `openid + drive.file`.
+- The Plugin API and Worker must use the same exact source revision/image. Readiness reports the installed schema epoch; the single-authority activation-barrier migration `vxf_0019` advances the Plugin schema to epoch 18. The worker command in the packaged UAT image is `/opt/zou/env/bin/python -m vfx_files.worker_runtime --poll --idle-seconds 2`.
+- Keep the Plugin API on the isolated loopback ingress. The management service needs authenticated reachability to the Plugin API; the signed event receiver needs authenticated TLS reachability from the Worker. Do not bridge either path to Production, Staging, real Drive, or live Discord.
+- Current integration blocker: this bundle does not include or seed a KitsuSync service, so signed event delivery, read-only status consumption and Discord routing are not exercised here. This limits integrated verification only; standalone Plugin configuration and storage do not require KitsuSync. Plugin materialization resolves the exact supported catalog identity, revision and safe overrides into a persisted, config-revision-fenced `SharedTemplateConfiguration`; activation requires a verified writable root and non-empty compatible scope. Legacy import retains the source configuration and template structure, advances the activation epoch and leaves Plugin activation off. End-to-end integrated readiness still requires a synthetic KitsuSync v1 instance and a current-source PostgreSQL/API/separate-Worker run. Keep Discord configuration and dispatch in KitsuSync; do not add Plugin-owned webhooks.
 
 For resource capture while performing the UI stages, run the read-only sampler from the repository root in a separate PowerShell window, once per stage:
 

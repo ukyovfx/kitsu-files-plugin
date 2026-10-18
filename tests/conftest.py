@@ -51,6 +51,27 @@ def zou_db_factory(zou_app):
     return sessionmaker(bind=db.engine, expire_on_commit=False)
 
 
+@pytest.fixture(autouse=True)
+def isolate_zou_scoped_session(request):
+    """Do not carry request transactions across tests on the session app."""
+    if "zou_app" not in request.fixturenames:
+        yield
+        return
+
+    # zou_app deliberately keeps one Flask application and app context for the
+    # synthetic host suite. Flask-SQLAlchemy therefore scopes request sessions
+    # to that same context, so requests can otherwise leave a transaction open
+    # for the next test. OAuth service operations use explicit session.begin().
+    request.getfixturevalue("zou_app")
+    from zou.app import db
+
+    db.session.remove()
+    try:
+        yield
+    finally:
+        db.session.remove()
+
+
 @pytest.fixture
 def authenticated_plugin_client(zou_app):
     from zou.app.models.person import Person
@@ -83,7 +104,7 @@ def authenticated_plugin_client(zou_app):
 
 
 @pytest.fixture
-def synthetic_upload_task(authenticated_plugin_client, zou_db_factory, tmp_path):
+def synthetic_upload_task(authenticated_plugin_client, zou_db_factory, tmp_path, request):
     from sqlalchemy import select
     from zou.app.models.entity import Entity
     from zou.app.models.entity_type import EntityType
@@ -91,7 +112,8 @@ def synthetic_upload_task(authenticated_plugin_client, zou_db_factory, tmp_path)
     from zou.app.models.project import Project, ProjectPersonLink
     from zou.app.models.task import Task, TaskPersonLink
     from zou.app.models.task_type import TaskType
-    from plugin.models import ApprovalEvent, FolderBinding, Handoff, HandoffEvent, Job, LatestWorkingPointer, NativeCreateEvent, OutputFamilyMapping, OutputPackage, OutputPackageFile, OutputPackagePointer, PinnedDependency, Publish, PublishCheckpoint, PublishPointer, ReconciliationFinding, SharedTemplateConfiguration, StorageConnection, UploadPart, UploadSession, WorkingDependency, WorkingRevision, WorkingRevisionFile
+    from plugin.models import ApprovalEvent, DriveReconciliationObservation, FolderBinding, Handoff, HandoffEvent, Job, KitsuSyncDesiredConfiguration, KitsuSyncEventOutbox, LatestWorkingPointer, NativeCreateEvent, OutputFamilyMapping, OutputPackage, PinnedDependency, Publish, PublishCheckpoint, PublishPointer, ReconciliationFinding, SharedTemplateConfiguration, StorageConnection, UploadPart, UploadSession, WorkingDependency, WorkingRevision, WorkingRevisionFile
+    from plugin.models import KitsuSyncHierarchySnapshot
 
     app = authenticated_plugin_client.vfx_app
     with app.app_context():
@@ -120,6 +142,28 @@ def synthetic_upload_task(authenticated_plugin_client, zou_db_factory, tmp_path)
             session.add_all([task, connection])
             session.flush()
             session.add(TaskPersonLink(task_id=task.id, person_id=actor.id))
+            if "test_kitsusync_management_api" not in request.node.nodeid and "test_sync_pipeline_postgres_worker_e2e" not in request.node.nodeid:
+                session.add(KitsuSyncDesiredConfiguration(
+                    production_id=project.id, config_revision=1, notification_epoch=0,
+                    desired_config={
+                        "contract_version": "1.0", "connection_id": str(connection.id),
+                        "drive": {
+                            "account_mode": "shared_drive", "drive_id": connection.drive_id,
+                            "owner_subject": None, "root_id": connection.allowed_root_id,
+                            "root_state": "verified",
+                        },
+                        "template_selection": {"selections": [{
+                            "scope": "production", "template_id": "synthetic-template",
+                            "revision": 1, "overrides": {},
+                        }]},
+                        "sync_policy": {
+                            "mode": "future_only",
+                            "scope": {"episodes": False, "sequences": False, "shots": True, "assets": False, "tasks": True},
+                            "notify_new_deliveries": True,
+                        },
+                        "activation": {"enabled": False, "activated_at": None, "notification_epoch": 0},
+                    },
+                ))
             values = (project.id, entity_type.id, task_type.id, entity.id, task.id, connection.id, actor.id)
 
     app.config.update(VFX_FILES_STAGING_ROOT=str(tmp_path), VFX_FILES_MAX_CHUNK_BYTES=4)
@@ -127,6 +171,15 @@ def synthetic_upload_task(authenticated_plugin_client, zou_db_factory, tmp_path)
 
     project_id, entity_type_id, task_type_id, entity_id, task_id, connection_id, _actor_id = values
     with zou_db_factory.begin() as session:
+        # Accepted hierarchy snapshots are immutable and intentionally anchor
+        # their synthetic Production graph for the lifetime of this disposable
+        # host. Do not delete around the database immutability constraints.
+        if session.scalar(
+            select(KitsuSyncHierarchySnapshot.id)
+            .where(KitsuSyncHierarchySnapshot.production_id == project_id)
+            .limit(1)
+        ) is not None:
+            return
         publishes = session.scalars(select(Publish).where(Publish.task_id == task_id)).all()
         publish_ids = [row.id for row in publishes]
         if publish_ids:
@@ -140,6 +193,12 @@ def synthetic_upload_task(authenticated_plugin_client, zou_db_factory, tmp_path)
         # Completed package rows and their provider artifacts are immutable.
         # Preserve the synthetic Kitsu graph rather than bypassing those guards.
         if session.scalar(select(OutputPackage.id).where(OutputPackage.task_id == task_id).limit(1)) is not None:
+            return
+        if session.scalar(select(KitsuSyncEventOutbox.id).where(
+            KitsuSyncEventOutbox.production_id == project_id,
+        ).limit(1)) is not None:
+            # Outbox identity/history is immutable. Preserve its selected
+            # connection and Kitsu scope as one synthetic evidence unit.
             return
             native_output_ids = [row.native_output_file_id for row in publishes if row.native_output_file_id]
             native_source_ids = [row.source_working_file_id for row in publishes if row.source_working_file_id]
@@ -190,6 +249,15 @@ def synthetic_upload_task(authenticated_plugin_client, zou_db_factory, tmp_path)
                 SharedTemplateConfiguration.storage_connection_id == connection_id
             )
         )
+        session.execute(DriveReconciliationObservation.__table__.delete().where(
+            DriveReconciliationObservation.storage_connection_id == connection_id
+        ))
+        session.execute(KitsuSyncEventOutbox.__table__.delete().where(
+            KitsuSyncEventOutbox.production_id == project_id
+        ))
+        session.execute(KitsuSyncDesiredConfiguration.__table__.delete().where(
+            KitsuSyncDesiredConfiguration.production_id == project_id
+        ))
         session.execute(FolderBinding.__table__.delete().where(FolderBinding.storage_connection_id == connection_id))
         session.execute(StorageConnection.__table__.delete().where(StorageConnection.id == connection_id))
         session.execute(TaskPersonLink.__table__.delete().where(TaskPersonLink.task_id == task_id))

@@ -104,6 +104,28 @@ def test_unique_existing_folder_is_adopted_by_stable_binding():
     assert not [call for call in adapter.calls if call[0] == "create_folder"]
 
 
+def test_kitsusync_worker_does_not_adopt_folder_by_name_only():
+    from plugin.storage.base import StorageObject
+
+    adapter = FakeStorage()
+    adapter.objects["unbound-same-name"] = StorageObject(
+        "unbound-same-name", "fake-root", 0, hashlib.sha256(b"").hexdigest(), None,
+        "folder", name="Shot A",
+    )
+    store = MemoryFolderStore()
+
+    with pytest.raises(FolderProvisioningError, match="identity-verified adoption"):
+        provision_folder(
+            adapter, store,
+            storage_connection_id="connection-1", allowed_root_id="fake-root",
+            canonical_scope_key="production/00000000-0000-4000-8000-000000000001/shot/00000000-0000-4000-8000-000000000009",
+            parent_id="fake-root", display_name="Shot A", allow_name_adoption=False,
+        )
+
+    assert adapter.objects["unbound-same-name"].name == "Shot A"
+    assert not [call for call in adapter.calls if call[0] == "create_folder"]
+
+
 def test_duplicate_existing_names_fail_closed_instead_of_guessing():
     from plugin.storage.base import StorageObject
 

@@ -1,6 +1,5 @@
-from pathlib import Path
 import re
-
+from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 MIGRATION = ROOT / "plugin/migrations/versions/0001_plugin_foundation.py"
@@ -9,6 +8,15 @@ PUBLISH_SOURCE_MIGRATION = ROOT / "plugin/migrations/versions/0006_publish_sourc
 TASK_OUTPUT_MIGRATION = ROOT / "plugin/migrations/versions/0007_task_outputs_and_department_handoffs.py"
 OUTPUT_PACKAGE_QC_MIGRATION = ROOT / "plugin/migrations/versions/0008_output_package_qc.py"
 KITSUSYNC_DELIVERY_MIGRATION = ROOT / "plugin/migrations/versions/0009_kitsusync_contract_and_package_deliveries.py"
+DRIVE_OBSERVATION_MIGRATION = ROOT / "plugin/migrations/versions/0010_drive_reconciliation_observations.py"
+KITSUSYNC_IDEMPOTENCY_MIGRATION = ROOT / "plugin/migrations/versions/0011_kitsusync_management_idempotency.py"
+KITSUSYNC_SYNC_MIGRATION = ROOT / "plugin/migrations/versions/0012_kitsusync_hierarchy_sync.py"
+DRIVE_OAUTH_MIGRATION = ROOT / "plugin/migrations/versions/0013_encrypted_drive_oauth.py"
+EVENT_OUTBOX_BINDING_MIGRATION = ROOT / "plugin/migrations/versions/0014_event_outbox_connection_binding.py"
+PRODUCTION_DRIVE_AUTHORITY_MIGRATION = ROOT / "plugin/migrations/versions/0015_production_drive_authority.py"
+OAUTH_RETURN_SURFACE_MIGRATION = ROOT / "plugin/migrations/versions/0016_oauth_return_surface.py"
+PLUGIN_DRIVE_CONFIGURATION_MIGRATION = ROOT / "plugin/migrations/versions/0017_plugin_owned_drive_configuration.py"
+PLUGIN_DRIVE_AUTHORITY_AUDIT_MIGRATION = ROOT / "plugin/migrations/versions/0018_production_drive_authority_audit.py"
 
 
 def test_plugin_tables_are_namespaced_and_nullable_folder_identity_is_avoided():
@@ -136,3 +144,125 @@ def test_kitsusync_contract_and_multi_recipient_migration_is_additive_and_fail_c
     downgrade = source.split("def downgrade():", 1)[1]
     assert "restore a consistent pre-migration snapshot" in downgrade
     assert "schema_epoch = 7" in downgrade
+
+
+def test_drive_observation_migration_is_additive_and_refuses_data_loss():
+    source = DRIVE_OBSERVATION_MIGRATION.read_text()
+    assert 'revision = "vxf_0010"' in source
+    assert 'down_revision = "vxf_0009"' in source
+    assert 'op.create_table(\n        "plugin_vfx_files_drive_observation"' in source
+    for state in ("present", "missing", "modified", "inaccessible", "stale"):
+        assert state in source
+    assert "restore a consistent pre-migration snapshot instead of downgrading" in source
+    assert "schema_epoch = 9" in source and "schema_epoch = 8" in source
+
+
+def test_kitsusync_management_idempotency_migration_is_additive_and_refuses_data_loss():
+    source = KITSUSYNC_IDEMPOTENCY_MIGRATION.read_text()
+    assert 'revision = "vxf_0011"' in source
+    assert 'down_revision = "vxf_0010"' in source
+    assert 'op.create_table(\n        "plugin_vfx_files_kitsusync_management_idempotency"' in source
+    assert 'UniqueConstraint("production_id", "idempotency_key"' in source
+    assert "restore a consistent pre-migration snapshot instead of downgrading" in source
+    assert "schema_epoch = 10" in source and "schema_epoch = 9" in source
+
+
+def test_kitsusync_hierarchy_sync_migration_allows_repeated_content_and_preserves_evidence():
+    source = KITSUSYNC_SYNC_MIGRATION.read_text()
+    assert 'revision = "vxf_0012"' in source
+    assert 'down_revision = "vxf_0011"' in source
+    assert 'op.drop_constraint(' in source
+    assert 'op.create_table(\n        "plugin_vfx_files_kitsusync_sync_preview"' in source
+    assert 'sa.Column("updated_at", sa.DateTime(timezone=True), nullable=True)' in source
+    assert 'SELECT EXISTS (SELECT 1 FROM plugin_vfx_files_job)' in source
+    assert "GROUP BY production_id, config_revision, hierarchy_sha256 HAVING count(*) > 1" in source
+    assert "restore a consistent pre-migration snapshot instead of downgrading" in source
+    assert "schema_epoch = 11" in source and "schema_epoch = 10" in source
+
+
+def test_encrypted_drive_oauth_migration_is_additive_and_refuses_data_loss():
+    source = DRIVE_OAUTH_MIGRATION.read_text()
+    assert 'revision = "vxf_0013"' in source
+    assert 'down_revision = "vxf_0012"' in source
+    assert 'op.create_table(\n        "plugin_vfx_files_drive_credential"' in source
+    assert 'op.create_table(\n        "plugin_vfx_files_drive_authorization_intent"' in source
+    assert 'sa.Column("ciphertext", sa.LargeBinary(), nullable=True)' in source
+    assert 'sa.Column("state_sha256", sa.String(64), nullable=False)' in source
+    assert "owner_subject = account_subject" in source
+    assert "state IN ('active','revoking','revoke_pending','revoked','reauth_required')" in source
+    assert "restore a consistent snapshot instead of downgrading" in source
+    assert "schema_epoch = 12" in source
+
+
+def test_event_outbox_binding_migration_is_additive_and_preserves_bound_rows():
+    source = EVENT_OUTBOX_BINDING_MIGRATION.read_text()
+    assert 'revision = "vxf_0014"' in source
+    assert 'down_revision = "vxf_0013"' in source
+    assert 'op.add_column(' in source
+    assert '"storage_connection_id"' in source
+    assert 'ForeignKey("plugin_vfx_files_storage_connection.id")' in source
+    assert 'nullable=True' in source
+    assert "schema_epoch = 13" in source and "schema_epoch = 12" in source
+    assert "WHERE storage_connection_id IS NOT NULL" in source
+    assert "event_activation_epoch IS NOT NULL" in source
+    assert '"plugin_vfx_files_output_package"' in source
+    assert '"event_activation_epoch"' in source
+    assert "restore a consistent snapshot instead of downgrading" in source
+    assert "Output Package event eligibility is immutable" in source
+
+
+def test_production_drive_authority_migration_preserves_legacy_rows_and_marks_import_required():
+    source = PRODUCTION_DRIVE_AUTHORITY_MIGRATION.read_text()
+    assert 'revision = "vxf_0015"' in source
+    assert 'down_revision = "vxf_0014"' in source
+    assert 'op.create_table(\n        "plugin_vfx_files_production_drive_authority"' in source
+    assert "INSERT INTO plugin_vfx_files_production_drive_authority" in source
+    assert "'legacy_kitsusync', 'legacy_import_required'" in source
+    assert "NULL, NULL, false" in source
+    assert "DELETE FROM plugin_vfx_files_kitsusync_desired_config" not in source
+    assert "schema_epoch = 14" in source and "schema_epoch = 13" in source
+    assert "Plugin-owned Drive authority exists" in source
+
+
+def test_oauth_return_surface_migration_preserves_pending_legacy_callbacks():
+    source = OAUTH_RETURN_SURFACE_MIGRATION.read_text()
+    assert 'revision = "vxf_0016"' in source
+    assert 'down_revision = "vxf_0015"' in source
+    assert 'server_default="kitsusync"' in source
+    assert "return_surface IN ('kitsusync','kitsu_plugin')" in source
+    assert "schema_epoch = 15" in source and "schema_epoch = 14" in source
+    assert "Native OAuth return intents exist" in source
+
+
+def test_plugin_owned_configuration_migration_adds_nullable_durable_authority_without_legacy_copy():
+    source = PLUGIN_DRIVE_CONFIGURATION_MIGRATION.read_text()
+    assert 'revision = "vxf_0017"' in source
+    assert 'down_revision = "vxf_0016"' in source
+    assert '"plugin_vfx_files_production_drive_authority"' in source
+    assert 'sa.Column("desired_config", postgresql.JSONB(astext_type=sa.Text()), nullable=True)' in source
+    assert "INSERT INTO" not in source and "UPDATE plugin_vfx_files_kitsusync_desired_config" not in source
+    assert "schema_epoch = 16" in source and "schema_epoch = 15" in source
+    assert "Plugin-owned Drive configuration exists" in source
+
+
+def test_drive_authority_audit_migration_is_immutable_and_refuses_lossy_downgrade():
+    source = PLUGIN_DRIVE_AUTHORITY_AUDIT_MIGRATION.read_text()
+    assert 'revision = "vxf_0018"' in source
+    assert 'down_revision = "vxf_0017"' in source
+    assert '"plugin_vfx_files_production_drive_authority_event"' in source
+    assert 'sa.UniqueConstraint("production_id", "idempotency_key", name="plugin_vfx_files_drive_authority_event_idem_uc")' in source
+    assert "CREATE TRIGGER plugin_vfx_files_production_drive_authority_event_immutable" in source
+    assert "BEFORE UPDATE OR DELETE" in source
+    assert "restore a consistent pre-migration snapshot instead of downgrading" in source
+    assert "schema_epoch = 17" in source and "schema_epoch = 16" in source
+
+
+def test_activation_barrier_migration_tracks_pending_transitions_and_blocks_unsafe_downgrade():
+    migration = ROOT / "plugin/migrations/versions/0019_activation_barrier.py"
+    source = migration.read_text(encoding="utf-8")
+    assert 'revision = "vxf_0019"' in source
+    assert 'down_revision = "vxf_0018"' in source
+    assert 'sa.Column("activation_transition_pending", sa.Boolean(), nullable=False, server_default=sa.false())' in source
+    assert "activation_transition_pending = true" in source
+    assert "Drive deactivation barriers are pending" in source
+    assert "schema_epoch = 18" in source and "schema_epoch = 17" in source

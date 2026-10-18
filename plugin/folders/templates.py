@@ -93,19 +93,39 @@ def normalize_role_mappings(tree: TemplateFolder, values: object) -> dict[str, s
     for role, folder_id in values.items():
         if role not in ROLE_NAMES:
             raise ValueError("Template role mapping contains an unsupported role")
-        if not isinstance(folder_id, str) or folder_id not in available:
-            raise ValueError("Template role mapping must reference a folder in the selected template")
-        mappings[role] = folder_id
-    if "shot" in mappings and "asset" in mappings:
-        raise ValueError("Map either a Shot or Asset entity, not both")
-    entity_role = "shot" if "shot" in mappings else "asset" if "asset" in mappings else None
-    if entity_role is None or "task" not in mappings:
+        ids = [folder_id] if isinstance(folder_id, str) else folder_id
+        if not isinstance(ids, list) or not ids or any(not isinstance(item, str) or item not in available for item in ids):
+            raise ValueError("Template role mapping must reference folders in the selected template")
+        mappings[role] = ids[0] if len(ids) == 1 else ids
+    entity_roles = [role for role in ("shot", "asset") if role in mappings]
+    if len(entity_roles) > 1:
+        raise ValueError("Template must map either a Shot role or an Asset role, not both")
+    task_ids = _mapping_ids(mappings.get("task"))
+    if not entity_roles or not task_ids:
         raise ValueError("A Shot or Asset role and a Task role are required before provisioning can be activated")
-    if not _is_ancestor(tree, mappings[entity_role], mappings["task"]):
-        raise ValueError("Task template role must be a descendant of its Shot or Asset role")
-    if "sequence" in mappings and (entity_role != "shot" or not _is_ancestor(tree, mappings["sequence"], mappings["shot"])):
+    for role in entity_roles:
+        for entity_id in _mapping_ids(mappings[role]):
+            if not any(_is_ancestor(tree, entity_id, task_id) for task_id in task_ids):
+                raise ValueError("Task template role must be a descendant of each selected Shot or Asset role")
+    sequence_ids = _mapping_ids(mappings.get("sequence"))
+    if sequence_ids and ("shot" not in entity_roles or any(
+        not any(_is_ancestor(tree, sequence_id, shot_id) for sequence_id in sequence_ids)
+        for shot_id in _mapping_ids(mappings["shot"])
+    )):
         raise ValueError("Sequence template role must be an ancestor of a Shot role")
+    episode_ids = _mapping_ids(mappings.get("episode"))
+    if episode_ids and (not sequence_ids or any(
+        not any(_is_ancestor(tree, episode_id, sequence_id) for episode_id in episode_ids)
+        for sequence_id in sequence_ids
+    )):
+        raise ValueError("Episode template role must be an ancestor of a Sequence role")
     return mappings
+
+
+def _mapping_ids(value):
+    if isinstance(value, str):
+        return [value]
+    return value if isinstance(value, list) and all(isinstance(item, str) for item in value) else []
 
 
 def save_configuration(

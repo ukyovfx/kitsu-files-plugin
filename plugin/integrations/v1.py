@@ -1,23 +1,21 @@
-"""Pure protocol primitives shared by the KitsuSync v1 API and Worker.
+"""Pure protocol primitives shared by the coordinated KitsuSync v1 contract.
 
-This module intentionally does not choose service-token issuer or key semantics:
-the published draft leaves those values unresolved, so an HTTP adapter must be
-configured with an explicitly approved verifier before it can be enabled.
+Management API authentication and Zou route registration live in their own
+adapter. Event HMAC remains a separate trust direction from service JWT auth.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from datetime import datetime
-from decimal import Decimal
 import hashlib
 import hmac
 import json
 import math
 import re
+from dataclasses import dataclass
+from datetime import datetime
+from decimal import Decimal
 from typing import Any, Mapping, Sequence
 from uuid import UUID
-
 
 MAX_PAGE_OBJECTS = 500
 MAX_SNAPSHOT_OBJECTS = 500_000
@@ -29,12 +27,17 @@ _EVENT_FIELDS = {
     "contract_version", "producer_id", "event_id", "event_type", "occurred_at", "production_id",
     "activation_epoch", "production_name", "episode_id", "episode_name", "entity", "source",
     "output_package", "delivery", "sender", "folder", "sender_person_id",
+    "config_revision", "previous_activation_epoch", "new_activation_epoch",
 }
 _FILE_EVENT_TYPES = {
     "file_delivery.created", "file_delivery.ready", "file_delivery.accepted",
     "file_delivery.needs_fix", "file_delivery.revised",
 }
 _PACKAGE_EVENT_TYPES = {"output_package.created", "output_package.ready"}
+
+
+def _is_contract_int(value: Any, *, minimum: int = 1) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value >= minimum
 
 
 def _require_object(value: Any, *, allowed: set[str], required: set[str], label: str) -> dict[str, Any]:
@@ -95,6 +98,11 @@ def _validate_event_shape(event: dict[str, Any]) -> None:
     elif event["event_type"] in _PACKAGE_EVENT_TYPES:
         required = {"source", "output_package"}
         event_specific_fields = {"source", "output_package", "sender_person_id"}
+    elif event["event_type"] in {
+        "storage_authority.deactivation_requested", "storage_authority.activation_requested",
+    }:
+        required = {"config_revision", "previous_activation_epoch", "new_activation_epoch"}
+        event_specific_fields = required
     else:
         raise ContractValidationError("Event type is not supported by the published v1 contract")
     common_fields = {"contract_version", "producer_id", "event_id", "event_type", "occurred_at", "production_id", "activation_epoch", "production_name", "episode_id", "episode_name"}
@@ -104,6 +112,20 @@ def _validate_event_shape(event: dict[str, Any]) -> None:
         raise ContractValidationError("Event omits fields required by its published event type")
     if not isinstance(event["activation_epoch"], int) or isinstance(event["activation_epoch"], bool) or event["activation_epoch"] < 1:
         raise ContractValidationError("Event activation epoch is invalid")
+    if event["event_type"] in {
+        "storage_authority.deactivation_requested", "storage_authority.activation_requested",
+    }:
+        previous = event["previous_activation_epoch"]
+        following = event["new_activation_epoch"]
+        if (
+            not _is_contract_int(event["config_revision"])
+            or
+            not _is_contract_int(previous) or not _is_contract_int(following)
+            or following != previous + 1
+            or event["event_type"] == "storage_authority.deactivation_requested" and event["activation_epoch"] != previous
+            or event["event_type"] == "storage_authority.activation_requested" and event["activation_epoch"] != following
+        ):
+            raise ContractValidationError("Deactivation barrier epochs are invalid")
     for field in ("production_name", "episode_name"):
         if field in event and event[field] is not None and (not isinstance(event[field], str) or len(event[field]) > 240):
             raise ContractValidationError("Event display name is invalid")
@@ -296,6 +318,77 @@ def validate_hierarchy(objects: Sequence[Mapping[str, Any]]) -> list[dict[str, A
             visited.add(cursor)
             cursor = parent_by_id[cursor]
     return normalized
+
+
+def validate_snapshot_start(payload: Any) -> dict[str, Any]:
+    """Validate the published SyncSnapshotStart request without extensions."""
+    required = {"contract_version", "snapshot_id", "config_revision", "source_etag", "page_count", "object_count", "snapshot_sha256"}
+    if not isinstance(payload, dict) or set(payload) != required:
+        raise ContractValidationError("Snapshot start does not match the published schema")
+    if payload["contract_version"] != "1.0":
+        raise ContractValidationError("Unsupported snapshot contract version")
+    try:
+        snapshot_id = UUID(payload["snapshot_id"])
+    except (ValueError, TypeError, AttributeError):
+        raise ContractValidationError("Snapshot ID must be a UUID") from None
+    if str(snapshot_id) != payload["snapshot_id"]:
+        raise ContractValidationError("Snapshot ID must be canonical")
+    if not _is_contract_int(payload["config_revision"]) or not 1 <= payload["config_revision"] <= 2_147_483_647:
+        raise ContractValidationError("Snapshot config revision is invalid")
+    if not isinstance(payload["source_etag"], str) or not 1 <= len(payload["source_etag"]) <= 200:
+        raise ContractValidationError("Snapshot source ETag is invalid")
+    if not _is_contract_int(payload["page_count"]) or payload["page_count"] > math.ceil(MAX_SNAPSHOT_OBJECTS / MAX_PAGE_OBJECTS):
+        raise ContractValidationError("Snapshot page count is outside the published bounds")
+    if not _is_contract_int(payload["object_count"]) or payload["object_count"] > MAX_SNAPSHOT_OBJECTS:
+        raise ContractValidationError("Snapshot object count is outside the published bounds")
+    if payload["page_count"] > payload["object_count"]:
+        raise ContractValidationError("Snapshot cannot declare more non-empty pages than objects")
+    if not isinstance(payload["snapshot_sha256"], str) or not _SHA256.fullmatch(payload["snapshot_sha256"]):
+        raise ContractValidationError("Snapshot digest is invalid")
+    return payload
+
+
+def validate_snapshot_page_request(payload: Any, *, path_page_index: int) -> dict[str, Any]:
+    """Validate one exact contract page envelope and its canonical checksum."""
+    required = {"contract_version", "page_index", "page_sha256", "objects"}
+    if not isinstance(payload, dict) or set(payload) != required:
+        raise ContractValidationError("Snapshot page does not match the published schema")
+    if payload["contract_version"] != "1.0":
+        raise ContractValidationError("Unsupported snapshot contract version")
+    if not _is_contract_int(payload["page_index"], minimum=0) or payload["page_index"] != path_page_index:
+        raise ContractValidationError("Snapshot page index does not match the route")
+    if not isinstance(payload["objects"], list) or not 1 <= len(payload["objects"]) <= MAX_PAGE_OBJECTS:
+        raise ContractValidationError("Snapshot page size is outside the published bounds")
+    if not isinstance(payload["page_sha256"], str) or not _SHA256.fullmatch(payload["page_sha256"]):
+        raise ContractValidationError("Snapshot page digest is invalid")
+    # Validate object shape and byte size before hashing or persistence.
+    if len(canonical_json(payload["objects"])) > 2 * 1024 * 1024:
+        raise ContractValidationError("Snapshot page exceeds the byte limit")
+    return payload
+
+
+def validate_snapshot_complete_request(payload: Any) -> dict[str, Any]:
+    required = {"contract_version", "page_count", "object_count", "snapshot_sha256"}
+    if not isinstance(payload, dict) or set(payload) != required:
+        raise ContractValidationError("Snapshot completion does not match the published schema")
+    if payload["contract_version"] != "1.0":
+        raise ContractValidationError("Unsupported snapshot contract version")
+    if not _is_contract_int(payload["page_count"]) or payload["page_count"] > math.ceil(MAX_SNAPSHOT_OBJECTS / MAX_PAGE_OBJECTS):
+        raise ContractValidationError("Snapshot page count is outside the published bounds")
+    if not _is_contract_int(payload["object_count"]) or payload["object_count"] > MAX_SNAPSHOT_OBJECTS:
+        raise ContractValidationError("Snapshot object count is outside the published bounds")
+    if payload["page_count"] > payload["object_count"]:
+        raise ContractValidationError("Snapshot cannot declare more non-empty pages than objects")
+    if not isinstance(payload["snapshot_sha256"], str) or not _SHA256.fullmatch(payload["snapshot_sha256"]):
+        raise ContractValidationError("Snapshot digest is invalid")
+    return payload
+
+
+def validate_snapshot_production(objects: Sequence[Mapping[str, Any]], production_id: str) -> None:
+    """Ensure the immutable snapshot is rooted in its reserved Production UUID."""
+    production_objects = [item for item in objects if item.get("object_type") == "production"]
+    if len(production_objects) != 1 or production_objects[0].get("id") != production_id:
+        raise ContractValidationError("Hierarchy snapshot Production does not match its reserved Production")
 
 
 @dataclass(frozen=True)

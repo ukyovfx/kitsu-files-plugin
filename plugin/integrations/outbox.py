@@ -16,7 +16,7 @@ class EventIdentityConflict(ValueError):
 class EventRepository(Protocol):
     def get(self, event_id: str) -> Any | None: ...
 
-    def insert(self, *, production_id: UUID, event_id: str, event_type: str, payload: dict, payload_sha256: str) -> Any: ...
+    def insert(self, *, production_id: UUID, event_id: str, event_type: str, payload: dict, payload_sha256: str, storage_connection_id: UUID | None = None) -> Any: ...
 
 
 @dataclass(frozen=True)
@@ -26,7 +26,7 @@ class AppendResult:
     record: Any
 
 
-def append_event_batch(repository: EventRepository, batch: dict) -> list[AppendResult]:
+def append_event_batch(repository: EventRepository, batch: dict, *, storage_connection_id: UUID | None = None) -> list[AppendResult]:
     """Validate then persist the complete batch in the caller's transaction.
 
     Replaying an identical event returns its original record. Reusing an event
@@ -41,7 +41,12 @@ def append_event_batch(repository: EventRepository, batch: dict) -> list[AppendR
     for event, digest in staged:
         existing = repository.get(event["event_id"])
         if existing is not None:
-            if existing.payload_sha256 != digest or existing.production_id != UUID(event["production_id"]):
+            if (
+                existing.payload_sha256 != digest
+                or existing.production_id != UUID(event["production_id"])
+                or storage_connection_id is not None
+                and existing.storage_connection_id != storage_connection_id
+            ):
                 raise EventIdentityConflict("Event identity already exists with different canonical content")
             results.append(AppendResult(event["event_id"], "duplicate", existing))
             continue
@@ -51,6 +56,7 @@ def append_event_batch(repository: EventRepository, batch: dict) -> list[AppendR
             event_type=event["event_type"],
             payload=event,
             payload_sha256=digest,
+            **({"storage_connection_id": storage_connection_id} if storage_connection_id is not None else {}),
         )
         results.append(AppendResult(event["event_id"], "accepted", record))
     return results
@@ -72,9 +78,8 @@ class SqlAlchemyEventRepository:
             select(self.model).where(self.model.event_id == event_id).with_for_update()
         )
 
-    def insert(self, *, production_id, event_id, event_type, payload, payload_sha256):
+    def insert(self, *, production_id, event_id, event_type, payload, payload_sha256, storage_connection_id=None):
         from sqlalchemy.dialects.postgresql import insert
-        from sqlalchemy import select
         from uuid import uuid4
 
         statement = (
@@ -82,6 +87,7 @@ class SqlAlchemyEventRepository:
             .values(
                 id=uuid4(),
                 production_id=production_id,
+                storage_connection_id=storage_connection_id,
                 event_id=event_id,
                 event_type=event_type,
                 payload=payload,
@@ -98,6 +104,10 @@ class SqlAlchemyEventRepository:
             self.session.flush()
             return self.session.get(self.model, inserted_id)
         existing = self.get(event_id)
-        if existing is None or existing.payload_sha256 != payload_sha256 or existing.production_id != production_id:
+        if (
+            existing is None or existing.payload_sha256 != payload_sha256
+            or existing.production_id != production_id
+            or storage_connection_id is not None and existing.storage_connection_id != storage_connection_id
+        ):
             raise EventIdentityConflict("Event identity raced with different canonical content")
         return existing
