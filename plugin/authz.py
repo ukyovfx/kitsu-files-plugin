@@ -14,7 +14,7 @@ from enum import Enum
 from typing import Callable
 from uuid import UUID
 
-from .compat import HOST_ZOU_VERSION, SCHEMA_EPOCH, WORKER_BUILD
+from .compat import SUPPORTED_ZOU_VERSIONS, SCHEMA_EPOCH, WORKER_BUILD
 
 
 class NotFound(Exception):
@@ -151,5 +151,5 @@ def assert_bearer_header(authorization: str | None) -> str:
 
 
 def assert_compatible_host(host_version: str, schema_epoch: int, worker_build: str) -> None:
-    if host_version != HOST_ZOU_VERSION or schema_epoch != SCHEMA_EPOCH or worker_build != WORKER_BUILD:
+    if host_version not in SUPPORTED_ZOU_VERSIONS or schema_epoch != SCHEMA_EPOCH or worker_build != WORKER_BUILD:
         raise RuntimeError("Files plugin host/schema/worker compatibility mismatch")

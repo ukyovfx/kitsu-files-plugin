@@ -6,6 +6,22 @@
   "zou_tag_object": "976edb2bc61ce8a07e3d7c9cf5a5be1ff117e263",
   "official_test_image": "cgwire/cgwire:1.0.70-1.0.94-01",
   "official_test_image_digest": "sha256:e6d9021241b12f88616762b4c7600a5e84d646119cba4a153ce7908fbd4f300a",
+  "verified_compatibility": [
+    {
+      "kitsu_commit": "d8f420069a6bf24d98c5557e418538eff6173cea",
+      "zou_version": "1.0.94",
+      "zou_commit": "f5fc34c367a39d58d7741ab2790a5f349c312175",
+      "host_image": "cgwire/cgwire:1.0.70-1.0.94-01",
+      "host_image_digest": "sha256:e6d9021241b12f88616762b4c7600a5e84d646119cba4a153ce7908fbd4f300a"
+    },
+    {
+      "kitsu_commit": "e20b9278a8b08594c75044aa8845a9a253e48ed9",
+      "zou_version": "1.0.96",
+      "zou_commit": "720ef2f1f87a53bd373282f2795757256249c169",
+      "host_image": "vfx-native-host:taskdiscord-kitsu-e20b927-zou-720ef2f1",
+      "host_image_digest": "sha256:7a7d62acf8f7c6dbf230693d00f1a0a6b53df4860474f558cb319baf533f7ed3"
+    }
+  ],
   "python_version": "3.10.12",
   "node_version": "v24.14.0",
   "npm_version": "11.11.0",

@@ -2,6 +2,7 @@
 
 HOST_KITSU_VERSION = "1.0.70"
 HOST_ZOU_VERSION = "1.0.94"
+SUPPORTED_ZOU_VERSIONS = ("1.0.94", "1.0.96")
 SCHEMA_EPOCH = 18
 WORKER_BUILD = "18"
 
@@ -9,9 +10,9 @@ WORKER_BUILD = "18"
 def assert_runtime_host() -> None:
     from zou import __version__ as zou_version
 
-    if zou_version != HOST_ZOU_VERSION:
+    if zou_version not in SUPPORTED_ZOU_VERSIONS:
         raise RuntimeError(
-            "VFX Files supports only the pinned Zou 1.0.94 host until a compatibility rehearsal passes"
+            "VFX Files supports only the verified Zou 1.0.94 and 1.0.96 host versions"
         )
 
 
