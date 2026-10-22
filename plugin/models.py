@@ -311,8 +311,12 @@ class OutputPackage(db.Model):
     completed_at = db.Column(DateTime(timezone=True))
     qc_state = db.Column(String(24), nullable=False, default="pending")
     qc_report = db.Column(JSONB)
+    # Where the source bytes are read from: the Production's own Drive root, or the registrant's personal Drive
+    # (read with the registrant's own grant, never the Production credential).
+    source_kind = db.Column(String(16), nullable=False, default="production", server_default="production")
     __table_args__ = (
         UniqueConstraint("task_id", "output_type_id", "package_type", "version", name="plugin_vfx_files_output_package_version_uc"),
+        db.CheckConstraint("source_kind IN ('production','personal')", name="plugin_vfx_files_output_package_source_kind_ck"),
     )
 
 

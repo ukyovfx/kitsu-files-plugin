@@ -19,6 +19,18 @@ def _enabled(name):
     return os.environ.get(name, "false").lower() in ("true", "1", "yes")
 
 
+def _personal_source_factory(app, sessions):
+    """Per-run read-only reader for a registrant's own Google grant (Production credentials are never involved)."""
+    def open_for(actor_id, production_id):
+        from .integrations.personal_google import open_personal_source
+        from .storage.worker_factory import RequestsDriveTransport
+
+        return open_personal_source(
+            sessions, actor_id=actor_id, production_id=production_id, settings=app.config,
+            extensions=app.extensions, transport=RequestsDriveTransport(timeout=(10, 120)))
+    return open_for
+
+
 def _authorize_job(payload):
     """Recheck the submitting actor's current Zou task permission before I/O."""
     if payload.get("job_type") == "revoke_drive_credential":
@@ -167,7 +179,7 @@ def build_runtime(app):
         handlers={
             "publish_source": make_upload_handler(sessions, staging, adapter_factory),
             "publish_artifact": make_publish_handler(sessions, adapter_factory),
-            "verify_output_package": make_output_package_handler(sessions, adapter_factory),
+            "verify_output_package": make_output_package_handler(sessions, adapter_factory, _personal_source_factory(app, sessions)),
             "delete_output_package": make_output_package_deletion_handler(sessions, adapter_factory),
             "provision_task_folders": make_task_folder_handler(sessions, adapter_factory),
             "reconcile_drive_objects": make_drive_reconciliation_handler(sessions, adapter_factory),

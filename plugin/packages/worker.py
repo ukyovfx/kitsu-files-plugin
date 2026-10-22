@@ -47,7 +47,40 @@ def _persist_reserved_id(session_factory, job, *, package_id, file_id=None, prov
         return file_row.provider_object_id == provider_id
 
 
-def make_output_package_handler(session_factory, adapter_factory):
+def _nested_parent(session_factory, job, package_id, adapter, connection, parent_id, parts):
+    """Persist reserved directory IDs before I/O; never adopt an object by name."""
+    from ..integrations.personal_google import PersonalSourceDenied
+    from ..integrations.storage_authority import is_selected_storage_connection
+    path = []
+    for part in parts:
+        path.append(part)
+        key = "/".join(path)
+        with session_factory.begin() as session:
+            lease = session.scalar(select(Job).where(Job.id == job.job_id).with_for_update())
+            if not _lease_is_current(session, job, lease):
+                raise PersonalSourceDenied("lease_lost")
+            ids = dict(lease.payload.get("output_directories", {}))
+            folder_id = ids.get(key)
+            if not folder_id:
+                folder_id = adapter.reserve_id(f"output-package-directory:{package_id}:{hashlib.sha256(key.encode()).hexdigest()}")
+                ids[key] = folder_id
+                lease.payload = {**lease.payload, "output_directories": ids}
+        if not is_selected_storage_connection(session_factory, connection.production_id, connection.id):
+            raise PersonalSourceDenied("storage_selection_changed")
+        adapter.assert_parent_within_root(parent_id)
+        try:
+            folder = adapter.create_folder(parent_id, folder_id, {"scope_key": f"output-package:{package_id}:{hashlib.sha256(key.encode()).hexdigest()}", "display_name": part})
+        except (AlreadyExists, AmbiguousOutcome):
+            folder = adapter.get(folder_id)
+        if (folder is None or folder.trashed or not is_folder(folder) or folder.object_id != folder_id
+                or folder.parent_id != parent_id or folder.name != part):
+            raise PersonalSourceDenied("directory_unconfirmed")
+        parent_id = folder_id
+    return parent_id
+
+
+def make_output_package_handler(session_factory, adapter_factory, personal_source_factory=None):
+    """`personal_source_factory(actor_id, production_id)` returns a read-only reader for the registrant's own grant."""
     def verify_package(job):
         try:
             package_id = UUID(str(job.payload["package_id"]))
@@ -76,6 +109,8 @@ def make_output_package_handler(session_factory, adapter_factory):
                 return JobResult("failed", error_code="output_package_scope_unavailable")
             if not connection.allowed_root_id:
                 return JobResult("failed", error_code="output_package_root_unavailable")
+            source_kind = package.source_kind or "production"
+            package_actor_id = package.created_by
             expected_manifest = bytes(package.manifest_bytes)
             expected_manifest_sha256 = package.manifest_sha256
             folder_id = package.provider_folder_id
@@ -136,11 +171,25 @@ def make_output_package_handler(session_factory, adapter_factory):
             return JobResult("reconcile_required", error_code="output_package_folder_unconfirmed")
         adapter.assert_parent_within_root(folder.object_id)
 
+        reader = None
+        if source_kind == "personal":
+            # The registrant's own grant, re-authorized now (membership, policy, active link). Read-only by construction.
+            from ..integrations.personal_google import PersonalSourceDenied
+
+            if personal_source_factory is None:
+                return JobResult("blocked_authorization", error_code="personal_source_unavailable")
+            try:
+                reader = personal_source_factory(package_actor_id, package.production_id)
+            except PersonalSourceDenied as denied:
+                return JobResult("blocked_authorization", error_code=f"personal_source_{denied.code}"[:64])
+
         verified_files = []
         for item, row in zip(manifest["files"], file_rows, strict=True):
             source_id = row["source_provider_object_id"]
             target_id = row["provider_object_id"]
-            if (item.get("source_provider_object_id"), item.get("provider_object_id"),
+            # The manifest only learns a target ID when the package completes; a reserved-but-unfinished target
+            # (worker restart / retry) is still consistent, so an empty manifest value is not a mismatch.
+            if (item.get("source_provider_object_id"), item.get("provider_object_id") or target_id,
                     item.get("file_name"), item.get("byte_count"), item.get("sha256"),
                     item.get("frame_number"), item.get("file_format"), item.get("color_space"), item.get("is_proxy")) != (
                     source_id, target_id, row["file_name"], row["byte_count"], row["sha256"],
@@ -148,11 +197,39 @@ def make_output_package_handler(session_factory, adapter_factory):
                 return JobResult("reconcile_required", error_code="output_package_metadata_mismatch")
             if not source_id:
                 return JobResult("failed", error_code="output_package_source_id_missing")
-            source_object = adapter.get(source_id)
-            if (source_object is None or source_object.trashed or is_folder(source_object)
-                    or source_object.parent_id is None or source_object.size != row["byte_count"]):
-                return JobResult("reconcile_required", error_code="output_package_source_unavailable")
-            adapter.assert_parent_within_root(source_object.parent_id)
+            expected_md5 = None
+            if reader is None:
+                source_object = adapter.get(source_id)
+                if (source_object is None or source_object.trashed or is_folder(source_object)
+                        or source_object.parent_id is None or source_object.size != row["byte_count"]):
+                    return JobResult("reconcile_required", error_code="output_package_source_unavailable")
+                adapter.assert_parent_within_root(source_object.parent_id)
+            else:
+                try:
+                    meta = reader.get_metadata(source_id)
+                except PersonalSourceDenied:
+                    return JobResult("reconcile_required", error_code="output_package_source_unavailable")
+                except PermissionFailure:
+                    return JobResult("blocked_authorization", error_code="personal_source_permission_denied")
+                size = meta.get("size")
+                if (meta.get("trashed") or str(meta.get("mimeType", "")) in ("application/vnd.google-apps.folder", "folder")
+                        or not str(size).isdigit() or int(size) != row["byte_count"]):
+                    return JobResult("reconcile_required", error_code="output_package_source_unavailable")
+                expected_md5 = meta.get("md5Checksum")
+
+            destination_parent, destination_name = folder_id, row["file_name"]
+            if source_kind == "personal":
+                from .personal_import import relative_parts
+                try:
+                    parts = relative_parts(row["file_name"])
+                    destination_name = parts[-1]
+                    if meta.get("name") != destination_name:
+                        return JobResult("reconcile_required", error_code="output_package_source_changed")
+                    destination_parent = _nested_parent(
+                        session_factory, job, package_id, adapter, connection, folder_id, parts[:-1])
+                except PersonalSourceDenied as denied:
+                    state = "retry" if denied.code == "lease_lost" else ("blocked_authorization" if denied.code == "storage_selection_changed" else "reconcile_required")
+                    return JobResult(state, error_code=denied.code)
 
             if target_id is None:
                 target_id = adapter.reserve_id(f"output-package-file:{row['id']}")
@@ -166,7 +243,16 @@ def make_output_package_handler(session_factory, adapter_factory):
             # request process or the browser. The provider transfer is resumable by
             # the reserved destination ID and never overwrites an unrelated object.
             with tempfile.SpooledTemporaryFile(max_size=8 * 1024 * 1024, mode="w+b") as media:
-                source_size, source_sha256 = adapter.download_to(source_id, media)
+                if reader is None:
+                    source_size, source_sha256 = adapter.download_to(source_id, media)
+                else:
+                    try:
+                        source_size, source_sha256 = reader.download_to(
+                            source_id, media, expected_md5=expected_md5, expected_size=row["byte_count"])
+                    except PersonalSourceDenied:
+                        return JobResult("reconcile_required", error_code="output_package_source_readback_failed")
+                    except PermissionFailure:
+                        return JobResult("blocked_authorization", error_code="personal_source_permission_denied")
                 expected_sha256 = row["sha256"]
                 if (source_size != row["byte_count"]
                         or (expected_sha256 and expected_sha256 != source_sha256)):
@@ -175,13 +261,13 @@ def make_output_package_handler(session_factory, adapter_factory):
                 if not is_selected_storage_connection(session_factory, package.production_id, connection.id):
                     return JobResult("blocked_authorization", error_code="storage_selection_changed")
                 try:
-                    adapter.upload(media, target_id, source_size, source_sha256, folder_id, file_name=row["file_name"])
+                    adapter.upload(media, target_id, source_size, source_sha256, destination_parent, file_name=destination_name)
                 except (AlreadyExists, AmbiguousOutcome):
                     pass
 
             target_object = adapter.get(target_id)
             if (target_object is None or target_object.trashed or target_object.object_id != target_id
-                    or target_object.parent_id != folder_id or target_object.name != row["file_name"]
+                    or target_object.parent_id != destination_parent or target_object.name != destination_name
                     or is_folder(target_object)):
                 return JobResult("reconcile_required", error_code="output_package_target_unconfirmed")
             if not adapter.verify(target_id, row["byte_count"], source_sha256):
@@ -217,6 +303,8 @@ def make_output_package_handler(session_factory, adapter_factory):
                     return JobResult("reconcile_required", error_code="output_package_checksum_conflict")
                 file_row.provider_object_id = target_id
                 file_row.sha256 = sha256
+            # File rows are immutable once the package is `completed`; persist the computed checksums first.
+            session.flush()
             package.provider_folder_id = folder_id
             package.manifest_bytes = manifest_bytes
             package.manifest_sha256 = manifest_sha256

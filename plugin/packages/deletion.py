@@ -210,6 +210,42 @@ def _present(adapter, object_id, parent_id):
     return None
 
 
+def _target_matches_path(adapter, obj, folder_id, file_name):
+    from .personal_import import relative_parts
+    from ..integrations.personal_google import PersonalSourceDenied
+    try:
+        parts = relative_parts(file_name)
+    except PersonalSourceDenied:
+        return False
+    if obj.name != parts[-1] or _is_folder(obj):
+        return False
+    parent_id = obj.parent_id
+    for name in reversed(parts[:-1]):
+        parent = adapter.get(parent_id)
+        if parent is None or parent.trashed or not _is_folder(parent) or parent.name != name:
+            return False
+        parent_id = parent.parent_id
+    return parent_id == folder_id
+
+
+def _verified_target_parent(adapter, root_id, file_name, directories):
+    """Resolve only directory IDs persisted by this package's creation job."""
+    from .personal_import import relative_parts
+    parent_id, prefix = root_id, []
+    for name in relative_parts(file_name)[:-1]:
+        prefix.append(name)
+        directory_id = directories.get("/".join(prefix))
+        if not directory_id:
+            raise AmbiguousOutcome("Nested target parent was not persisted")
+        directory = adapter.get(directory_id)
+        if (directory is None or directory.trashed or not _is_folder(directory)
+                or directory.object_id != directory_id or directory.parent_id != parent_id or directory.name != name):
+            raise AmbiguousOutcome("Nested target parent ownership is unverified")
+        adapter.assert_parent_within_root(directory_id)
+        parent_id = directory_id
+    return parent_id
+
+
 def make_output_package_deletion_handler(session_factory, adapter_factory):
     def delete_package(job):
         try:
@@ -234,6 +270,11 @@ def make_output_package_deletion_handler(session_factory, adapter_factory):
             connection = selected_storage_connection(session, package.production_id)
             if connection is None or not connection.allowed_root_id:
                 return JobResult("blocked_authorization", error_code="output_delete_storage_unavailable")
+            personal_source = package.source_kind == "personal"
+            creation = session.scalar(select(Job).where(
+                Job.job_type == "verify_output_package",
+                Job.payload["package_id"].astext == str(package.id))) if personal_source else None
+            directories = dict(creation.payload.get("output_directories", {})) if creation else {}
             allowed_root_id = connection.allowed_root_id
             folder_id = package.provider_folder_id
             folder_name = f"output-package-{package.id.hex}"
@@ -280,18 +321,21 @@ def make_output_package_deletion_handler(session_factory, adapter_factory):
                 if target_id in protected:
                     result["files_retained_shared"] += 1
                     continue
-                obj = _present(adapter, target_id, folder_id)
+                parent_id = (_verified_target_parent(adapter, folder_id, file_name, directories)
+                             if personal_source else folder_id)
+                obj = _present(adapter, target_id, parent_id)
                 if obj is None:
                     result["files_already_absent"] += 1
                     continue
-                if obj.object_id != target_id or obj.parent_id != folder_id or _is_folder(obj) \
-                        or obj.name != file_name:
+                matches = (_target_matches_path(adapter, obj, folder_id, file_name) if personal_source
+                           else obj.parent_id == folder_id and not _is_folder(obj) and obj.name == file_name)
+                if obj.object_id != target_id or not matches:
                     return JobResult("failed", error_code="output_delete_target_ownership_mismatch")
-                to_delete.append(target_id)
+                to_delete.append((target_id, parent_id))
 
-            for target_id in to_delete:
+            for target_id, parent_id in to_delete:
                 adapter.delete(target_id)
-                if _present(adapter, target_id, folder_id) is not None:
+                if _present(adapter, target_id, parent_id) is not None:
                     raise AmbiguousOutcome("Provider delete was not confirmed")
                 result["files_deleted"] += 1
 
