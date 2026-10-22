@@ -681,10 +681,58 @@ class ProductionOutputSetting(db.Model):
     __tablename__ = "plugin_vfx_files_production_output_setting"
     production_id = db.Column(UUIDType(binary=False), primary_key=True)
     output_delete_policy = db.Column(String(32), nullable=False, default="registrant_and_admin")
+    # Whether Production members may use their own Google account here. Linking itself is per Kitsu user.
+    personal_google_policy = db.Column(String(16), nullable=False, default="allowed", server_default="allowed")
     updated_by = db.Column(UUIDType(binary=False))
     updated_at = db.Column(DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now())
     __table_args__ = (
         db.CheckConstraint("output_delete_policy IN ('registrant_and_admin','admin_only')", name="plugin_vfx_files_output_setting_policy_ck"),
+        db.CheckConstraint("personal_google_policy IN ('allowed','blocked')", name="plugin_vfx_files_personal_google_policy_ck"),
+    )
+
+
+class GoogleUserAuthorizationIntent(db.Model):
+    """Single-use personal OAuth handoff bound to the Kitsu actor and the Production it was started from."""
+    __tablename__ = "plugin_vfx_files_google_user_authorization_intent"
+    id = db.Column(UUIDType(binary=False), primary_key=True, default=uuid4)
+    actor_id = db.Column(UUIDType(binary=False), nullable=False, index=True)
+    production_id = db.Column(UUIDType(binary=False), nullable=False)
+    state_sha256 = db.Column(String(64), nullable=False, unique=True)
+    key_id = db.Column(String(64), nullable=False)
+    verifier_nonce = db.Column(db.LargeBinary(12), nullable=False)
+    verifier_ciphertext = db.Column(db.LargeBinary, nullable=False)
+    response_nonce = db.Column(db.LargeBinary(12), nullable=False)
+    response_ciphertext = db.Column(db.LargeBinary, nullable=False)
+    idempotency_key = db.Column(String(128), nullable=False)
+    request_sha256 = db.Column(String(64), nullable=False)
+    status = db.Column(String(24), nullable=False, default="pending")
+    expires_at = db.Column(DateTime(timezone=True), nullable=False)
+    consumed_at = db.Column(DateTime(timezone=True))
+    created_at = db.Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    __table_args__ = (
+        UniqueConstraint("actor_id", "idempotency_key", name="plugin_vfx_files_google_user_oauth_idem_uc"),
+        db.CheckConstraint("status IN ('pending','processing','connected','failed','expired')", name="plugin_vfx_files_google_user_oauth_state_ck"),
+    )
+
+
+class GoogleUserCredential(db.Model):
+    """One encrypted personal Google grant per Kitsu user. Owned by the user, independent of any Production."""
+    __tablename__ = "plugin_vfx_files_google_user_credential"
+    actor_id = db.Column(UUIDType(binary=False), primary_key=True)
+    google_subject = db.Column(String(255), unique=True)
+    key_id = db.Column(String(64))
+    nonce = db.Column(db.LargeBinary(12))
+    ciphertext = db.Column(db.LargeBinary)
+    granted_scopes = db.Column(String(512))
+    state = db.Column(String(24), nullable=False, default="revoked", server_default="revoked")
+    updated_at = db.Column(DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now())
+    __table_args__ = (
+        db.CheckConstraint("state IN ('active','revoking','revoke_pending','revoked','reauth_required')", name="plugin_vfx_files_google_user_credential_state_ck"),
+        db.CheckConstraint(
+            "(state = 'revoked' AND google_subject IS NULL AND ciphertext IS NULL) OR "
+            "(state <> 'revoked' AND google_subject IS NOT NULL AND key_id IS NOT NULL AND nonce IS NOT NULL AND ciphertext IS NOT NULL)",
+            name="plugin_vfx_files_google_user_credential_material_ck",
+        ),
     )
 
 

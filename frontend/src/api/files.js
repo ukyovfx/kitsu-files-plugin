@@ -216,6 +216,45 @@ export function createFilesApi(client) {
       }))
     },
 
+    async getPersonalGoogle(productionId) {
+      if (!productionId) throw new TypeError('A Production ID is required')
+      return readJson(await client.request('GET', `${ROOT}/productions/${encodeURIComponent(productionId)}/personal-google`))
+    },
+
+    async startPersonalGoogleAuthorization(productionId, idempotencyKey) {
+      if (!productionId || !idempotencyKey) throw new TypeError('A Production and idempotency key are required')
+      return readJson(await mutation('POST', `${ROOT}/productions/${encodeURIComponent(productionId)}/personal-google/authorizations`, {
+        headers: { 'Content-Type': 'application/json', 'Idempotency-Key': idempotencyKey },
+        body: '{}'
+      }))
+    },
+
+    async checkPersonalGoogle(productionId) {
+      if (!productionId) throw new TypeError('A Production ID is required')
+      return readJson(await mutation('POST', `${ROOT}/productions/${encodeURIComponent(productionId)}/personal-google/check`, {
+        headers: { 'Content-Type': 'application/json' }, body: '{}'
+      }))
+    },
+
+    async disconnectPersonalGoogle() {
+      return readJson(await mutation('POST', `${ROOT}/me/google-account/disconnect`, {
+        headers: { 'Content-Type': 'application/json' }, body: '{}'
+      }))
+    },
+
+    async setPersonalGooglePolicy(productionId, policy) {
+      if (!productionId || !policy) throw new TypeError('A Production and policy are required')
+      return readJson(await mutation('POST', `${ROOT}/productions/${encodeURIComponent(productionId)}/personal-google-policy`, {
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ policy })
+      }))
+    },
+
+    async getDriveAccessPolicy(productionId) {
+      if (!productionId) throw new TypeError('A Production ID is required')
+      return readJson(await client.request('GET', `${ROOT}/productions/${encodeURIComponent(productionId)}/drive-access-policy`))
+    },
+
     async getOutputDeletePolicy(productionId) {
       if (!productionId) throw new TypeError('A Production ID is required')
       return readJson(await client.request('GET', `${ROOT}/productions/${encodeURIComponent(productionId)}/output-delete-policy`))

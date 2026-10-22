@@ -5,6 +5,8 @@ import PublishList from './components/PublishList.vue'
 import OutputPackagePanel from './components/OutputPackagePanel.vue'
 import DriveSettingsPanel from './components/DriveSettingsPanel.vue'
 import OutputDeletionSettings from './components/OutputDeletionSettings.vue'
+import DriveAccessPolicy from './components/DriveAccessPolicy.vue'
+import PersonalGoogleAccount from './components/PersonalGoogleAccount.vue'
 import TaskLinkShares from './components/TaskLinkShares.vue'
 import { taskSections } from './taskNavigation.js'
 import { createRequestGeneration, filesSurfaceMode } from './taskContext.js'
@@ -129,6 +131,8 @@ onUnmounted(() => requests.invalidate())
     <template v-if="!taskMode">
       <DriveSettingsPanel :production-id="productionId" :api="api" />
       <OutputDeletionSettings :production-id="productionId" :api="api" />
+      <PersonalGoogleAccount :production-id="productionId" :api="api" />
+      <DriveAccessPolicy :production-id="productionId" :api="api" />
     </template>
     <template v-else>
       <div v-if="error" class="notice" role="alert"><span class="notice-dot"></span>{{ error }}</div>

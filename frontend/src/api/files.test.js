@@ -5,6 +5,35 @@ function response(body, status = 200) {
   return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } })
 }
 
+describe('Personal Google API', () => {
+  it('starts personal OAuth with CSRF + idempotency and never sends credentials from the browser', async () => {
+    const client = { request: vi.fn()
+      .mockResolvedValueOnce(response({ csrf_token: 'pg-csrf' }))
+      .mockResolvedValueOnce(response({ authorization_url: 'https://accounts.google.com/o/oauth2/v2/auth?x=1' }, 201)) }
+    const api = createFilesApi(client)
+    await api.startPersonalGoogleAuthorization('p/1', 'personal-google:key-0000000001')
+    const [method, path, options] = client.request.mock.calls[1]
+    expect(method).toBe('POST')
+    expect(path).toBe('plugins/vfx_files/productions/p%2F1/personal-google/authorizations')
+    expect(options.csrfToken).toBe('pg-csrf')
+    expect(options.headers['Idempotency-Key']).toBe('personal-google:key-0000000001')
+    expect(options.body).toBe('{}')
+    await expect(api.startPersonalGoogleAuthorization('', 'k')).rejects.toThrow('Production')
+  })
+
+  it('disconnect is user-level and policy changes go to the Production policy route', async () => {
+    const client = { request: vi.fn()
+      .mockResolvedValueOnce(response({ csrf_token: 'a' })).mockResolvedValueOnce(response({ state: 'revoked' }))
+      .mockResolvedValueOnce(response({ csrf_token: 'b' })).mockResolvedValueOnce(response({ policy: 'blocked' })) }
+    const api = createFilesApi(client)
+    await api.disconnectPersonalGoogle()
+    expect(client.request.mock.calls[1][1]).toBe('plugins/vfx_files/me/google-account/disconnect')
+    await api.setPersonalGooglePolicy('prod-1', 'blocked')
+    expect(client.request.mock.calls[3][1]).toBe('plugins/vfx_files/productions/prod-1/personal-google-policy')
+    expect(JSON.parse(client.request.mock.calls[3][2].body)).toEqual({ policy: 'blocked' })
+  })
+})
+
 describe('Files API', () => {
   it('requests only the supplied Production scope and treats IDs as query values', async () => {
     const client = { request: vi.fn(async () => response({ production_id: 'p-1', publishes: [], handoffs: [] })) }

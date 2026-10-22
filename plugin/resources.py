@@ -1052,6 +1052,214 @@ class OutputPackageDeletionResource(MethodView):
         return {"package_id": str(result.package_id), "state": result.state, "job_id": str(result.job_id)}, 202
 
 
+def drive_access_checks(*, real_drive, account_mode):
+    """Honest checklist. A state is 'verified' only when the Plugin itself can prove it; Google-side sharing
+    settings cannot be read with the `drive.file` grant, so they stay 'not_verified' - never 'safe'."""
+    checks = [
+        {"id": "plugin_creates_no_sharing", "state": "verified",
+         "detail": "The Plugin never creates permissions, public links or 'anyone with the link' access."},
+        {"id": "no_byte_proxy", "state": "verified" if real_drive else "not_applicable",
+         "detail": "File bytes are not served by the Plugin; viewing goes through Google Drive." if real_drive
+         else "FakeStorage test mode: the Plugin serves test bytes."},
+        {"id": "drive_links", "state": "verified" if real_drive else "not_applicable",
+         "detail": "Links are built from worker-verified Plugin-managed IDs; Google decides who can open them."},
+    ]
+    if account_mode == "shared_drive":
+        checks.append({"id": "shared_drive_structure", "state": "verified",
+                       "detail": "The connected storage is a Google Workspace shared drive."})
+    elif account_mode == "my_drive":
+        checks.append({"id": "shared_drive_structure", "state": "attention",
+                       "detail": "The connected storage is a My Drive folder, not a shared drive. Shared-drive "
+                                 "member and restriction controls do not apply; access follows per-folder sharing."})
+    else:
+        checks.append({"id": "shared_drive_structure", "state": "not_verified",
+                       "detail": "No verified Drive connection is selected for this Production."})
+    for check_id, detail in (
+        ("members_only_restriction", "Shared-drive 'members only' (driveMembersOnly) is set by a Google admin; the Plugin cannot read it."),
+        ("external_accounts", "Whether external Google accounts can be added is a Google Workspace admin setting; not read by the Plugin."),
+        ("link_sharing_disabled", "Whether members may share files with non-members or by link is a Google setting; not read by the Plugin."),
+        ("group_viewer_role", "Group membership and the Viewer role are managed in Google by the studio admin; not read by the Plugin."),
+        ("credential_manager_role", "Permanent deletion needs the connected Google account to be a shared-drive Manager; checked only when a deletion runs."),
+    ):
+        checks.append({"id": check_id, "state": "not_verified", "detail": detail})
+    return checks
+
+
+class DriveAccessPolicy(MethodView):
+    """Read-only status of the Drive viewing model for a Production (any member with read access)."""
+
+    @jwt_required()
+    def get(self, production_id):
+        _require_enabled()
+        _assert_compatible()
+        try:
+            actor = _request_actor(str(production_id))
+            scope = _resolve_scope(actor, str(production_id))
+            authorize(actor, Capability.READ, scope)
+        except (PermissionDenied, NotFound):
+            abort(403)
+        from .integrations.storage_authority import selected_storage_connection
+
+        connection = selected_storage_connection(current_app.extensions["sqlalchemy"].session, scope.production_id)
+        real = _drive_ids_are_real()
+        return {
+            "production_id": str(scope.production_id),
+            "storage_mode": _setting("VFX_FILES_STORAGE_MODE") or "unconfigured",
+            "viewing": "google_drive_acl" if real else "fake_storage_test",
+            "account_mode": connection.account_mode if connection is not None else None,
+            "checks": drive_access_checks(real_drive=real, account_mode=connection.account_mode if connection is not None else None),
+        }
+
+
+def _personal_google_scope(production_id):
+    """Production membership is re-resolved from Zou on every call (a user who left gets 403)."""
+    actor = _request_actor(str(production_id))
+    scope = _resolve_scope(actor, str(production_id))
+    authorize(actor, Capability.READ, scope)
+    return actor, scope
+
+
+def _oauth_sessions():
+    from sqlalchemy.orm import sessionmaker
+    return sessionmaker(bind=current_app.extensions["sqlalchemy"].engine, expire_on_commit=False)
+
+
+def _oauth_transport():
+    from .storage.worker_factory import RequestsDriveTransport
+    return current_app.extensions.get("vfx_files_oauth_transport") or RequestsDriveTransport(timeout=(10, 30))
+
+
+def _oauth_error(exc):
+    abort(exc.status, description=exc.code)
+
+
+class PersonalGoogleAccount(MethodView):
+    """The caller's own personal Google link state, plus this Production's allow/block setting."""
+
+    @jwt_required()
+    def get(self, production_id):
+        _require_enabled()
+        _assert_compatible()
+        try:
+            actor, scope = _personal_google_scope(production_id)
+        except (PermissionDenied, NotFound):
+            abort(403)
+        from .integrations.user_oauth import get_personal_google_policy, user_drive_status
+        from .packages.deletion import ADMIN_ROLES
+
+        with _oauth_sessions()() as session:
+            policy = get_personal_google_policy(session, scope.production_id)
+            status = user_drive_status(session, actor_id=actor.actor_id)
+        return {"policy": policy, "allowed": policy == "allowed", "can_change_policy": actor.project_role in ADMIN_ROLES,
+                **status}
+
+
+class PersonalGoogleAuthorization(MethodView):
+    @jwt_required()
+    def post(self, production_id):
+        _require_enabled()
+        _assert_compatible()
+        try:
+            _require_mutation_origin()
+            actor, scope = _personal_google_scope(production_id)
+        except (PermissionDenied, NotFound):
+            abort(403)
+        from .integrations.user_oauth import UserOAuthError, start_user_authorization
+
+        key = request.headers.get("Idempotency-Key", "").strip()
+        try:
+            with _oauth_sessions()() as session:
+                body, status = start_user_authorization(
+                    session, actor_id=actor.actor_id, production_id=scope.production_id, idempotency_key=key,
+                    settings=current_app.config, extensions=current_app.extensions)
+        except UserOAuthError as exc:
+            _oauth_error(exc)
+        return body, status
+
+
+class PersonalGoogleCheck(MethodView):
+    @jwt_required()
+    def post(self, production_id):
+        _require_enabled()
+        _assert_compatible()
+        try:
+            _require_mutation_origin()
+            actor, _scope = _personal_google_scope(production_id)
+        except (PermissionDenied, NotFound):
+            abort(403)
+        from .integrations.user_oauth import UserOAuthError, check_user_connection
+
+        try:
+            return check_user_connection(
+                _oauth_sessions(), actor_id=actor.actor_id, settings=current_app.config,
+                extensions=current_app.extensions, transport=_oauth_transport())
+        except UserOAuthError as exc:
+            _oauth_error(exc)
+
+
+class PersonalGoogleDisconnect(MethodView):
+    """User-level unlink: always allowed for the caller's own grant, whatever any Production's setting says."""
+
+    @jwt_required()
+    def post(self):
+        _require_enabled()
+        _assert_compatible()
+        try:
+            _require_mutation_origin()
+            actor_id = UUID(str(get_jwt_identity()))
+            from zou.app.models.person import Person
+            person = Person.query.filter_by(id=actor_id).one_or_none()
+            if person is None or not getattr(person, "active", True):
+                raise PermissionDenied("Kitsu identity is unavailable")
+        except (PermissionDenied, ValueError, TypeError):
+            abort(403)
+        from .integrations.user_oauth import UserOAuthError, disconnect_user_drive_account
+
+        try:
+            return disconnect_user_drive_account(
+                _oauth_sessions(), actor_id=actor_id, settings=current_app.config,
+                extensions=current_app.extensions, transport=_oauth_transport())
+        except UserOAuthError as exc:
+            _oauth_error(exc)
+
+
+class ProductionPersonalGooglePolicy(MethodView):
+    """Production Settings: allow or block personal Google use here. Never deletes existing grants."""
+
+    @jwt_required()
+    def get(self, production_id):
+        _require_enabled()
+        _assert_compatible()
+        try:
+            actor, scope = _personal_google_scope(production_id)
+        except (PermissionDenied, NotFound):
+            abort(403)
+        from .integrations.user_oauth import get_personal_google_policy
+        from .packages.deletion import ADMIN_ROLES
+
+        with _oauth_sessions()() as session:
+            return {"policy": get_personal_google_policy(session, scope.production_id), "policies": ["allowed", "blocked"],
+                    "can_change": actor.project_role in ADMIN_ROLES}
+
+    @jwt_required()
+    def post(self, production_id):
+        _require_enabled()
+        _assert_compatible()
+        try:
+            _require_mutation_origin()
+            actor, scope = _production_provision_scope(production_id)
+        except (PermissionDenied, NotFound):
+            abort(403)
+        policy = (request.get_json(silent=True) or {}).get("policy")
+        from .integrations.user_oauth import POLICY_ALLOWED, POLICY_BLOCKED, set_personal_google_policy
+
+        if policy not in (POLICY_ALLOWED, POLICY_BLOCKED):
+            abort(400, description="Unsupported personal Google policy")
+        with _oauth_sessions().begin() as session:
+            set_personal_google_policy(session, scope.production_id, policy, actor.actor_id)
+        return {"policy": policy}
+
+
 class ProductionOutputDeletePolicy(MethodView):
     """Production Settings: who may permanently delete Output versions."""
 
@@ -2901,6 +3109,12 @@ routes = [
     ("/output-package-files/<package_file_id>/download", OutputPackageFileDownload),
     ("/output-packages/<package_id>/deletion", OutputPackageDeletionResource),
     ("/productions/<production_id>/output-delete-policy", ProductionOutputDeletePolicy),
+    ("/productions/<production_id>/drive-access-policy", DriveAccessPolicy),
+    ("/productions/<production_id>/personal-google", PersonalGoogleAccount),
+    ("/productions/<production_id>/personal-google/authorizations", PersonalGoogleAuthorization),
+    ("/productions/<production_id>/personal-google/check", PersonalGoogleCheck),
+    ("/productions/<production_id>/personal-google-policy", ProductionPersonalGooglePolicy),
+    ("/me/google-account/disconnect", PersonalGoogleDisconnect),
     ("/tasks/<task_id>/publishes", TaskPublishes),
     ("/tasks/<task_id>/publish-options", TaskPublishOptions),
     ("/tasks/<task_id>/uploads", TaskUploads),

@@ -86,7 +86,15 @@ class StorageAdapter(Protocol):
 
 
 def resolve_storage_adapter(adapter_or_factory, connection):
-    """Resolve a per-Production adapter while retaining fixed-adapter test support."""
+    """Resolve a per-Production adapter while retaining fixed-adapter test support.
+
+    A personal-Google reader is never a Production storage adapter (it carries a user's grant, not the Production's).
+    """
+    if getattr(adapter_or_factory, "personal_read_only", False):
+        raise PermissionFailure("A personal Google reader cannot be used as Production storage")
     if callable(getattr(adapter_or_factory, "capabilities", None)):
         return adapter_or_factory
-    return adapter_or_factory(connection)
+    adapter = adapter_or_factory(connection)
+    if getattr(adapter, "personal_read_only", False):
+        raise PermissionFailure("A personal Google reader cannot be used as Production storage")
+    return adapter
