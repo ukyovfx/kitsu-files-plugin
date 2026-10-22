@@ -32,6 +32,9 @@ class FakeStorage:
         self.can_add_children = True
         self.root_ancestors = (root_id,)
         self.calls = []
+        self.fail_delete_ids = set()
+        self.fail_delete_after_ids = set()
+        self.permission_denied_delete_ids = set()
 
     def reserve_id(self, scope_key):
         with self.lock:
@@ -67,6 +70,32 @@ class FakeStorage:
 
     def get(self, object_id):
         return self.objects.get(object_id)
+
+    def delete(self, object_id):
+        self.calls.append(("delete", object_id))
+        if object_id in self.permission_denied_delete_ids:
+            raise PermissionFailure("fake provider denied delete")
+        if object_id in self.fail_delete_ids:
+            self.fail_delete_ids.discard(object_id)
+            raise AmbiguousOutcome("provider outcome unknown; object was not deleted")
+        with self.lock:
+            if object_id == self.root_id:
+                raise PermissionFailure("fake provider refuses to delete the root")
+            obj = self.objects.get(object_id)
+            if obj is None:
+                return False
+            if obj.mime_type == "folder" and any(item.parent_id == object_id for item in self.objects.values()):
+                raise PermissionFailure("fake provider refuses a non-empty folder delete")
+            del self.objects[object_id]
+            self._bytes.pop(object_id, None)
+            self._after_delete(object_id)
+        if object_id in self.fail_delete_after_ids:
+            self.fail_delete_after_ids.discard(object_id)
+            raise AmbiguousOutcome("provider deleted the object but the response was lost")
+        return True
+
+    def _after_delete(self, object_id):
+        pass
 
     def download_to(self, object_id, destination):
         obj = self.get(object_id)
@@ -215,6 +244,10 @@ class PersistentFakeStorage(FakeStorage):
                 crash_marker.write_text("consumed", encoding="ascii")
                 os._exit(86)
         return result
+
+    def _after_delete(self, object_id):
+        self._blob_path(object_id).unlink(missing_ok=True)
+        self._persist()
 
     def _write_blob(self, object_id, body):
         path = self._blob_path(object_id)

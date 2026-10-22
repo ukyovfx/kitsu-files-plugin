@@ -379,3 +379,63 @@ def test_access_revocation_is_permission_failure_for_upload_list_and_download():
     ]
     with pytest.raises(PermissionFailure):
         adapter.download_to("artifact-1", io.BytesIO())
+
+
+def _verified_adapter(responses):
+    transport = FakeTransport([
+        Response(200, {"id": "root-1", "mimeType": FOLDER_MIME, "driveId": "drive-1", "capabilities": {"canAddChildren": True}}),
+        *responses,
+    ])
+    adapter = drive(transport)
+    adapter.capabilities("root-1")
+    return adapter, transport
+
+
+def test_delete_removes_exactly_one_object_by_id_with_shared_drive_support():
+    adapter, transport = _verified_adapter([Response(204)])
+    assert adapter.delete("file-9") is True
+    method, url, kwargs = transport.calls[-1]
+    assert method == "DELETE" and url.endswith("/files/file-9")
+    assert kwargs["params"] == {"supportsAllDrives": "true"}
+    assert kwargs.get("json") is None and kwargs.get("data") is None
+
+
+def test_delete_404_is_reported_absent_and_get_404_is_object_not_found():
+    from plugin.storage.base import ObjectNotFound
+
+    adapter, _ = _verified_adapter([Response(404), Response(404)])
+    assert adapter.delete("gone") is False
+    with pytest.raises(ObjectNotFound):
+        adapter.get("gone")
+    assert issubclass(ObjectNotFound, AmbiguousOutcome)  # existing callers keep fail-closed behaviour
+
+
+@pytest.mark.parametrize("status", [401, 403])
+def test_delete_permission_failures_are_not_success_and_not_retried_blindly(status):
+    adapter, transport = _verified_adapter([Response(status)])
+    with pytest.raises(PermissionFailure):
+        adapter.delete("file-9")
+    assert [call[0] for call in transport.calls].count("DELETE") == 1
+
+
+def test_delete_transport_and_server_errors_are_never_success():
+    adapter, _ = _verified_adapter([RuntimeError("timeout"), Response(500), Response(418)])
+    with pytest.raises(AmbiguousOutcome):
+        adapter.delete("file-9")
+    with pytest.raises(RetryableStorageFailure):
+        adapter.delete("file-9")
+    with pytest.raises(AmbiguousOutcome):
+        adapter.delete("file-9")
+
+
+def test_delete_refuses_the_allowed_root_and_unverified_roots_before_any_provider_io():
+    adapter, transport = _verified_adapter([])
+    calls = len(transport.calls)
+    with pytest.raises(PermissionFailure):
+        adapter.delete("root-1")
+    with pytest.raises(PermissionFailure):
+        adapter.delete("")
+    assert len(transport.calls) == calls
+    unverified = drive(FakeTransport([]))
+    with pytest.raises(PermissionFailure):
+        unverified.delete("file-9")

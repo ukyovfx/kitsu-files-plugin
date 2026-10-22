@@ -674,3 +674,39 @@ class LinkShareTarget(db.Model):
         Index("plugin_vfx_files_link_share_target_task_ix", "recipient_task_id", "created_at"),
         db.CheckConstraint("notification_status IN ('blocked_receiver_version','blocked_disclosure','pending','inbox_accepted','quarantined','delivered')", name="plugin_vfx_files_link_share_notify_state_ck"),
     )
+
+
+class ProductionOutputSetting(db.Model):
+    """Per-Production Output Files settings managed by Production administrators."""
+    __tablename__ = "plugin_vfx_files_production_output_setting"
+    production_id = db.Column(UUIDType(binary=False), primary_key=True)
+    output_delete_policy = db.Column(String(32), nullable=False, default="registrant_and_admin")
+    updated_by = db.Column(UUIDType(binary=False))
+    updated_at = db.Column(DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now())
+    __table_args__ = (
+        db.CheckConstraint("output_delete_policy IN ('registrant_and_admin','admin_only')", name="plugin_vfx_files_output_setting_policy_ck"),
+    )
+
+
+class OutputPackageDeletion(db.Model):
+    """Durable record of one Output version's file deletion.
+
+    The Output Package row itself stays immutable so its name, number, registrant,
+    deliveries and review history remain. A row here, not a mutation of the package,
+    marks the version deleted and blocks downloads from the moment deletion is
+    requested.
+    """
+    __tablename__ = "plugin_vfx_files_output_package_deletion"
+    id = db.Column(UUIDType(binary=False), primary_key=True, default=uuid4)
+    package_id = db.Column(UUIDType(binary=False), ForeignKey("plugin_vfx_files_output_package.id"), nullable=False, unique=True)
+    production_id = db.Column(UUIDType(binary=False), nullable=False, index=True)
+    task_id = db.Column(UUIDType(binary=False), nullable=False)
+    requested_by = db.Column(UUIDType(binary=False), nullable=False)
+    requested_at = db.Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    state = db.Column(String(16), nullable=False, default="deleting")
+    impact_snapshot = db.Column(JSONB, nullable=False, default=dict)
+    result = db.Column(JSONB)
+    completed_at = db.Column(DateTime(timezone=True))
+    __table_args__ = (
+        db.CheckConstraint("state IN ('deleting','deleted')", name="plugin_vfx_files_output_deletion_state_ck"),
+    )

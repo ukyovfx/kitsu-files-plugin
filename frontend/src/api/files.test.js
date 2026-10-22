@@ -276,4 +276,36 @@ describe('Files API', () => {
     expect(create[1]).toBe('plugins/vfx_files/tasks/task-1/output-packages')
     expect(create[2].headers['Idempotency-Key']).toBe('output-package:retry-1')
   })
+
+  it('deletes an Output version only with an explicit confirmation of the reviewed impact', async () => {
+    const client = { request: vi.fn()
+      .mockResolvedValueOnce(response({ impact_sha256: 'a'.repeat(64), can_delete: true }))
+      .mockResolvedValueOnce(response({ csrf_token: 'del-csrf' }))
+      .mockResolvedValueOnce(response({ state: 'deleting' }, 202)) }
+    const api = createFilesApi(client)
+    await api.getOutputPackageDeletionImpact('pkg/1')
+    await api.deleteOutputPackage('pkg/1', 'a'.repeat(64))
+    expect(client.request.mock.calls[0]).toEqual(['GET', 'plugins/vfx_files/output-packages/pkg%2F1/deletion'])
+    const [method, path, options] = client.request.mock.calls[2]
+    expect(method).toBe('POST')
+    expect(path).toBe('plugins/vfx_files/output-packages/pkg%2F1/deletion')
+    expect(options.csrfToken).toBe('del-csrf')
+    expect(JSON.parse(options.body)).toEqual({ confirm: true, impact_sha256: 'a'.repeat(64) })
+    await expect(api.deleteOutputPackage('pkg/1', '')).rejects.toThrow('reviewed impact')
+  })
+
+  it('reads and changes the Production deletion policy through CSRF-protected requests', async () => {
+    const client = { request: vi.fn()
+      .mockResolvedValueOnce(response({ policy: 'registrant_and_admin', can_change: true }))
+      .mockResolvedValueOnce(response({ csrf_token: 'pol-csrf' }))
+      .mockResolvedValueOnce(response({ policy: 'admin_only' })) }
+    const api = createFilesApi(client)
+    await expect(api.getOutputDeletePolicy('prod-1')).resolves.toMatchObject({ can_change: true })
+    await expect(api.setOutputDeletePolicy('prod-1', 'admin_only')).resolves.toEqual({ policy: 'admin_only' })
+    const [, path, options] = client.request.mock.calls[2]
+    expect(path).toBe('plugins/vfx_files/productions/prod-1/output-delete-policy')
+    expect(options.csrfToken).toBe('pol-csrf')
+    expect(JSON.parse(options.body)).toEqual({ policy: 'admin_only' })
+    await expect(api.setOutputDeletePolicy('', 'admin_only')).rejects.toThrow('Production')
+  })
 })

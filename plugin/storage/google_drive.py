@@ -7,7 +7,7 @@ from itertools import chain
 from typing import BinaryIO, Mapping
 from uuid import uuid4
 
-from .base import AmbiguousOutcome, Listing, PermissionFailure, RetryableStorageFailure, StorageCapabilities, StorageObject
+from .base import AmbiguousOutcome, Listing, ObjectNotFound, PermissionFailure, RetryableStorageFailure, StorageCapabilities, StorageObject
 
 
 API = "https://www.googleapis.com/drive/v3"
@@ -285,12 +285,28 @@ class GoogleDriveStorageAdapter:
             raise PermissionFailure("Allowed root must be verified before lookup")
         response = self._request("GET", f"{API}/files/{object_id}", params={"supportsAllDrives": "true", "fields": "id,name,mimeType,parents,driveId,size,md5Checksum,modifiedTime,trashed,resourceKey"})
         if response.status_code == 404:
-            raise AmbiguousOutcome("Drive 404 does not prove absence or distinguish inaccessible objects")
+            raise ObjectNotFound("Drive 404 does not prove absence or distinguish inaccessible objects")
         if response.status_code in (401, 403):
             raise PermissionFailure("Drive object is inaccessible")
         if response.status_code != 200:
             raise AmbiguousOutcome("Drive lookup result is not confirmed")
         return self._object(response.json())
+
+    def delete(self, object_id: str) -> bool:
+        """Permanently delete exactly one object by ID. Folders are only deleted when Drive allows it and never recursively here."""
+        if not self._root_verified:
+            raise PermissionFailure("Allowed root must be verified before delete")
+        if not object_id or object_id == self.config.allowed_root_id:
+            raise PermissionFailure("Drive object cannot be deleted")
+        response = self._request("DELETE", f"{API}/files/{object_id}", params={"supportsAllDrives": "true"})
+        if response.status_code in (200, 204):
+            return True
+        if response.status_code == 404:
+            # 404 does not distinguish absent from inaccessible; callers must prove absence from the parent listing.
+            return False
+        if response.status_code in (401, 403):
+            raise PermissionFailure("Drive object cannot be deleted with the connected credential")
+        raise AmbiguousOutcome("Drive delete result is not confirmed")
 
     def verify(self, object_id: str, size: int, sha256_hex: str):
         obj = self.get(object_id)

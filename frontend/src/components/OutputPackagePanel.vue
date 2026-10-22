@@ -26,6 +26,8 @@ const expandedPackage = ref('')
 const packageFiles = ref({})
 const driveCheckedAt = ref('')
 const driveSyncStatus = ref('not checked')
+const pendingDelete = ref(null)
+const deleting = ref(false)
 let pollTimer
 let driveSyncTimer
 let pendingKey = ''
@@ -167,6 +169,37 @@ async function morePackageFiles(item) {
   }
 }
 
+async function startDelete(item) {
+  error.value = ''
+  try {
+    pendingDelete.value = { item, review: await props.api.getOutputPackageDeletionImpact(item.id) }
+  } catch (cause) {
+    error.value = cause.message || 'The deletion impact could not be loaded.'
+  }
+}
+
+async function confirmDelete() {
+  if (!pendingDelete.value || deleting.value) return
+  deleting.value = true
+  error.value = ''
+  try {
+    await props.api.deleteOutputPackage(pendingDelete.value.item.id, pendingDelete.value.review.impact_sha256)
+    pendingDelete.value = null
+    await refresh()
+  } catch (cause) {
+    error.value = cause.message || 'The Output version could not be deleted.'
+    pendingDelete.value = null
+  } finally {
+    deleting.value = false
+  }
+}
+
+function deletionLabel(item) {
+  if (item.deletion_state === 'deleted') return 'Deleted'
+  if (item.deletion_state === 'deleting') return 'Deleting…'
+  return ''
+}
+
 watch(taskScope, () => refresh())
 onMounted(() => {
   refresh()
@@ -234,8 +267,21 @@ onUnmounted(() => {
       <div class="package-history">
         <article v-for="item in packages" :key="item.id" class="package-row">
           <button class="text-button" @click="togglePackage(item)"><strong>{{ item.package_type }} v{{ String(item.version).padStart(3, '0') }}</strong></button>
-          <span>{{ item.state }} · QC {{ item.qc_state }}</span>
+          <span>{{ deletionLabel(item) || item.state }} · QC {{ item.qc_state }}</span>
           <span class="muted">{{ item.file_count }} files · {{ item.manifest_sha256 }}</span>
+          <span v-if="item.deleted" class="muted deleted-note">削除済み · The files were permanently deleted<template v-if="item.deleted_at"> on {{ new Date(item.deleted_at).toLocaleString() }}</template>. Name, version, sender and delivery history are kept.</span>
+          <button v-if="item.can_delete" class="button danger" :aria-label="`Delete ${item.package_type} v${String(item.version).padStart(3, '0')}`" @click="startDelete(item)">Delete files…</button>
+          <div v-if="pendingDelete?.item.id === item.id" class="delete-confirm" role="alertdialog" aria-label="Confirm permanent deletion">
+            <p><strong>Permanently delete {{ item.package_type }} v{{ String(item.version).padStart(3, '0') }}?</strong> This removes {{ pendingDelete.review.impact.file_count }} file(s) from the shared Drive. Copies in personal Drives are not touched. This cannot be undone.</p>
+            <ul class="impact-list">
+              <li v-if="!pendingDelete.review.impact.deliveries.length">No sent Tasks are recorded for this version.</li>
+              <li v-for="delivery in pendingDelete.review.impact.deliveries" :key="delivery.id">Sent to Task {{ delivery.recipient_task_id }} (revision {{ delivery.revision }}, {{ delivery.state }}). The history stays; the files can no longer be downloaded.</li>
+              <li v-if="pendingDelete.review.impact.latest_pointers.length">This version is currently marked as: {{ pendingDelete.review.impact.latest_pointers.join(', ') }}.</li>
+              <li class="muted">Review or approval references outside this plugin are not tracked here and are not changed.</li>
+            </ul>
+            <button class="button danger" :disabled="deleting || !pendingDelete.review.can_delete" @click="confirmDelete">{{ deleting ? 'Deleting…' : 'Yes, permanently delete these files' }}</button>
+            <button class="button secondary" :disabled="deleting" @click="pendingDelete = null">Cancel</button>
+          </div>
           <pre v-if="item.qc_report?.missing_frames?.length" class="upload-error">Missing frames: {{ item.qc_report.missing_frames.join(', ') }}</pre>
           <div v-if="expandedPackage === item.id" class="package-files">
             <div v-for="file in packageFiles[item.id]?.files || []" :key="file.id" class="storage-object-row">
