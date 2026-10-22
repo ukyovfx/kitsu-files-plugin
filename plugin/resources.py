@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 import tempfile
 from datetime import datetime, timezone
 from uuid import UUID
@@ -20,6 +21,22 @@ def _setting(name, default=None):
     if configured not in (None, ""):
         return configured
     return os.environ.get(name, default)
+
+
+_DRIVE_ID = re.compile(r"^[A-Za-z0-9_-]{10,200}$")
+
+
+def _drive_ids_are_real():
+    """True only when the Plugin is wired to Google Drive; FakeStorage IDs are never turned into Drive URLs."""
+    return _setting("VFX_FILES_STORAGE_MODE") == "google_drive"
+
+
+def _drive_view_url(object_id, *, folder=False):
+    """Plain Drive navigation URL from a server-stored provider ID. Access is decided by Google (Drive ACL):
+    no permission, public link or sharing change is ever created here."""
+    if not _drive_ids_are_real() or not isinstance(object_id, str) or not _DRIVE_ID.fullmatch(object_id):
+        return None
+    return f"https://drive.google.com/drive/folders/{object_id}" if folder else f"https://drive.google.com/file/d/{object_id}/view"
 
 
 def _request_actor(production_id):
@@ -373,6 +390,8 @@ class TaskOutputPackages(MethodView):
             "version": row.version, "state": row.state, "qc_state": row.qc_state,
             "created_by": str(row.created_by),
             "deleted": str(row.id) in deletions,
+            "folder_drive_url": _drive_view_url(row.provider_folder_id, folder=True)
+            if row.state == "completed" and str(row.id) not in deletions else None,
             "deletion_state": deletions[str(row.id)].state if str(row.id) in deletions else None,
             "deleted_by": str(deletions[str(row.id)].requested_by) if str(row.id) in deletions else None,
             "deleted_at": deletions[str(row.id)].completed_at.isoformat() if str(row.id) in deletions and deletions[str(row.id)].completed_at else None,
@@ -876,8 +895,10 @@ class OutputPackageFiles(MethodView):
         ).limit(limit + 1).offset(offset).all()
         has_more = len(rows) > limit
         rows = rows[:limit]
+        live = package.state == "completed" and not deleted
         return {
             "package_id": str(package.id), "deleted": deleted, "limit": limit, "offset": offset,
+            "folder_drive_url": _drive_view_url(package.provider_folder_id, folder=True) if live else None,
             "next_offset": offset + limit if has_more else None,
             "files": [{
                 "id": str(row.id), "ordinal": row.ordinal, "file_name": row.file_name,
@@ -885,7 +906,8 @@ class OutputPackageFiles(MethodView):
                 "frame_number": row.frame_number, "byte_count": row.byte_count,
                 "sha256": row.sha256, "file_format": row.file_format,
                 "color_space": row.color_space, "is_proxy": row.is_proxy,
-                "download_url": f"/api/vfx_files/output-package-files/{row.id}/download" if package.state == "completed" and not deleted else None,
+                "drive_url": _drive_view_url(row.provider_object_id) if live else None,
+                "download_url": f"/api/vfx_files/output-package-files/{row.id}/download" if live and not _drive_ids_are_real() else None,
             } for row in rows],
         }
 
@@ -911,6 +933,10 @@ class OutputPackageFileDownload(MethodView):
             from .compat import authorize_task_read
             if not authorize_task_read(actor, package.task_id):
                 abort(403)
+            if _drive_ids_are_real():
+                # Real Drive: access is governed by Google (Drive ACL / shared-drive membership). The Plugin
+                # must not hand out the bytes on the strength of Kitsu Task permission alone.
+                abort(403, description="Open this file in Google Drive; access is controlled by Drive sharing")
             connection = _production_storage_connection(package.production_id)
             adapter = _storage_adapter(connection)
             capabilities = adapter.capabilities(connection.allowed_root_id)

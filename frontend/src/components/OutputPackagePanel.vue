@@ -1,6 +1,7 @@
 <script setup>
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { outputPayloadTransferAvailable } from '../outputTransferAvailability.js'
+import { safeDriveUrl } from '../driveLinks.js'
 
 const props = defineProps({ taskId: { type: String, required: true }, api: { type: Object, required: true } })
 const emit = defineEmits(['changed'])
@@ -280,6 +281,7 @@ onUnmounted(() => {
           <button class="text-button" @click="togglePackage(item)"><strong>{{ item.package_type }} v{{ String(item.version).padStart(3, '0') }}</strong></button>
           <span>{{ deletionLabel(item) || item.state }} · QC {{ item.qc_state }}</span>
           <span class="muted">{{ item.file_count }} files · {{ item.manifest_sha256 }}</span>
+          <a v-if="safeDriveUrl(item.folder_drive_url)" class="drive-link" :href="safeDriveUrl(item.folder_drive_url)" target="_blank" rel="noopener noreferrer">Google Driveで開く (open version folder in Drive)</a>
           <span v-if="item.deleted" class="muted deleted-note">削除済み · The files were permanently deleted<template v-if="item.deleted_at"> on {{ new Date(item.deleted_at).toLocaleString() }}</template>. Name, version, sender and delivery history are kept.</span>
           <span v-if="item.deletion_state === 'deleting'" class="muted deleted-note">Downloads are blocked while the files are being deleted.<template v-if="item.deletion_stuck"> The deletion did not finish<template v-if="item.deletion_error_code"> ({{ item.deletion_error_code }})</template>; check the Drive connection and retry.</template></span>
           <button v-if="item.deletion_stuck && item.can_retry_delete" class="button secondary" @click="retryDelete(item)">Retry deletion</button>
@@ -299,8 +301,8 @@ onUnmounted(() => {
           <div v-if="expandedPackage === item.id" class="package-files">
             <div v-for="file in packageFiles[item.id]?.files || []" :key="file.id" class="storage-object-row">
               <span>{{ file.frame_number ?? file.file_name }} · {{ file.byte_count }} bytes · {{ file.sha256 }}</span>
-            <a v-if="file.download_url && fakeTransferAvailable" :href="api.outputPackageDownloadUrl(file.id)">Download FakeStorage test file</a>
-            <span v-else-if="file.download_url" class="muted">Direct external download is not available yet.</span>
+            <a v-if="safeDriveUrl(file.drive_url)" class="drive-link" :href="safeDriveUrl(file.drive_url)" target="_blank" rel="noopener noreferrer">Google Driveで開く</a>
+            <a v-else-if="file.download_url && fakeTransferAvailable" :href="api.outputPackageDownloadUrl(file.id)">Download FakeStorage test file</a>
             </div>
             <button v-if="packageFiles[item.id]?.next_offset !== null && packageFiles[item.id]?.next_offset !== undefined" class="button secondary" @click="morePackageFiles(item)">Load next file page</button>
           </div>
