@@ -5,6 +5,36 @@ function response(body, status = 200) {
   return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } })
 }
 
+describe('Personal Drive import API', () => {
+  it('sends Picker selections as untrusted IDs only, with CSRF and an idempotency key', async () => {
+    const client = { request: vi.fn()
+      .mockResolvedValueOnce(response({ csrf_token: 'imp-csrf' }))
+      .mockResolvedValueOnce(response({ id: 'pkg-1', job_id: 'job-1' }, 202)) }
+    const api = createFilesApi(client)
+    const descriptor = { output_type_id: 'ot', package_type: 'final-exr', files: [{ drive_file_id: 'f1', frame_number: 1001 }], frame_start: 1001, frame_end: 1001 }
+    await api.createPersonalOutputPackage('task/1', descriptor, 'personal-import:k1')
+    const [method, path, options] = client.request.mock.calls[1]
+    expect([method, path]).toEqual(['POST', 'plugins/vfx_files/tasks/task%2F1/personal-drive/output-packages'])
+    expect(options.csrfToken).toBe('imp-csrf')
+    expect(options.headers['Idempotency-Key']).toBe('personal-import:k1')
+    expect(JSON.parse(options.body).files).toEqual([{ drive_file_id: 'f1', frame_number: 1001 }])
+    await expect(api.createPersonalOutputPackage('t', { ...descriptor, files: [] }, 'k')).rejects.toThrow('at least one')
+    await expect(api.createPersonalOutputPackage('t', descriptor, '')).rejects.toThrow('idempotency')
+  })
+
+  it('reads Picker config and retries a stuck copy through CSRF-protected routes', async () => {
+    const client = { request: vi.fn()
+      .mockResolvedValueOnce(response({ client_id: 'c', app_id: '1' }))
+      .mockResolvedValueOnce(response({ csrf_token: 'r-csrf' })).mockResolvedValueOnce(response({ requeued: true }, 202)) }
+    const api = createFilesApi(client)
+    await api.getPersonalPickerConfig('prod-1')
+    expect(client.request.mock.calls[0]).toEqual(['GET', 'plugins/vfx_files/productions/prod-1/personal-google/picker-config'])
+    await api.retryOutputPackage('pkg/9')
+    expect(client.request.mock.calls[2][1]).toBe('plugins/vfx_files/output-packages/pkg%2F9/retry')
+    expect(client.request.mock.calls[2][2].csrfToken).toBe('r-csrf')
+  })
+})
+
 describe('Personal Google API', () => {
   it('starts personal OAuth with CSRF + idempotency and never sends credentials from the browser', async () => {
     const client = { request: vi.fn()

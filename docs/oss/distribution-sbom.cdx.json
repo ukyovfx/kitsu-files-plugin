@@ -2,9 +2,9 @@
   "bomFormat": "CycloneDX",
   "specVersion": "1.5",
   "serialNumber": "urn:uuid:f3780869-6d13-4c7a-9309-883243286c13",
-  "version": 6,
+  "version": 7,
   "metadata": {
-    "timestamp": "2026-10-14T02:12:18Z",
+    "timestamp": "2026-10-22T18:04:24Z",
     "component": {
       "type": "application",
       "name": "vfx-kitsu-files-plugin",
@@ -58,7 +58,7 @@
       "hashes": [
         {
           "alg": "SHA-256",
-          "content": "a1c7dc40972f59712b75886ee952656fc1988084c3a6f3104b5534d704b25ad0"
+          "content": "7063d6b703a400c59f4e0cb4f97f37f8c4b2ae80cc5469ea2f31586feae5137f"
         }
       ]
     },
@@ -88,7 +88,7 @@
       "hashes": [
         {
           "alg": "SHA-256",
-          "content": "485f5bae9b1257f996b241ebd3c6b1748d099f6d0b1d290fb0f61c0d97b3ec72"
+          "content": "fac4b8c757e05c104309005b5ddf9942dd2314f5c47e124b328430f837bd9d8c"
         }
       ]
     },
@@ -108,7 +108,7 @@
       "hashes": [
         {
           "alg": "SHA-256",
-          "content": "88c2933d14fdcad1a3c6d2e04c8b07ae6ee3ad1bf6e20c7a889efaeec586245f"
+          "content": "bdb812fa718f0c8c830e6cf21d5c91348eead996439da170dbe96df9a9627ff7"
         }
       ]
     },
@@ -124,21 +124,21 @@
     },
     {
       "type": "file",
-      "name": "plugin/frontend/dist/assets/index-C3IBcxkh.css",
+      "name": "plugin/frontend/dist/assets/index-34GPFry5.js",
       "hashes": [
         {
           "alg": "SHA-256",
-          "content": "b4f7e37e36bdde8887ede14afb9c0918c46d24437b764357620dac9c26d92d18"
+          "content": "56943b7c4355ea5e9d8cb408b6c57209acc6c36ded4d7fee53992c14cb465c6b"
         }
       ]
     },
     {
       "type": "file",
-      "name": "plugin/frontend/dist/assets/index-CHZJV9TK.js",
+      "name": "plugin/frontend/dist/assets/index-gdMFUSBy.css",
       "hashes": [
         {
           "alg": "SHA-256",
-          "content": "b299faaeb443dfa82f21ec7e207d1d1908ceadcff9d22ab7e3f8b39e15678fb1"
+          "content": "e277e75b504cbdbbb611c8b5200042e8f632b59eb0931eb8f1150536e392283d"
         }
       ]
     },
@@ -148,7 +148,7 @@
       "hashes": [
         {
           "alg": "SHA-256",
-          "content": "1a602b3b886903d82167038b1357df536368ae716dc751a600104fb57df68e86"
+          "content": "da56af4caf3cc676f48e8ff2bc3ceeb66ff87662e61ac96e58c9418b6f69fd9d"
         }
       ]
     },
@@ -198,7 +198,7 @@
       "hashes": [
         {
           "alg": "SHA-256",
-          "content": "570f0bf60c5e8f46cfa46f71b68e4538a30569a2504ecced69fc94e6fb1b630a"
+          "content": "2ec174b05ab531d7f7c0519a5ff856bf1d41fbac235985827ce93b2550364d4d"
         }
       ]
     },
@@ -208,7 +208,7 @@
       "hashes": [
         {
           "alg": "SHA-256",
-          "content": "77fc9b5bd5970e1f004cc1268e5d7997c2d7a0eeabd313afd8e784c444af04d9"
+          "content": "42f423817bafd24026331c9573a59c91be494d80008001370252d4929e6e4060"
         }
       ]
     },
@@ -218,7 +218,7 @@
       "hashes": [
         {
           "alg": "SHA-256",
-          "content": "91e4d070d89f8662f3cef8aebf83366970ef2c9f444700626e2addd9350f4a48"
+          "content": "8a4c3ea786324c1b899b9f3cd8374db94938911a1df1e39fbd02b24a210811bd"
         }
       ]
     },
@@ -228,7 +228,7 @@
       "hashes": [
         {
           "alg": "SHA-256",
-          "content": "ffbf9ed377200f8fc8e0de331935ceca4667f735cb52a84881b9513e69fd4d30"
+          "content": "8bd378991d23b357d141b5f08049094503e791b38c6adb846da26aca1f912d17"
         }
       ]
     },
@@ -244,11 +244,31 @@
     },
     {
       "type": "file",
+      "name": "plugin/integrations/legacy_import.py",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "275ca6e256d9ac1ff2c98feb018681a5a551253d3261147ffe2390892a07a1e9"
+        }
+      ]
+    },
+    {
+      "type": "file",
+      "name": "plugin/integrations/native_storage.py",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "513359acae6d6fd50bbe897c6934e654ca9005d4342061d789245ccf969efaea"
+        }
+      ]
+    },
+    {
+      "type": "file",
       "name": "plugin/integrations/oauth.py",
       "hashes": [
         {
           "alg": "SHA-256",
-          "content": "3ab0a392489103a120afeba56d8e2d6119ccb727a1348030f7befcf6b2556e1d"
+          "content": "c62081c9eb8bfe162806677c5288f2b4651fc70faa1e96b8ed79e5cfa9f2ef81"
         }
       ]
     },
@@ -259,6 +279,16 @@
         {
           "alg": "SHA-256",
           "content": "616808af6d0c2225d231104abb47e5e70090ce74c223dcc0f6f2eda149c46421"
+        }
+      ]
+    },
+    {
+      "type": "file",
+      "name": "plugin/integrations/personal_google.py",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "b6a288fedf9565275e9ca6ac756ef41e6ef8b312ecc3e0185ee15cabfb578a81"
         }
       ]
     },
@@ -284,11 +314,21 @@
     },
     {
       "type": "file",
+      "name": "plugin/integrations/share_v1_1.py",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "cace3b52e436a243dd06211e5900d856774381ebb745c28e5c2f6c6f3cf16439"
+        }
+      ]
+    },
+    {
+      "type": "file",
       "name": "plugin/integrations/snapshots.py",
       "hashes": [
         {
           "alg": "SHA-256",
-          "content": "95b333c586886e260536060fdd5df5a403705c1a2939741a8eb8baa48db27fbc"
+          "content": "9e803878e47aa041e681b38444f08e98f30187a14569295f03bfec31ab079767"
         }
       ]
     },
@@ -298,7 +338,7 @@
       "hashes": [
         {
           "alg": "SHA-256",
-          "content": "b8b3960a1158b2fa7fe92045ed32a19045ca55762f97dc8e12f8d490c0407f44"
+          "content": "db56d9fe0f1d3b86915c4a9cc4ffb9d9b298874805339e5bbbf3e85d9b923b5b"
         }
       ]
     },
@@ -308,7 +348,7 @@
       "hashes": [
         {
           "alg": "SHA-256",
-          "content": "16278d4317d1dbcdfa178e7617c5ee5bff50941609c5dcde45d77f52ffcf3f0f"
+          "content": "a64d8ee13d83f64da1ed08e81fe7f85c85d28b710d8e099f65fe341ea7ec66a9"
         }
       ]
     },
@@ -324,11 +364,21 @@
     },
     {
       "type": "file",
+      "name": "plugin/integrations/user_oauth.py",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "1ea96d31fc4c9b2541fea854c68d636f2d9a7e4efdb6b4b39ff33218a3652313"
+        }
+      ]
+    },
+    {
+      "type": "file",
       "name": "plugin/integrations/v1.py",
       "hashes": [
         {
           "alg": "SHA-256",
-          "content": "5b3fb9d9d485a3d36d98b41fd13d1c9f3e9da6d6c9be7b3f5017a7a12d62e101"
+          "content": "ca35a96508267238d717ad5d6cc12d05d11eba7b8f21da8c2a3acba52fd85a70"
         }
       ]
     },
@@ -388,7 +438,7 @@
       "hashes": [
         {
           "alg": "SHA-256",
-          "content": "a1a15aac1859bcbe7dfac2ae5364b2883b73152f9ad13b3602c7cc97526b66c5"
+          "content": "39ce356d02b8edfe4e68264b885496d23d122d28589ffdae3fa669183606ed7b"
         }
       ]
     },
@@ -534,11 +584,101 @@
     },
     {
       "type": "file",
+      "name": "plugin/migrations/versions/0015_production_drive_authority.py",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "5be6654a2a845e18ab06ab3130adb6dc4d964e4e89c3f49e029140111185aa2a"
+        }
+      ]
+    },
+    {
+      "type": "file",
+      "name": "plugin/migrations/versions/0016_oauth_return_surface.py",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "6f21838b976991dce066b9d62ddb2f21445456e9b4dee569e05830d49fa8f3e7"
+        }
+      ]
+    },
+    {
+      "type": "file",
+      "name": "plugin/migrations/versions/0017_plugin_owned_drive_configuration.py",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "4c1d81bfde94391b1bc634c691dd7472571090c6222d6f541aeff93dadf261a2"
+        }
+      ]
+    },
+    {
+      "type": "file",
+      "name": "plugin/migrations/versions/0018_production_drive_authority_audit.py",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "598a641834ee123c22bf1adb06952bedb5c30b39c6756d80bf5c03c50bb78a8f"
+        }
+      ]
+    },
+    {
+      "type": "file",
+      "name": "plugin/migrations/versions/0019_activation_barrier.py",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "9b8f2e8fb40dba9a10a127b3cf4981cefc4dfd2bc5d041cb7413c09712209f1e"
+        }
+      ]
+    },
+    {
+      "type": "file",
+      "name": "plugin/migrations/versions/0020_task_link_shares.py",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "515055a3554b5a6a835d96c980cfd477eff501b2b9a4f9f1927dd5f76fbef932"
+        }
+      ]
+    },
+    {
+      "type": "file",
+      "name": "plugin/migrations/versions/0021_output_version_deletion.py",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "93f9515e470f4ad0fa7df59ca2da926bcc1863534755c590406392a6ab48b396"
+        }
+      ]
+    },
+    {
+      "type": "file",
+      "name": "plugin/migrations/versions/0022_personal_google_oauth.py",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "d832a770f7e6066134398c5e8ea8c87e5e535e6c2a371414f36bf9b89f2bf0e9"
+        }
+      ]
+    },
+    {
+      "type": "file",
+      "name": "plugin/migrations/versions/0023_output_package_source_kind.py",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "e995377615444b3d2725ba17b2bf1a192c77b6241eba0e8d6118e9afda650695"
+        }
+      ]
+    },
+    {
+      "type": "file",
       "name": "plugin/models.py",
       "hashes": [
         {
           "alg": "SHA-256",
-          "content": "e1e1a916121669f78c65ab2b7568ebc5ee346bced9c85b1f88ee0d1fc8a54cd8"
+          "content": "ca0c163867d7bf9caea6788582e74293e78fcc720e747697919b08b2fe8947d6"
         }
       ]
     },
@@ -574,6 +714,16 @@
     },
     {
       "type": "file",
+      "name": "plugin/packages/deletion.py",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "e5d60252dfb210fc1cebd7b25443410074806a6f43d47712c0f0532c65f5181e"
+        }
+      ]
+    },
+    {
+      "type": "file",
       "name": "plugin/packages/manifest.py",
       "hashes": [
         {
@@ -584,11 +734,21 @@
     },
     {
       "type": "file",
+      "name": "plugin/packages/personal_import.py",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "12b13059d61f93b09603c951400463625618a09ac8a301fe98340d772256b089"
+        }
+      ]
+    },
+    {
+      "type": "file",
       "name": "plugin/packages/service.py",
       "hashes": [
         {
           "alg": "SHA-256",
-          "content": "5a989bd416ea93ea0860aa5d820e3887a6589c904e8dc3b24b4d3a1ca68fa5e4"
+          "content": "3b56bdc213a54d75fa2021e5ed294833b71583f58657878f3a3c772bc93994b8"
         }
       ]
     },
@@ -598,7 +758,7 @@
       "hashes": [
         {
           "alg": "SHA-256",
-          "content": "5fe072acd6f7be254237f7091a1fedc32920af423c65901b3017c8557ca8aa5e"
+          "content": "3fe8d3872e2b08d3b78db4788ea2fa31a5110458f381f692f5516d815af0dc3c"
         }
       ]
     },
@@ -668,7 +828,27 @@
       "hashes": [
         {
           "alg": "SHA-256",
-          "content": "8e252280b3b265f6b81eb37a6a3f1067191c8c56c4ca90fff056798567bac7ea"
+          "content": "54e0c8c574866d82b57439935aef155a8baec95119a14561b99390359b002ef3"
+        }
+      ]
+    },
+    {
+      "type": "file",
+      "name": "plugin/shares/__init__.py",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "5d80781cc29d060a1503fa78d0000546425a9619c740037e715ae82240309c43"
+        }
+      ]
+    },
+    {
+      "type": "file",
+      "name": "plugin/shares/service.py",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "adae3daedc184434dc4dedc3e6fd5263c422648a4c28479dba70f7ea392cb62c"
         }
       ]
     },
@@ -688,7 +868,7 @@
       "hashes": [
         {
           "alg": "SHA-256",
-          "content": "0020589fc5be63728f35cfcc7704c20a88a73eec79afa608f8f68ac93b2c4c73"
+          "content": "b31953457851bc17ade98763825ecaf51d45c800eb531148557ba040636d3618"
         }
       ]
     },
@@ -708,7 +888,7 @@
       "hashes": [
         {
           "alg": "SHA-256",
-          "content": "9c2f8daad99eb42b893550d8e1eff6a2150091f33cafc828fff9a3ddd652e602"
+          "content": "72877965c6bcbdb414ef9243f38662722248b83d57ba5a970c0da313c2503df5"
         }
       ]
     },
@@ -718,7 +898,7 @@
       "hashes": [
         {
           "alg": "SHA-256",
-          "content": "f925fbc7eecd222ed0a0151c7f8c6a0a3ab6559eaf459d1888546137fa8084a1"
+          "content": "39437ac2c1a75626537104b78e86fe4053246488545b8dc356d2f89c375273a7"
         }
       ]
     },
@@ -828,7 +1008,7 @@
       "hashes": [
         {
           "alg": "SHA-256",
-          "content": "0f19d488c7213feef09e27066d03146f4192b58abeca9d143ce8d7965528c1e0"
+          "content": "c98d45380ee5df36c79b257c9003474bfe9d660f9ec73c78e614d4c9715fc1a1"
         }
       ]
     },

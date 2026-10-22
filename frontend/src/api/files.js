@@ -7,6 +7,11 @@ import { bytesToHex } from '@noble/hashes/utils.js'
 async function readJson(response) {
   if (!response.ok) {
     const error = new Error(response.status === 503 ? 'Files is temporarily unavailable. Retry when the service is ready.' : `Files request failed (${response.status}).`)
+    try {
+      const detail = await response.json()
+      const code = detail?.description || detail?.code || detail?.message
+      if (typeof code === 'string' && /^[a-z][a-z0-9_]{0,63}$/.test(code)) error.code = code
+    } catch { /* Keep a bounded generic error when the server returns HTML or malformed JSON. */ }
     error.status = response.status
     throw error
   }
@@ -213,6 +218,36 @@ export function createFilesApi(client) {
       return readJson(await mutation('POST', `${ROOT}/output-packages/${encodeURIComponent(packageId)}/deletion`, {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ confirm: true, impact_sha256: impactSha256 })
+      }))
+    },
+
+    async getPersonalPickerConfig(productionId) {
+      if (!productionId) throw new TypeError('A Production ID is required')
+      return readJson(await client.request('GET', `${ROOT}/productions/${encodeURIComponent(productionId)}/personal-google/picker-config`))
+    },
+
+    async previewPersonalSelection(taskId, files) {
+      if (!taskId || !Array.isArray(files) || !files.length) throw new TypeError('A Task and selections are required')
+      return readJson(await mutation('POST', `${ROOT}/tasks/${encodeURIComponent(taskId)}/personal-drive/selection-preview`, {
+        headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ files })
+      }))
+    },
+
+    async createPersonalOutputPackage(taskId, descriptor, idempotencyKey) {
+      if (!taskId || !descriptor?.output_type_id || !descriptor?.package_type || !descriptor?.files?.length) {
+        throw new TypeError('A Task, Output Type, package type and at least one Google Drive file are required')
+      }
+      if (!idempotencyKey) throw new TypeError('An idempotency key is required')
+      return readJson(await mutation('POST', `${ROOT}/tasks/${encodeURIComponent(taskId)}/personal-drive/output-packages`, {
+        headers: { 'Content-Type': 'application/json', 'Idempotency-Key': idempotencyKey },
+        body: JSON.stringify(descriptor)
+      }))
+    },
+
+    async retryOutputPackage(packageId) {
+      if (!packageId) throw new TypeError('An Output Package ID is required')
+      return readJson(await mutation('POST', `${ROOT}/output-packages/${encodeURIComponent(packageId)}/retry`, {
+        headers: { 'Content-Type': 'application/json' }, body: '{}'
       }))
     },
 
