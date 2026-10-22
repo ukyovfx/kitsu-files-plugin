@@ -133,3 +133,25 @@ def test_drive_sync_metadata_survives_fake_storage_restart(tmp_path):
 
     assert listing.items[0].modified_time == "2026-10-13T01:02:03Z"
     assert listing.items[0].md5_checksum == "0123456789abcdef0123456789abcdef"
+
+
+def test_fake_delete_is_exact_idempotent_and_never_recursive(tmp_path):
+    import io as _io
+    from plugin.storage.base import PermissionFailure
+    from plugin.storage.fake import FakeStorage, PersistentFakeStorage
+
+    for storage in (FakeStorage(root_id="root"), PersistentFakeStorage(tmp_path / "state.json", root_id="root")):
+        body = b"abc"
+        digest = hashlib.sha256(body).hexdigest()
+        storage.create_folder("root", "folder", {"display_name": "f"})
+        storage.upload(_io.BytesIO(body), "file", 3, digest, "folder", file_name="a.exr")
+        with pytest.raises(PermissionFailure):
+            storage.delete("root")
+        with pytest.raises(PermissionFailure):
+            storage.delete("folder")  # non-empty folders are refused, never emptied
+        assert storage.get("file") is not None
+        assert storage.delete("file") is True and storage.get("file") is None
+        assert storage.delete("file") is False
+        assert storage.delete("folder") is True and storage.get("root") is not None
+    reloaded = PersistentFakeStorage(tmp_path / "state.json", root_id="root")
+    assert reloaded.get("file") is None and reloaded.get("folder") is None

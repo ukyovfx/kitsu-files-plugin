@@ -13,6 +13,7 @@ from ..storage.base import (
     AlreadyExists,
     AmbiguousOutcome,
     PermissionFailure,
+    is_folder,
     resolve_storage_adapter,
 )
 from .manifest import _SHA256, evaluate_package_qc
@@ -131,7 +132,7 @@ def make_output_package_handler(session_factory, adapter_factory):
         except (AlreadyExists, AmbiguousOutcome):
             folder = adapter.get(folder_id)
         if (folder is None or folder.object_id != folder_id or folder.parent_id != allowed_root_id
-                or folder.mime_type != "folder" or folder.trashed or folder.name != folder_name):
+                or not is_folder(folder) or folder.trashed or folder.name != folder_name):
             return JobResult("reconcile_required", error_code="output_package_folder_unconfirmed")
         adapter.assert_parent_within_root(folder.object_id)
 
@@ -148,7 +149,7 @@ def make_output_package_handler(session_factory, adapter_factory):
             if not source_id:
                 return JobResult("failed", error_code="output_package_source_id_missing")
             source_object = adapter.get(source_id)
-            if (source_object is None or source_object.trashed or source_object.mime_type == "folder"
+            if (source_object is None or source_object.trashed or is_folder(source_object)
                     or source_object.parent_id is None or source_object.size != row["byte_count"]):
                 return JobResult("reconcile_required", error_code="output_package_source_unavailable")
             adapter.assert_parent_within_root(source_object.parent_id)
@@ -181,7 +182,7 @@ def make_output_package_handler(session_factory, adapter_factory):
             target_object = adapter.get(target_id)
             if (target_object is None or target_object.trashed or target_object.object_id != target_id
                     or target_object.parent_id != folder_id or target_object.name != row["file_name"]
-                    or target_object.mime_type == "folder"):
+                    or is_folder(target_object)):
                 return JobResult("reconcile_required", error_code="output_package_target_unconfirmed")
             if not adapter.verify(target_id, row["byte_count"], source_sha256):
                 return JobResult("reconcile_required", error_code="output_package_target_readback_failed")

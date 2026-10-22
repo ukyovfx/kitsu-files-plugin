@@ -138,3 +138,10 @@ tbody tr:last-child td { border-bottom: 0; }
 .page-footer { display: flex; justify-content: space-between; gap: 12px; margin-top: 20px; padding-top: 13px; border-top: 1px solid var(--border); color: var(--muted); font-size: 9px; }
 @media (max-width: 880px) { .content-grid { grid-template-columns: 1fr; } }
 @media (max-width: 560px) { .files-page { padding-top: 25px; } .summary-grid { grid-template-columns: 1fr; } .summary-card { min-height: 92px; } .upload-panel { align-items: flex-start; flex-wrap: wrap; } .upload-panel .button { margin-left: 55px; } .task-select { flex: 1; } .page-footer { flex-direction: column; } }
+
+.button.danger { background: #8f2f22; border-color: #b4402f; color: #fff; }
+.button.danger:disabled { opacity: .55; }
+.delete-confirm { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 8px; padding: 10px; border: 1px solid #b4402f; border-radius: 7px; }
+.delete-confirm p, .delete-confirm .impact-list { flex-basis: 100%; margin: 0; font-size: 11px; line-height: 1.5; }
+.deleted-note { grid-column: 1 / -1; }
+.output-deletion-settings fieldset { display: grid; gap: 6px; border: 0; padding: 0; margin: 8px 0; }

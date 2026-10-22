@@ -696,6 +696,13 @@ def rotate_encrypted_records(session_factory, *, old_keyring: CredentialKeyring,
                 response, _aad("authorization-response", row.production_id, row.connection_id, row.actor_id),
             )
             changed += 1
+        # Personal (per-user) Google grants and pending intents share this keyring and must rotate with it.
+        try:
+            from .user_oauth import rotate_personal_records
+        except ImportError:  # minimal model stubs in focused tests
+            rotate_personal_records = None
+        if rotate_personal_records is not None:
+            changed += rotate_personal_records(session, old_keyring=old_keyring, new_keyring=new_keyring)
     return changed
 
 

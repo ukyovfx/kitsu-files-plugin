@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 import tempfile
 from datetime import datetime, timezone
 from uuid import UUID
@@ -20,6 +21,22 @@ def _setting(name, default=None):
     if configured not in (None, ""):
         return configured
     return os.environ.get(name, default)
+
+
+_DRIVE_ID = re.compile(r"^[A-Za-z0-9_-]{10,200}$")
+
+
+def _drive_ids_are_real():
+    """True only when the Plugin is wired to Google Drive; FakeStorage IDs are never turned into Drive URLs."""
+    return _setting("VFX_FILES_STORAGE_MODE") == "google_drive"
+
+
+def _drive_view_url(object_id, *, folder=False):
+    """Plain Drive navigation URL from a server-stored provider ID. Access is decided by Google (Drive ACL):
+    no permission, public link or sharing change is ever created here."""
+    if not _drive_ids_are_real() or not isinstance(object_id, str) or not _DRIVE_ID.fullmatch(object_id):
+        return None
+    return f"https://drive.google.com/drive/folders/{object_id}" if folder else f"https://drive.google.com/file/d/{object_id}/view"
 
 
 def _request_actor(production_id):
@@ -342,8 +359,26 @@ class TaskOutputPackages(MethodView):
         jobs = {}
         if rows:
             from .models import Job
-            for job in Job.query.filter(Job.payload["package_id"].astext.in_([str(row.id) for row in rows])).all():
+            for job in Job.query.filter(
+                Job.job_type == "verify_output_package",
+                Job.payload["package_id"].astext.in_([str(row.id) for row in rows]),
+            ).all():
                 jobs[job.payload["package_id"]] = job
+        from .models import OutputPackageDeletion
+        from .packages.deletion import get_delete_policy, may_delete
+        deletions = {
+            str(row.package_id): row for row in OutputPackageDeletion.query.filter(
+                OutputPackageDeletion.package_id.in_([row.id for row in rows])).all()
+        } if rows else {}
+        delete_policy = get_delete_policy(current_app.extensions["sqlalchemy"].session, rows[0].production_id) if rows else None
+        deletion_jobs = {}
+        if deletions:
+            from .packages.deletion import JOB_TYPE as DELETE_JOB_TYPE, _job_is_stuck
+            for job in Job.query.filter(
+                Job.job_type == DELETE_JOB_TYPE,
+                Job.payload["package_id"].astext.in_(list(deletions)),
+            ).all():
+                deletion_jobs[job.payload["package_id"]] = (job, _job_is_stuck(current_app.extensions["sqlalchemy"].session, job))
         pointers = {
             (str(row.output_type_id), row.package_type): row
             for row in OutputPackagePointer.query.filter_by(task_id=parsed_task_id).all()
@@ -353,6 +388,19 @@ class TaskOutputPackages(MethodView):
             "entity_id": str(row.entity_id), "task_id": str(row.task_id),
             "output_type_id": str(row.output_type_id), "package_type": row.package_type,
             "version": row.version, "state": row.state, "qc_state": row.qc_state,
+            "created_by": str(row.created_by),
+            "deleted": str(row.id) in deletions,
+            "folder_drive_url": _drive_view_url(row.provider_folder_id, folder=True)
+            if row.state == "completed" and str(row.id) not in deletions else None,
+            "deletion_state": deletions[str(row.id)].state if str(row.id) in deletions else None,
+            "deleted_by": str(deletions[str(row.id)].requested_by) if str(row.id) in deletions else None,
+            "deleted_at": deletions[str(row.id)].completed_at.isoformat() if str(row.id) in deletions and deletions[str(row.id)].completed_at else None,
+            "deletion_stuck": bool(str(row.id) in deletions and deletions[str(row.id)].state == "deleting"
+                                   and str(row.id) in deletion_jobs and deletion_jobs[str(row.id)][1]),
+            "deletion_error_code": deletion_jobs[str(row.id)][0].last_error_code if str(row.id) in deletion_jobs else None,
+            "can_retry_delete": str(row.id) in deletions and deletions[str(row.id)].state == "deleting"
+            and may_delete(delete_policy, actor.project_role, actor.actor_id, row.created_by),
+            "can_delete": row.state == "completed" and str(row.id) not in deletions and may_delete(delete_policy, actor.project_role, actor.actor_id, row.created_by),
             "job_state": jobs[str(row.id)].state if str(row.id) in jobs else None,
             "job_error_code": jobs[str(row.id)].last_error_code if str(row.id) in jobs else None,
             "qc_report": row.qc_report, "manifest_sha256": row.manifest_sha256,
@@ -395,6 +443,7 @@ class TaskOutputPackages(MethodView):
 
         from .packages.manifest import canonical_package_manifest
         from .packages.service import PackageConflict, reserve_output_package
+        from .storage.base import is_folder
         from zou.app.models.output_type import OutputType
         from zou.app.models.task import Task
         task = Task.query.filter_by(id=parsed_task_id).one_or_none()
@@ -417,7 +466,7 @@ class TaskOutputPackages(MethodView):
                 if not isinstance(provider_id, str) or not provider_id or len(provider_id) > 255:
                     abort(400)
                 obj = adapter.get(provider_id)
-                if obj is None or obj.object_id != provider_id or obj.trashed or obj.mime_type == "folder" or obj.parent_id is None:
+                if obj is None or obj.object_id != provider_id or obj.trashed or is_folder(obj) or obj.parent_id is None:
                     abort(404)
                 adapter.assert_parent_within_root(obj.parent_id)
                 if obj.size is None:
@@ -840,21 +889,26 @@ class OutputPackageFiles(MethodView):
             abort(403)
         except (ValueError, TypeError):
             abort(404)
+        from .packages.deletion import package_is_deleted
+        deleted = package_is_deleted(current_app.extensions["sqlalchemy"].session, package.id)
         rows = OutputPackageFile.query.filter_by(package_id=package.id).order_by(
             OutputPackageFile.ordinal
         ).limit(limit + 1).offset(offset).all()
         has_more = len(rows) > limit
         rows = rows[:limit]
+        live = package.state == "completed" and not deleted
         return {
-            "package_id": str(package.id), "limit": limit, "offset": offset,
+            "package_id": str(package.id), "deleted": deleted, "limit": limit, "offset": offset,
+            "folder_drive_url": _drive_view_url(package.provider_folder_id, folder=True) if live else None,
             "next_offset": offset + limit if has_more else None,
             "files": [{
                 "id": str(row.id), "ordinal": row.ordinal, "file_name": row.file_name,
-                "provider_object_id": row.provider_object_id if package.state == "completed" else None,
+                "provider_object_id": row.provider_object_id if package.state == "completed" and not deleted else None,
                 "frame_number": row.frame_number, "byte_count": row.byte_count,
                 "sha256": row.sha256, "file_format": row.file_format,
                 "color_space": row.color_space, "is_proxy": row.is_proxy,
-                "download_url": f"/api/vfx_files/output-package-files/{row.id}/download" if package.state == "completed" else None,
+                "drive_url": _drive_view_url(row.provider_object_id) if live else None,
+                "download_url": f"/api/vfx_files/output-package-files/{row.id}/download" if live and not _drive_ids_are_real() else None,
             } for row in rows],
         }
 
@@ -871,12 +925,19 @@ class OutputPackageFileDownload(MethodView):
             package = OutputPackage.query.filter_by(id=file_row.package_id).one_or_none() if file_row else None
             if package is None or file_row is None or package.state != "completed":
                 abort(404)
+            from .packages.deletion import package_is_deleted
+            if package_is_deleted(current_app.extensions["sqlalchemy"].session, package.id):
+                abort(410, description="This Output version has been deleted")
             actor = _request_actor(str(package.production_id))
             scope = _resolve_scope(actor, str(package.production_id), str(package.task_id))
             authorize(actor, Capability.READ, scope)
             from .compat import authorize_task_read
             if not authorize_task_read(actor, package.task_id):
                 abort(403)
+            if _drive_ids_are_real():
+                # Real Drive: access is governed by Google (Drive ACL / shared-drive membership). The Plugin
+                # must not hand out the bytes on the strength of Kitsu Task permission alone.
+                abort(403, description="Open this file in Google Drive; access is controlled by Drive sharing")
             connection = _production_storage_connection(package.production_id)
             adapter = _storage_adapter(connection)
             capabilities = adapter.capabilities(connection.allowed_root_id)
@@ -905,6 +966,338 @@ class OutputPackageFileDownload(MethodView):
             abort(403)
         except (ValueError, TypeError):
             abort(404)
+
+
+def _load_package(package_id):
+    from .models import OutputPackage
+    try:
+        parsed = UUID(str(package_id))
+    except (ValueError, TypeError):
+        abort(404)
+    package = OutputPackage.query.filter_by(id=parsed).one_or_none()
+    if package is None:
+        abort(404)
+    return package
+
+
+def _package_actor_scope(package):
+    actor = _request_actor(str(package.production_id))
+    scope = _resolve_scope(actor, str(package.production_id), str(package.task_id))
+    authorize(actor, Capability.READ, scope)
+    from .compat import authorize_task_read
+    if not authorize_task_read(actor, package.task_id):
+        raise PermissionDenied("Actor cannot read this Task")
+    return actor, scope
+
+
+class OutputPackageDeletionResource(MethodView):
+    """Impact preview (GET) and permanent file deletion request (POST) for one Output version."""
+
+    @jwt_required()
+    def get(self, package_id):
+        _require_enabled()
+        _assert_compatible()
+        package = _load_package(package_id)
+        try:
+            actor, _scope = _package_actor_scope(package)
+        except (PermissionDenied, NotFound):
+            abort(403)
+        from .models import OutputPackageDeletion
+        from .packages.deletion import build_delete_impact, get_delete_policy, impact_digest, may_delete
+        session = current_app.extensions["sqlalchemy"].session
+        policy = get_delete_policy(session, package.production_id)
+        deletion = OutputPackageDeletion.query.filter_by(package_id=package.id).one_or_none()
+        impact = build_delete_impact(session, package)
+        return {
+            "package_id": str(package.id), "policy": policy, "impact": impact,
+            "impact_sha256": impact_digest(impact),
+            "deletion_state": deletion.state if deletion else None,
+            "can_delete": package.state == "completed" and deletion is None
+            and may_delete(policy, actor.project_role, actor.actor_id, package.created_by),
+        }
+
+    @jwt_required()
+    def post(self, package_id):
+        _require_enabled()
+        _assert_compatible()
+        try:
+            _require_mutation_origin()
+        except PermissionDenied:
+            abort(403)
+        package = _load_package(package_id)
+        try:
+            actor, _scope = _package_actor_scope(package)
+        except (PermissionDenied, NotFound):
+            abort(403)
+        payload = request.get_json(silent=True) or {}
+        if payload.get("confirm") is not True:
+            abort(400, description="Explicit confirmation is required")
+        impact_sha256 = payload.get("impact_sha256")
+        if not isinstance(impact_sha256, str) or len(impact_sha256) != 64:
+            abort(400, description="The reviewed impact digest is required")
+        from sqlalchemy.orm import sessionmaker
+        from .packages.deletion import DeletionConflict, DeletionDenied, DeletionNotFound, request_package_deletion
+        sessions = sessionmaker(bind=current_app.extensions["sqlalchemy"].engine, expire_on_commit=False)
+        try:
+            result = request_package_deletion(
+                sessions, package_id=package.id, actor_id=actor.actor_id, actor_role=actor.project_role,
+                expected_impact_sha256=impact_sha256,
+            )
+        except DeletionDenied:
+            abort(403)
+        except DeletionNotFound:
+            abort(404)
+        except DeletionConflict as error:
+            abort(409, description=error.code)
+        return {"package_id": str(result.package_id), "state": result.state, "job_id": str(result.job_id)}, 202
+
+
+def drive_access_checks(*, real_drive, account_mode):
+    """Honest checklist. A state is 'verified' only when the Plugin itself can prove it; Google-side sharing
+    settings cannot be read with the `drive.file` grant, so they stay 'not_verified' - never 'safe'."""
+    checks = [
+        {"id": "plugin_creates_no_sharing", "state": "verified",
+         "detail": "The Plugin never creates permissions, public links or 'anyone with the link' access."},
+        {"id": "no_byte_proxy", "state": "verified" if real_drive else "not_applicable",
+         "detail": "File bytes are not served by the Plugin; viewing goes through Google Drive." if real_drive
+         else "FakeStorage test mode: the Plugin serves test bytes."},
+        {"id": "drive_links", "state": "verified" if real_drive else "not_applicable",
+         "detail": "Links are built from worker-verified Plugin-managed IDs; Google decides who can open them."},
+    ]
+    if account_mode == "shared_drive":
+        checks.append({"id": "shared_drive_structure", "state": "verified",
+                       "detail": "The connected storage is a Google Workspace shared drive."})
+    elif account_mode == "my_drive":
+        checks.append({"id": "shared_drive_structure", "state": "attention",
+                       "detail": "The connected storage is a My Drive folder, not a shared drive. Shared-drive "
+                                 "member and restriction controls do not apply; access follows per-folder sharing."})
+    else:
+        checks.append({"id": "shared_drive_structure", "state": "not_verified",
+                       "detail": "No verified Drive connection is selected for this Production."})
+    for check_id, detail in (
+        ("members_only_restriction", "Shared-drive 'members only' (driveMembersOnly) is set by a Google admin; the Plugin cannot read it."),
+        ("external_accounts", "Whether external Google accounts can be added is a Google Workspace admin setting; not read by the Plugin."),
+        ("link_sharing_disabled", "Whether members may share files with non-members or by link is a Google setting; not read by the Plugin."),
+        ("group_viewer_role", "Group membership and the Viewer role are managed in Google by the studio admin; not read by the Plugin."),
+        ("credential_manager_role", "Permanent deletion needs the connected Google account to be a shared-drive Manager; checked only when a deletion runs."),
+    ):
+        checks.append({"id": check_id, "state": "not_verified", "detail": detail})
+    return checks
+
+
+class DriveAccessPolicy(MethodView):
+    """Read-only status of the Drive viewing model for a Production (any member with read access)."""
+
+    @jwt_required()
+    def get(self, production_id):
+        _require_enabled()
+        _assert_compatible()
+        try:
+            actor = _request_actor(str(production_id))
+            scope = _resolve_scope(actor, str(production_id))
+            authorize(actor, Capability.READ, scope)
+        except (PermissionDenied, NotFound):
+            abort(403)
+        from .integrations.storage_authority import selected_storage_connection
+
+        connection = selected_storage_connection(current_app.extensions["sqlalchemy"].session, scope.production_id)
+        real = _drive_ids_are_real()
+        return {
+            "production_id": str(scope.production_id),
+            "storage_mode": _setting("VFX_FILES_STORAGE_MODE") or "unconfigured",
+            "viewing": "google_drive_acl" if real else "fake_storage_test",
+            "account_mode": connection.account_mode if connection is not None else None,
+            "checks": drive_access_checks(real_drive=real, account_mode=connection.account_mode if connection is not None else None),
+        }
+
+
+def _personal_google_scope(production_id):
+    """Production membership is re-resolved from Zou on every call (a user who left gets 403)."""
+    actor = _request_actor(str(production_id))
+    scope = _resolve_scope(actor, str(production_id))
+    authorize(actor, Capability.READ, scope)
+    return actor, scope
+
+
+def _oauth_sessions():
+    from sqlalchemy.orm import sessionmaker
+    return sessionmaker(bind=current_app.extensions["sqlalchemy"].engine, expire_on_commit=False)
+
+
+def _oauth_transport():
+    from .storage.worker_factory import RequestsDriveTransport
+    return current_app.extensions.get("vfx_files_oauth_transport") or RequestsDriveTransport(timeout=(10, 30))
+
+
+def _oauth_error(exc):
+    abort(exc.status, description=exc.code)
+
+
+class PersonalGoogleAccount(MethodView):
+    """The caller's own personal Google link state, plus this Production's allow/block setting."""
+
+    @jwt_required()
+    def get(self, production_id):
+        _require_enabled()
+        _assert_compatible()
+        try:
+            actor, scope = _personal_google_scope(production_id)
+        except (PermissionDenied, NotFound):
+            abort(403)
+        from .integrations.user_oauth import get_personal_google_policy, user_drive_status
+        from .packages.deletion import ADMIN_ROLES
+
+        with _oauth_sessions()() as session:
+            policy = get_personal_google_policy(session, scope.production_id)
+            status = user_drive_status(session, actor_id=actor.actor_id)
+        return {"policy": policy, "allowed": policy == "allowed", "can_change_policy": actor.project_role in ADMIN_ROLES,
+                **status}
+
+
+class PersonalGoogleAuthorization(MethodView):
+    @jwt_required()
+    def post(self, production_id):
+        _require_enabled()
+        _assert_compatible()
+        try:
+            _require_mutation_origin()
+            actor, scope = _personal_google_scope(production_id)
+        except (PermissionDenied, NotFound):
+            abort(403)
+        from .integrations.user_oauth import UserOAuthError, start_user_authorization
+
+        key = request.headers.get("Idempotency-Key", "").strip()
+        try:
+            with _oauth_sessions()() as session:
+                body, status = start_user_authorization(
+                    session, actor_id=actor.actor_id, production_id=scope.production_id, idempotency_key=key,
+                    settings=current_app.config, extensions=current_app.extensions)
+        except UserOAuthError as exc:
+            _oauth_error(exc)
+        return body, status
+
+
+class PersonalGoogleCheck(MethodView):
+    @jwt_required()
+    def post(self, production_id):
+        _require_enabled()
+        _assert_compatible()
+        try:
+            _require_mutation_origin()
+            actor, _scope = _personal_google_scope(production_id)
+        except (PermissionDenied, NotFound):
+            abort(403)
+        from .integrations.user_oauth import UserOAuthError, check_user_connection
+
+        try:
+            return check_user_connection(
+                _oauth_sessions(), actor_id=actor.actor_id, settings=current_app.config,
+                extensions=current_app.extensions, transport=_oauth_transport())
+        except UserOAuthError as exc:
+            _oauth_error(exc)
+
+
+class PersonalGoogleDisconnect(MethodView):
+    """User-level unlink: always allowed for the caller's own grant, whatever any Production's setting says."""
+
+    @jwt_required()
+    def post(self):
+        _require_enabled()
+        _assert_compatible()
+        try:
+            _require_mutation_origin()
+            actor_id = UUID(str(get_jwt_identity()))
+            from zou.app.models.person import Person
+            person = Person.query.filter_by(id=actor_id).one_or_none()
+            if person is None or not getattr(person, "active", True):
+                raise PermissionDenied("Kitsu identity is unavailable")
+        except (PermissionDenied, ValueError, TypeError):
+            abort(403)
+        from .integrations.user_oauth import UserOAuthError, disconnect_user_drive_account
+
+        try:
+            return disconnect_user_drive_account(
+                _oauth_sessions(), actor_id=actor_id, settings=current_app.config,
+                extensions=current_app.extensions, transport=_oauth_transport())
+        except UserOAuthError as exc:
+            _oauth_error(exc)
+
+
+class ProductionPersonalGooglePolicy(MethodView):
+    """Production Settings: allow or block personal Google use here. Never deletes existing grants."""
+
+    @jwt_required()
+    def get(self, production_id):
+        _require_enabled()
+        _assert_compatible()
+        try:
+            actor, scope = _personal_google_scope(production_id)
+        except (PermissionDenied, NotFound):
+            abort(403)
+        from .integrations.user_oauth import get_personal_google_policy
+        from .packages.deletion import ADMIN_ROLES
+
+        with _oauth_sessions()() as session:
+            return {"policy": get_personal_google_policy(session, scope.production_id), "policies": ["allowed", "blocked"],
+                    "can_change": actor.project_role in ADMIN_ROLES}
+
+    @jwt_required()
+    def post(self, production_id):
+        _require_enabled()
+        _assert_compatible()
+        try:
+            _require_mutation_origin()
+            actor, scope = _production_provision_scope(production_id)
+        except (PermissionDenied, NotFound):
+            abort(403)
+        policy = (request.get_json(silent=True) or {}).get("policy")
+        from .integrations.user_oauth import POLICY_ALLOWED, POLICY_BLOCKED, set_personal_google_policy
+
+        if policy not in (POLICY_ALLOWED, POLICY_BLOCKED):
+            abort(400, description="Unsupported personal Google policy")
+        with _oauth_sessions().begin() as session:
+            set_personal_google_policy(session, scope.production_id, policy, actor.actor_id)
+        return {"policy": policy}
+
+
+class ProductionOutputDeletePolicy(MethodView):
+    """Production Settings: who may permanently delete Output versions."""
+
+    @jwt_required()
+    def get(self, production_id):
+        _require_enabled()
+        _assert_compatible()
+        try:
+            actor = _request_actor(str(production_id))
+            scope = _resolve_scope(actor, str(production_id))
+            authorize(actor, Capability.READ, scope)
+        except (PermissionDenied, NotFound):
+            abort(403)
+        from .packages.deletion import ADMIN_ROLES, DELETE_POLICIES, get_delete_policy
+        return {
+            "policy": get_delete_policy(current_app.extensions["sqlalchemy"].session, scope.production_id),
+            "policies": list(DELETE_POLICIES),
+            "can_change": actor.project_role in ADMIN_ROLES,
+        }
+
+    @jwt_required()
+    def post(self, production_id):
+        _require_enabled()
+        _assert_compatible()
+        try:
+            _require_mutation_origin()
+            actor, scope = _production_provision_scope(production_id)
+        except (PermissionDenied, NotFound):
+            abort(403)
+        policy = (request.get_json(silent=True) or {}).get("policy")
+        from sqlalchemy.orm import sessionmaker
+        from .packages.deletion import DELETE_POLICIES, set_delete_policy
+        if policy not in DELETE_POLICIES:
+            abort(400, description="Unsupported Output deletion policy")
+        sessions = sessionmaker(bind=current_app.extensions["sqlalchemy"].engine, expire_on_commit=False)
+        with sessions.begin() as session:
+            set_delete_policy(session, scope.production_id, policy, actor.actor_id)
+        return {"policy": policy}
 
 
 class TaskPublishes(MethodView):
@@ -2714,6 +3107,14 @@ routes = [
     ("/tasks/<task_id>/received-link-shares", TaskReceivedLinkShares),
     ("/output-packages/<package_id>/files", OutputPackageFiles),
     ("/output-package-files/<package_file_id>/download", OutputPackageFileDownload),
+    ("/output-packages/<package_id>/deletion", OutputPackageDeletionResource),
+    ("/productions/<production_id>/output-delete-policy", ProductionOutputDeletePolicy),
+    ("/productions/<production_id>/drive-access-policy", DriveAccessPolicy),
+    ("/productions/<production_id>/personal-google", PersonalGoogleAccount),
+    ("/productions/<production_id>/personal-google/authorizations", PersonalGoogleAuthorization),
+    ("/productions/<production_id>/personal-google/check", PersonalGoogleCheck),
+    ("/productions/<production_id>/personal-google-policy", ProductionPersonalGooglePolicy),
+    ("/me/google-account/disconnect", PersonalGoogleDisconnect),
     ("/tasks/<task_id>/publishes", TaskPublishes),
     ("/tasks/<task_id>/publish-options", TaskPublishOptions),
     ("/tasks/<task_id>/uploads", TaskUploads),

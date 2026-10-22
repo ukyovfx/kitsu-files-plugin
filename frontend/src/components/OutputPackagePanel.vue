@@ -1,6 +1,7 @@
 <script setup>
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { outputPayloadTransferAvailable } from '../outputTransferAvailability.js'
+import { safeDriveUrl } from '../driveLinks.js'
 
 const props = defineProps({ taskId: { type: String, required: true }, api: { type: Object, required: true } })
 const emit = defineEmits(['changed'])
@@ -26,6 +27,8 @@ const expandedPackage = ref('')
 const packageFiles = ref({})
 const driveCheckedAt = ref('')
 const driveSyncStatus = ref('not checked')
+const pendingDelete = ref(null)
+const deleting = ref(false)
 let pollTimer
 let driveSyncTimer
 let pendingKey = ''
@@ -167,6 +170,48 @@ async function morePackageFiles(item) {
   }
 }
 
+async function startDelete(item) {
+  error.value = ''
+  try {
+    pendingDelete.value = { item, review: await props.api.getOutputPackageDeletionImpact(item.id) }
+  } catch (cause) {
+    error.value = cause.message || 'The deletion impact could not be loaded.'
+  }
+}
+
+async function retryDelete(item) {
+  error.value = ''
+  try {
+    const review = await props.api.getOutputPackageDeletionImpact(item.id)
+    await props.api.deleteOutputPackage(item.id, review.impact_sha256)
+    await refresh()
+  } catch (cause) {
+    error.value = cause.message || 'The deletion could not be retried.'
+  }
+}
+
+async function confirmDelete() {
+  if (!pendingDelete.value || deleting.value) return
+  deleting.value = true
+  error.value = ''
+  try {
+    await props.api.deleteOutputPackage(pendingDelete.value.item.id, pendingDelete.value.review.impact_sha256)
+    pendingDelete.value = null
+    await refresh()
+  } catch (cause) {
+    error.value = cause.message || 'The Output version could not be deleted.'
+    pendingDelete.value = null
+  } finally {
+    deleting.value = false
+  }
+}
+
+function deletionLabel(item) {
+  if (item.deletion_state === 'deleted') return 'Deleted'
+  if (item.deletion_state === 'deleting') return 'Deleting…'
+  return ''
+}
+
 watch(taskScope, () => refresh())
 onMounted(() => {
   refresh()
@@ -234,14 +279,30 @@ onUnmounted(() => {
       <div class="package-history">
         <article v-for="item in packages" :key="item.id" class="package-row">
           <button class="text-button" @click="togglePackage(item)"><strong>{{ item.package_type }} v{{ String(item.version).padStart(3, '0') }}</strong></button>
-          <span>{{ item.state }} · QC {{ item.qc_state }}</span>
+          <span>{{ deletionLabel(item) || item.state }} · QC {{ item.qc_state }}</span>
           <span class="muted">{{ item.file_count }} files · {{ item.manifest_sha256 }}</span>
+          <a v-if="safeDriveUrl(item.folder_drive_url)" class="drive-link" :href="safeDriveUrl(item.folder_drive_url)" target="_blank" rel="noopener noreferrer">Google Driveで開く (open version folder in Drive)</a>
+          <span v-if="item.deleted" class="muted deleted-note">削除済み · The files were permanently deleted<template v-if="item.deleted_at"> on {{ new Date(item.deleted_at).toLocaleString() }}</template>. Name, version, sender and delivery history are kept.</span>
+          <span v-if="item.deletion_state === 'deleting'" class="muted deleted-note">Downloads are blocked while the files are being deleted.<template v-if="item.deletion_stuck"> The deletion did not finish<template v-if="item.deletion_error_code"> ({{ item.deletion_error_code }})</template>; check the Drive connection and retry.</template></span>
+          <button v-if="item.deletion_stuck && item.can_retry_delete" class="button secondary" @click="retryDelete(item)">Retry deletion</button>
+          <button v-if="item.can_delete" class="button danger" :aria-label="`Delete ${item.package_type} v${String(item.version).padStart(3, '0')}`" @click="startDelete(item)">Delete files…</button>
+          <div v-if="pendingDelete?.item.id === item.id" class="delete-confirm" role="alertdialog" aria-label="Confirm permanent deletion">
+            <p><strong>Permanently delete {{ item.package_type }} v{{ String(item.version).padStart(3, '0') }}?</strong> This removes {{ pendingDelete.review.impact.file_count }} file(s) from the shared Drive. Copies in personal Drives are not touched. This cannot be undone.</p>
+            <ul class="impact-list">
+              <li v-if="!pendingDelete.review.impact.deliveries.length">No sent Tasks are recorded for this version.</li>
+              <li v-for="delivery in pendingDelete.review.impact.deliveries" :key="delivery.id">Sent to Task {{ delivery.recipient_task_id }} (revision {{ delivery.revision }}, {{ delivery.state }}). The history stays; the files can no longer be downloaded.</li>
+              <li v-if="pendingDelete.review.impact.latest_pointers.length">This version is currently marked as: {{ pendingDelete.review.impact.latest_pointers.join(', ') }}.</li>
+              <li class="muted">Review or approval references outside this plugin are not tracked here and are not changed.</li>
+            </ul>
+            <button class="button danger" :disabled="deleting || !pendingDelete.review.can_delete" @click="confirmDelete">{{ deleting ? 'Deleting…' : 'Yes, permanently delete these files' }}</button>
+            <button class="button secondary" :disabled="deleting" @click="pendingDelete = null">Cancel</button>
+          </div>
           <pre v-if="item.qc_report?.missing_frames?.length" class="upload-error">Missing frames: {{ item.qc_report.missing_frames.join(', ') }}</pre>
           <div v-if="expandedPackage === item.id" class="package-files">
             <div v-for="file in packageFiles[item.id]?.files || []" :key="file.id" class="storage-object-row">
               <span>{{ file.frame_number ?? file.file_name }} · {{ file.byte_count }} bytes · {{ file.sha256 }}</span>
-            <a v-if="file.download_url && fakeTransferAvailable" :href="api.outputPackageDownloadUrl(file.id)">Download FakeStorage test file</a>
-            <span v-else-if="file.download_url" class="muted">Direct external download is not available yet.</span>
+            <a v-if="safeDriveUrl(file.drive_url)" class="drive-link" :href="safeDriveUrl(file.drive_url)" target="_blank" rel="noopener noreferrer">Google Driveで開く</a>
+            <a v-else-if="file.download_url && fakeTransferAvailable" :href="api.outputPackageDownloadUrl(file.id)">Download FakeStorage test file</a>
             </div>
             <button v-if="packageFiles[item.id]?.next_offset !== null && packageFiles[item.id]?.next_offset !== undefined" class="button secondary" @click="morePackageFiles(item)">Load next file page</button>
           </div>

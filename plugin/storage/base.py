@@ -22,8 +22,20 @@ class AmbiguousOutcome(StorageError):
     pass
 
 
+class ObjectNotFound(AmbiguousOutcome):
+    """Provider answered 404: absent or invisible to this credential. Still ambiguous for callers that do not own the ID."""
+
+
 class AlreadyExists(StorageError):
     pass
+
+
+# FakeStorage reports "folder"; Google Drive reports its own MIME type.
+FOLDER_MIME_TYPES = ("folder", "application/vnd.google-apps.folder")
+
+
+def is_folder(obj) -> bool:
+    return getattr(obj, "mime_type", None) in FOLDER_MIME_TYPES
 
 
 @dataclass(frozen=True)
@@ -68,10 +80,21 @@ class StorageAdapter(Protocol):
     def capabilities(self, root_id: str) -> StorageCapabilities: ...
     def list_children(self, parent_id: str, page_token: str | None = None) -> Listing: ...
     def assert_parent_within_root(self, parent_id: str) -> None: ...
+    def delete(self, object_id: str) -> bool:
+        """Permanently delete exactly one object; True if removed, False if already absent. Never recursive."""
+        ...
 
 
 def resolve_storage_adapter(adapter_or_factory, connection):
-    """Resolve a per-Production adapter while retaining fixed-adapter test support."""
+    """Resolve a per-Production adapter while retaining fixed-adapter test support.
+
+    A personal-Google reader is never a Production storage adapter (it carries a user's grant, not the Production's).
+    """
+    if getattr(adapter_or_factory, "personal_read_only", False):
+        raise PermissionFailure("A personal Google reader cannot be used as Production storage")
     if callable(getattr(adapter_or_factory, "capabilities", None)):
         return adapter_or_factory
-    return adapter_or_factory(connection)
+    adapter = adapter_or_factory(connection)
+    if getattr(adapter, "personal_read_only", False):
+        raise PermissionFailure("A personal Google reader cannot be used as Production storage")
+    return adapter

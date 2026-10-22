@@ -281,3 +281,31 @@ def test_task_link_share_migration_adds_immutable_reference_history_without_driv
     assert "restore a consistent snapshot instead of downgrading" in source
     assert "schema_epoch = 19" in source
     assert "INSERT INTO" not in source and "DELETE FROM" not in source
+
+
+def test_output_version_deletion_migration_keeps_history_final_and_blocks_unsafe_downgrade():
+    migration = ROOT / "plugin/migrations/versions/0021_output_version_deletion.py"
+    source = migration.read_text(encoding="utf-8")
+    assert 'revision = "vxf_0021"' in source
+    assert 'down_revision = "vxf_0020"' in source
+    assert '"plugin_vfx_files_production_output_setting"' in source
+    assert '"plugin_vfx_files_output_package_deletion"' in source
+    assert "output_delete_policy IN ('registrant_and_admin','admin_only')" in source
+    assert 'server_default="registrant_and_admin"' in source
+    assert "plugin_vfx_files_reject_output_deletion_mutation" in source
+    assert "Output deletion history cannot be deleted" in source
+    assert "restore a consistent snapshot instead of downgrading" in source
+    assert "schema_epoch = 20" in source and "schema_epoch = 19" in source
+    assert "INSERT INTO" not in source and "DELETE FROM" not in source
+
+
+def test_personal_google_migration_is_additive_and_blocks_unsafe_downgrade():
+    source = (ROOT / "plugin/migrations/versions/0022_personal_google_oauth.py").read_text(encoding="utf-8")
+    assert 'revision = "vxf_0022"' in source and 'down_revision = "vxf_0021"' in source
+    assert '"plugin_vfx_files_google_user_credential"' in source
+    assert '"plugin_vfx_files_google_user_authorization_intent"' in source
+    assert "personal_google_policy IN ('allowed','blocked')" in source and 'server_default="allowed"' in source
+    assert "plugin_vfx_files_google_user_credential_material_ck" in source
+    assert "restore a consistent snapshot instead of downgrading" in source
+    assert "schema_epoch = 21" in source and "schema_epoch = 20" in source
+    assert "INSERT INTO" not in source and "DELETE FROM" not in source

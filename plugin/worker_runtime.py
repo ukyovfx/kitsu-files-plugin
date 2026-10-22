@@ -33,6 +33,27 @@ def _authorize_job(payload):
         connection = StorageConnection.query.filter_by(id=connection_id, production_id=production_id).one_or_none()
         credential = DriveCredential.query.filter_by(connection_id=connection_id, production_id=production_id).one_or_none()
         return bool(connection is not None and credential is not None and credential.state in ("revoking", "revoke_pending", "revoked"))
+    if payload.get("job_type") == "revoke_personal_google":
+        # Monotonic cleanup of a grant the user already asked to disconnect; it only ever reduces Google access.
+        from .models import GoogleUserCredential
+        try:
+            actor_id = UUID(str(payload["actor_id"]))
+        except (KeyError, ValueError, TypeError):
+            return False
+        credential = GoogleUserCredential.query.filter_by(actor_id=actor_id).one_or_none()
+        return bool(credential is not None and credential.state in ("revoking", "revoke_pending", "revoked"))
+    if payload.get("job_type") == "delete_output_package":
+        # Authorized against the Production policy when requested and recorded durably.
+        # Finishing the deletion cannot widen access, so it must not depend on the
+        # requester's later role.
+        from .models import OutputPackageDeletion
+        try:
+            package_id = UUID(str(payload["package_id"]))
+            actor_id = UUID(str(payload["actor_id"]))
+        except (KeyError, ValueError, TypeError):
+            return False
+        deletion = OutputPackageDeletion.query.filter_by(package_id=package_id).one_or_none()
+        return bool(deletion is not None and deletion.state == "deleting" and deletion.requested_by == actor_id)
     from zou.app.models.person import Person
     from zou.app.models.project import ProjectPersonLink
     from zou.app.models.task import Task, TaskPersonLink
@@ -112,6 +133,8 @@ def build_runtime(app):
     )
     from .integrations.oauth import make_drive_credential_revoke_handler
     from .jobs.queue import PostgresJobQueue
+    from .integrations.user_oauth import make_personal_revoke_handler
+    from .packages.deletion import make_output_package_deletion_handler
     from .packages.worker import make_output_package_handler
     from .publishes.worker import make_publish_handler
     from .storage.reconciliation import make_drive_reconciliation_handler
@@ -145,10 +168,12 @@ def build_runtime(app):
             "publish_source": make_upload_handler(sessions, staging, adapter_factory),
             "publish_artifact": make_publish_handler(sessions, adapter_factory),
             "verify_output_package": make_output_package_handler(sessions, adapter_factory),
+            "delete_output_package": make_output_package_deletion_handler(sessions, adapter_factory),
             "provision_task_folders": make_task_folder_handler(sessions, adapter_factory),
             "reconcile_drive_objects": make_drive_reconciliation_handler(sessions, adapter_factory),
             "sync_hierarchy": make_hierarchy_sync_handler(sessions, adapter_factory),
             "revoke_drive_credential": make_drive_credential_revoke_handler(sessions, app.config, app.extensions),
+            "revoke_personal_google": make_personal_revoke_handler(sessions, app.config, app.extensions),
         },
         event_delivery=(
             (SqlAlchemyEventOutbox(

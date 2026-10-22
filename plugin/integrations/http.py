@@ -449,6 +449,59 @@ class DriveConnectionRevokeResource(MethodView):
             return _provider_error(exc.code, exc.status)
 
 
+def _complete_personal_callback(state, code, oauth_error):
+    """Handle the shared fixed callback for a personal-Google intent; None when the state is not one of those."""
+    from flask import current_app, make_response, redirect
+    from sqlalchemy import select
+    from sqlalchemy.orm import sessionmaker
+    from urllib.parse import urlencode
+    from zou.app import db
+    try:
+        from ..models import GoogleUserAuthorizationIntent
+    except ImportError:  # focused tests replace the model module with Production-only stubs
+        return None
+    from ..storage.worker_factory import RequestsDriveTransport
+    from .oauth import OAuthOperationError, _oauth_return_uri
+    from .user_oauth import UserOAuthError, complete_user_authorization
+    import hashlib
+
+    if not isinstance(state, str) or not 32 <= len(state) <= 256:
+        return None
+    intent = db.session.scalar(select(GoogleUserAuthorizationIntent).where(
+        GoogleUserAuthorizationIntent.state_sha256 == hashlib.sha256(state.encode("utf-8")).hexdigest()))
+    if intent is None:
+        return None
+    authorization_id = str(intent.id)
+    sessions = sessionmaker(bind=current_app.extensions["sqlalchemy"].engine, expire_on_commit=False)
+    transport = current_app.extensions.get("vfx_files_oauth_transport") or RequestsDriveTransport(timeout=(10, 30))
+    try:
+        # If a (different) Kitsu user is signed in in this browser, refuse before the state is consumed: the link
+        # belongs to the user who started it. No session at all is fine (the state is the single-use proof).
+        try:
+            from flask_jwt_extended import get_jwt_identity, verify_jwt_in_request
+
+            verify_jwt_in_request(optional=True)
+            signed_in = get_jwt_identity()
+        except Exception:
+            signed_in = None
+        if signed_in is not None and str(signed_in) != str(intent.actor_id):
+            raise UserOAuthError(403, "account_mismatch")
+        location = complete_user_authorization(
+            sessions, state=state, code=code, oauth_error=oauth_error, settings=current_app.config,
+            extensions=current_app.extensions, transport=transport)
+    except UserOAuthError as exc:
+        try:
+            return_uri = _oauth_return_uri(current_app.config, "kitsu_plugin")
+        except OAuthOperationError:
+            return _error(exc.code, exc.status)
+        location = return_uri + ("&" if "?" in return_uri else "?") + urlencode(
+            {"authorization_id": authorization_id, "personal_google": "failed", "error": exc.code})
+    response = make_response(redirect(location, code=303))
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    return response
+
+
 class GoogleOAuthCallbackResource(MethodView):
     """Fixed public callback; only the single-use state authorizes completion."""
     def get(self):
@@ -468,6 +521,9 @@ class GoogleOAuthCallbackResource(MethodView):
         return_surface = "kitsusync"
         try:
             state, code, oauth_error = validate_google_callback_query(request.args)
+            personal_response = _complete_personal_callback(state, code, oauth_error)
+            if personal_response is not None:
+                return personal_response
             if isinstance(state, str) and 32 <= len(state) <= 256:
                 row = db.session.scalar(select(DriveAuthorizationIntent).where(
                     DriveAuthorizationIntent.state_sha256 == hashlib.sha256(state.encode("utf-8")).hexdigest(),
