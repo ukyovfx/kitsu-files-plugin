@@ -371,6 +371,11 @@ class TaskOutputPackages(MethodView):
                 OutputPackageDeletion.package_id.in_([row.id for row in rows])).all()
         } if rows else {}
         delete_policy = get_delete_policy(current_app.extensions["sqlalchemy"].session, rows[0].production_id) if rows else None
+        from .packages.deletion import ADMIN_ROLES, _job_is_stuck
+        can_manage_all = actor.project_role in ADMIN_ROLES
+        verify_stuck = {
+            key: _job_is_stuck(current_app.extensions["sqlalchemy"].session, job) for key, job in jobs.items()
+        }
         deletion_jobs = {}
         if deletions:
             from .packages.deletion import JOB_TYPE as DELETE_JOB_TYPE, _job_is_stuck
@@ -389,6 +394,10 @@ class TaskOutputPackages(MethodView):
             "output_type_id": str(row.output_type_id), "package_type": row.package_type,
             "version": row.version, "state": row.state, "qc_state": row.qc_state,
             "created_by": str(row.created_by),
+            "source_kind": row.source_kind,
+            "stuck": bool(row.state != "completed" and verify_stuck.get(str(row.id))),
+            "retry_available": bool(row.state in ("verifying", "reconcile_required") and verify_stuck.get(str(row.id))
+                                    and (can_manage_all or str(row.created_by) == str(actor.actor_id))),
             "deleted": str(row.id) in deletions,
             "folder_drive_url": _drive_view_url(row.provider_folder_id, folder=True)
             if row.state == "completed" and str(row.id) not in deletions else None,
@@ -1131,6 +1140,233 @@ def _oauth_transport():
 
 def _oauth_error(exc):
     abort(exc.status, description=exc.code)
+
+
+class PersonalGooglePickerConfig(MethodView):
+    """Public Picker parameters for a linked, allowed member. No token, secret or refresh token is ever returned.
+
+    The API key is a browser key (restrict it by HTTP referrer and to the Picker API in Google Cloud); the project
+    number and OAuth client ID are public identifiers. `subject_sha256` lets the browser warn early when the Google
+    account it signed in with is not the linked one (the server re-verifies every selection regardless).
+    """
+
+    @jwt_required()
+    def get(self, production_id):
+        _require_enabled()
+        _assert_compatible()
+        try:
+            actor, scope = _personal_google_scope(production_id)
+        except (PermissionDenied, NotFound):
+            abort(403)
+        import hashlib
+
+        from .integrations.user_oauth import POLICY_ALLOWED, _models, get_personal_google_policy
+
+        with _oauth_sessions()() as session:
+            if get_personal_google_policy(session, scope.production_id) != POLICY_ALLOWED:
+                abort(403, description="personal_google_blocked")
+            credential = session.get(_models().GoogleUserCredential, actor.actor_id)
+            if credential is None or credential.state != "active":
+                abort(409, description="personal_google_not_linked")
+            subject = credential.google_subject
+        client_id = _setting("VFX_FILES_GOOGLE_CLIENT_ID")
+        api_key = _setting("VFX_FILES_GOOGLE_PICKER_API_KEY")
+        app_id = _setting("VFX_FILES_GOOGLE_CLOUD_PROJECT_NUMBER")
+        if not (client_id and api_key and app_id and str(app_id).isdigit()):
+            abort(503, description="picker_not_configured")
+        return {
+            "client_id": client_id, "api_key": api_key, "app_id": str(app_id),
+            "scope": "openid https://www.googleapis.com/auth/drive.file",
+            "subject_sha256": hashlib.sha256(subject.encode("utf-8")).hexdigest(),
+            "account_hint": f"…{subject[-4:]}",
+        }
+
+
+_PERSONAL_NAME_FORBIDDEN = ("/", "\\", "\x00")
+
+
+class TaskPersonalDriveOutputPackages(MethodView):
+    """Register Picker-selected personal Drive files as one Output version (bytes are copied by the Worker)."""
+
+    @jwt_required()
+    def post(self, task_id):
+        _require_enabled()
+        _assert_compatible()
+        try:
+            _require_mutation_origin()
+            parsed_task_id = UUID(str(task_id))
+            actor, scope = _task_actor_scope(parsed_task_id)
+            from .compat import authorize_task_mutation
+            if not authorize_task_mutation(actor, parsed_task_id, "publish"):
+                abort(403)
+        except (PermissionDenied, NotFound, ValueError, TypeError, AttributeError):
+            abort(403)
+        payload = request.get_json(silent=True)
+        if not isinstance(payload, dict):
+            abort(400, description="invalid_request")
+        entries = payload.get("files")
+        key = request.headers.get("Idempotency-Key", "").strip()
+        try:
+            output_type_id = UUID(str(payload.get("output_type_id", "")))
+            source_revision_id = None
+        except (ValueError, TypeError):
+            abort(400, description="invalid_output_type")
+        max_files = min(int(_setting("VFX_FILES_PERSONAL_IMPORT_MAX_FILES", "2000") or 2000), 10000)
+        if not key or len(key) > 128 or not isinstance(entries, list) or not 1 <= len(entries) <= max_files:
+            abort(413 if isinstance(entries, list) and len(entries) > max_files else 400, description="invalid_file_list")
+
+        from .integrations.personal_google import PersonalSourceDenied, open_personal_source
+        from .packages.manifest import canonical_package_manifest
+        from .packages.service import PackageConflict, reserve_output_package
+        from .storage.base import FOLDER_MIME_TYPES, PermissionFailure
+        from zou.app.models.output_type import OutputType
+        from zou.app.models.task import Task
+
+        task = Task.query.filter_by(id=parsed_task_id).one_or_none()
+        if task is None or task.project_id != scope.production_id:
+            abort(404)
+        if current_app.extensions["sqlalchemy"].session.get(OutputType, output_type_id) is None:
+            abort(400, description="Output Type must be an existing Kitsu record")
+        try:
+            reader = open_personal_source(
+                _oauth_sessions(), actor_id=actor.actor_id, production_id=scope.production_id,
+                settings=current_app.config, extensions=current_app.extensions, transport=_oauth_transport())
+        except PersonalSourceDenied as denied:
+            abort(403, description=denied.code)
+        connection = _production_storage_connection(scope.production_id)
+        adapter = _storage_adapter(connection)
+        capabilities = adapter.capabilities(connection.allowed_root_id)
+        if not capabilities.root_visible or not capabilities.can_add_children:
+            abort(409, description="Allowed storage root is not available for package files")
+
+        normalized, seen_ids, seen_names, total_bytes = [], set(), set(), 0
+        for entry in entries:
+            if not isinstance(entry, dict):
+                abort(400, description="invalid_file_list")
+            drive_id = entry.get("drive_file_id")
+            try:
+                from .packages.personal_import import resolve_selected_file
+                meta, relative_name = resolve_selected_file(reader, drive_id, entry.get("root_folder_id"))
+            except PersonalSourceDenied as denied:
+                abort(400 if denied.code in ("invalid_drive_object", "unsupported_drive_object", "unsupported_file_name") else 404, description=denied.code)
+            except PermissionFailure:
+                abort(404, description="drive_object_unavailable")
+            name, size, mime = relative_name, meta.get("size"), str(meta.get("mimeType") or "")
+            if (drive_id in seen_ids or not isinstance(name, str) or not name.strip() or len(name) > 1024):
+                abort(400, description="unsupported_file_name")
+            if mime in FOLDER_MIME_TYPES or mime.startswith("application/vnd.google-apps."):
+                abort(400, description="unsupported_drive_object")  # folders / Google-native documents have no bytes
+            if not str(size).isdigit():
+                abort(400, description="unsupported_drive_object")
+            size = int(size)
+            if size > connection.max_file_bytes:
+                abort(413, description="file_too_large")
+            if name.casefold() in seen_names:
+                abort(409, description="duplicate_file_name")
+            seen_ids.add(drive_id)
+            seen_names.add(name.casefold())
+            total_bytes += size
+            normalized.append({
+                "source_provider_object_id": drive_id, "file_name": name, "byte_count": size, "sha256": None,
+                "frame_number": entry.get("frame_number"),
+                "file_format": entry.get("file_format") or (name.rsplit(".", 1)[-1].lower() if "." in name else None),
+                "color_space": entry.get("color_space"), "is_proxy": entry.get("is_proxy", False),
+            })
+        if total_bytes + connection.used_bytes > connection.quota_bytes:
+            abort(413, description="Output Package exceeds the Production storage quota")
+        try:
+            canonical_package_manifest(
+                output_type_id=str(output_type_id), package_type=payload.get("package_type"), files=normalized,
+                frame_start=payload.get("frame_start"), frame_end=payload.get("frame_end"),
+                color_space=payload.get("color_space"))
+            result = reserve_output_package(
+                _oauth_sessions(), task_id=parsed_task_id, production_id=scope.production_id,
+                entity_id=task.entity_id, output_type_id=output_type_id, storage_connection_id=connection.id,
+                package_type=payload.get("package_type"), actor_id=actor.actor_id, idempotency_key=key,
+                files=normalized, frame_start=payload.get("frame_start"), frame_end=payload.get("frame_end"),
+                color_space=payload.get("color_space"), source_working_revision_id=source_revision_id,
+                source_kind="personal")
+        except PackageConflict as error:
+            abort(409, description=str(error))
+        except (ValueError, TypeError) as error:
+            abort(400, description=str(error))
+        return {"id": str(result.package_id), "job_id": str(result.job_id), "version": result.version,
+                "state": result.state}, 202
+
+
+class TaskPersonalDriveSelectionPreview(MethodView):
+    """Read-only preview of visible children; folder selection never grants recursive access."""
+
+    @jwt_required()
+    def post(self, task_id):
+        _require_enabled()
+        _assert_compatible()
+        try:
+            _require_mutation_origin()
+            actor, scope = _task_actor_scope(UUID(str(task_id)))
+            from .compat import authorize_task_mutation
+            if not authorize_task_mutation(actor, UUID(str(task_id)), "publish"):
+                abort(403)
+        except (PermissionDenied, NotFound, ValueError, TypeError, AttributeError):
+            abort(403)
+        payload = request.get_json(silent=True)
+        if not isinstance(payload, dict):
+            abort(400, description="invalid_request")
+        from .integrations.personal_google import PersonalSourceDenied, open_personal_source
+        from .packages.personal_import import preview_selection
+        from .storage.base import PermissionFailure, RetryableStorageFailure
+        try:
+            reader = open_personal_source(
+                _oauth_sessions(), actor_id=actor.actor_id, production_id=scope.production_id,
+                settings=current_app.config, extensions=current_app.extensions, transport=_oauth_transport())
+            limit = max(1, min(int(_setting("VFX_FILES_PERSONAL_IMPORT_MAX_FILES", "2000")), 10000))
+            return preview_selection(reader, payload.get("files"), max_files=limit)
+        except PersonalSourceDenied as denied:
+            abort(409, description=denied.code)
+        except PermissionFailure:
+            abort(403, description="folder_access_unverified")
+        except RetryableStorageFailure:
+            abort(503, description="drive_retry_required")
+
+
+class OutputPackageRetry(MethodView):
+    """Re-queue a stuck/failed copy. Registrant or Production admin only; resumes from the verified progress."""
+
+    @jwt_required()
+    def post(self, package_id):
+        _require_enabled()
+        _assert_compatible()
+        try:
+            _require_mutation_origin()
+        except PermissionDenied:
+            abort(403)
+        package = _load_package(package_id)
+        try:
+            actor, _scope = _package_actor_scope(package)
+        except (PermissionDenied, NotFound):
+            abort(403)
+        from .packages.deletion import ADMIN_ROLES, _job_is_stuck
+
+        if actor.project_role not in ADMIN_ROLES and str(actor.actor_id) != str(package.created_by):
+            abort(403)
+        if package.state not in ("verifying", "reconcile_required"):
+            abort(409, description="package_not_retryable")
+        from sqlalchemy import func, select
+        from .models import Job
+
+        requeued = False
+        with _oauth_sessions().begin() as session:
+            job = session.scalar(select(Job).where(
+                Job.job_type == "verify_output_package", Job.payload["package_id"].astext == str(package.id),
+            ).with_for_update())
+            if job is None:
+                abort(404)
+            if _job_is_stuck(session, job):
+                job.state, job.attempts, job.last_error_code = "queued", 0, None
+                job.lease_owner, job.lease_expires_at, job.available_at = None, None, func.now()
+                requeued = True
+            job_id = job.id
+        return {"package_id": str(package.id), "job_id": str(job_id), "requeued": requeued}, 202
 
 
 class PersonalGoogleAccount(MethodView):
@@ -3111,6 +3347,10 @@ routes = [
     ("/productions/<production_id>/output-delete-policy", ProductionOutputDeletePolicy),
     ("/productions/<production_id>/drive-access-policy", DriveAccessPolicy),
     ("/productions/<production_id>/personal-google", PersonalGoogleAccount),
+    ("/productions/<production_id>/personal-google/picker-config", PersonalGooglePickerConfig),
+    ("/tasks/<task_id>/personal-drive/output-packages", TaskPersonalDriveOutputPackages),
+    ("/tasks/<task_id>/personal-drive/selection-preview", TaskPersonalDriveSelectionPreview),
+    ("/output-packages/<package_id>/retry", OutputPackageRetry),
     ("/productions/<production_id>/personal-google/authorizations", PersonalGoogleAuthorization),
     ("/productions/<production_id>/personal-google/check", PersonalGoogleCheck),
     ("/productions/<production_id>/personal-google-policy", ProductionPersonalGooglePolicy),

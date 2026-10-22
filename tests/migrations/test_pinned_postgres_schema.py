@@ -14,7 +14,7 @@ def test_vxf_0011_to_0021_and_runtime_compatibility_are_installed_on_pinned_post
         installed_epoch = db.session.execute(
             text("SELECT schema_epoch FROM plugin_vfx_files_state WHERE id = 1")
         ).scalar_one()
-        assert installed_epoch == 21
+        assert installed_epoch == 22
         assert installed_epoch == SCHEMA_EPOCH
         assert_runtime_host()
         assert_compatible_host(HOST_ZOU_VERSION, installed_epoch, WORKER_BUILD)
@@ -49,3 +49,45 @@ def test_vxf_0011_to_0021_and_runtime_compatibility_are_installed_on_pinned_post
         assert "activation_transition_pending" in {
             column["name"] for column in schema.get_columns("plugin_vfx_files_production_drive_authority")
         }
+
+
+def test_m4_source_kind_upgrade_and_guarded_downgrade_on_temporary_tables(zou_app):
+    """Exercise DDL on connection-local shadows; never alter installed plugin data."""
+    import importlib.util
+    from pathlib import Path
+    import pytest
+    from alembic.migration import MigrationContext
+    from alembic.operations import Operations
+    from sqlalchemy.exc import IntegrityError
+    from zou.app import db
+
+    path = Path(__file__).resolve().parents[2] / "plugin/migrations/versions/0023_output_package_source_kind.py"
+    spec = importlib.util.spec_from_file_location("m4_source_kind_rehearsal", path)
+    migration = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(migration)
+    with zou_app.app_context(), db.engine.connect() as connection:
+        transaction = connection.begin()
+        try:
+            connection.execute(text("CREATE TEMP TABLE plugin_vfx_files_output_package (id integer PRIMARY KEY) ON COMMIT DROP"))
+            connection.execute(text("CREATE TEMP TABLE plugin_vfx_files_state (id integer PRIMARY KEY, schema_epoch integer) ON COMMIT DROP"))
+            for table in ("plugin_vfx_files_output_package", "plugin_vfx_files_state"):
+                assert connection.scalar(text("SELECT relnamespace = pg_my_temp_schema() FROM pg_class WHERE oid = to_regclass(:name)"), {"name": table})
+            connection.execute(text("INSERT INTO pg_temp.plugin_vfx_files_output_package VALUES (1)"))
+            connection.execute(text("INSERT INTO pg_temp.plugin_vfx_files_state VALUES (1, 21)"))
+            migration.op = Operations(MigrationContext.configure(connection))
+            migration.upgrade()
+            assert connection.scalar(text("SELECT source_kind FROM pg_temp.plugin_vfx_files_output_package WHERE id=1")) == "production"
+            assert connection.scalar(text("SELECT schema_epoch FROM pg_temp.plugin_vfx_files_state WHERE id=1")) == 22
+            with pytest.raises(IntegrityError), connection.begin_nested():
+                connection.execute(text("INSERT INTO pg_temp.plugin_vfx_files_output_package VALUES (2, 'invalid')"))
+            connection.execute(text("INSERT INTO pg_temp.plugin_vfx_files_output_package VALUES (2, 'personal')"))
+            with pytest.raises(RuntimeError, match="consistent snapshot"):
+                migration.downgrade()
+            assert connection.scalar(text("SELECT source_kind FROM pg_temp.plugin_vfx_files_output_package WHERE id=2")) == "personal"
+            connection.execute(text("DELETE FROM pg_temp.plugin_vfx_files_output_package WHERE id=2"))
+            migration.downgrade()
+            assert connection.scalar(text("SELECT schema_epoch FROM pg_temp.plugin_vfx_files_state WHERE id=1")) == 21
+            migration.upgrade()
+            assert connection.scalar(text("SELECT source_kind FROM pg_temp.plugin_vfx_files_output_package WHERE id=1")) == "production"
+        finally:
+            transaction.rollback()

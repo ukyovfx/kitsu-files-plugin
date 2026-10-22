@@ -9,6 +9,7 @@ M4 (Picker import) builds on `open_personal_source`.
 
 from __future__ import annotations
 
+import hashlib
 import re
 from hashlib import sha256
 from typing import BinaryIO
@@ -23,7 +24,7 @@ from .user_oauth import (
 
 API = "https://www.googleapis.com/drive/v3"
 _FILE_ID = re.compile(r"^[A-Za-z0-9_-]{10,200}$")
-_FIELDS = "id,name,mimeType,size,md5Checksum,trashed,parents,driveId"
+_FIELDS = "id,name,mimeType,size,md5Checksum,trashed,parents,driveId,capabilities(canListChildren)"
 
 
 class PersonalSourceDenied(Exception):
@@ -41,24 +42,33 @@ class PersonalDriveReader:
         self._token_provider = token_provider
         self._transport = transport
 
-    def _get(self, path, params):
+    @staticmethod
+    def _close(response):
+        close = getattr(response, "close", None)
+        if callable(close):
+            close()
+
+    def _get(self, path, params, *, stream=False):
         from ..storage.base import PermissionFailure, RetryableStorageFailure
 
         for attempt in (0, 1):
             token = self._token_provider()
             response = self._transport.request(
                 "GET", f"{API}{path}", params=params,
-                headers={"Authorization": f"Bearer {token}"},
+                headers={"Authorization": f"Bearer {token}"}, stream=stream,
             )
             if response.status_code == 401 and attempt == 0:
+                self._close(response)
                 refresh = getattr(self._token_provider, "refresh_after_unauthorized", None)
                 if refresh is None:
                     break
                 refresh(token)
                 continue
             if response.status_code in (401, 403, 404):
+                self._close(response)
                 raise PermissionFailure("Personal Drive object is not accessible")
             if response.status_code == 429 or 500 <= response.status_code <= 599:
+                self._close(response)
                 raise RetryableStorageFailure(30, "Drive requested a retry")
             return response
         raise PermissionFailure("Personal Drive grant was rejected")
@@ -79,18 +89,54 @@ class PersonalDriveReader:
             raise PersonalSourceDenied("drive_object_unavailable")
         return data
 
-    def download_to(self, file_id, destination: BinaryIO):
+    def list_children(self, folder_id):
+        """List only objects this grant can see; never infer complete folder access."""
+        folder_id = self._checked(folder_id)
+        items, seen_tokens, token = [], set(), None
+        for _ in range(100):
+            params = {"q": f"'{folder_id}' in parents and trashed = false", "pageSize": 1000,
+                      "supportsAllDrives": "true", "includeItemsFromAllDrives": "true",
+                      "fields": f"nextPageToken,incompleteSearch,files({_FIELDS})"}
+            if token:
+                params["pageToken"] = token
+            response = self._get("/files", params)
+            data = response.json() if response.status_code == 200 else None
+            if (not isinstance(data, dict) or data.get("incompleteSearch")
+                    or not isinstance(data.get("files"), list)):
+                raise PersonalSourceDenied("folder_access_unverified")
+            items.extend(data["files"])
+            if len(items) > 10000:
+                raise PersonalSourceDenied("selection_too_large")
+            token = data.get("nextPageToken")
+            if not token:
+                return items
+            if not isinstance(token, str) or len(token) > 2048 or token in seen_tokens:
+                raise PersonalSourceDenied("folder_access_unverified")
+            seen_tokens.add(token)
+        raise PersonalSourceDenied("selection_too_large")
+
+    def download_to(self, file_id, destination: BinaryIO, *, expected_md5=None, expected_size=None):
+        """Stream the original's bytes. Drive's own MD5/size, when supplied, must match what was received."""
         file_id = self._checked(file_id)
-        response = self._get(f"/files/{file_id}", {"alt": "media", "supportsAllDrives": "true"})
-        if response.status_code != 200:
-            raise PersonalSourceDenied("drive_object_unavailable")
-        digest, count = sha256(), 0
-        for chunk in response.iter_content(chunk_size=1024 * 1024):
-            if chunk:
-                destination.write(chunk)
-                digest.update(chunk)
-                count += len(chunk)
-        return count, digest.hexdigest()
+        response = self._get(f"/files/{file_id}", {"alt": "media", "supportsAllDrives": "true"}, stream=True)
+        try:
+            if response.status_code != 200:
+                raise PersonalSourceDenied("drive_object_unavailable")
+            digest, md5, count = sha256(), hashlib.md5(usedforsecurity=False), 0
+            for chunk in response.iter_content(chunk_size=1024 * 1024):
+                if chunk:
+                    if expected_size is not None and count + len(chunk) > expected_size:
+                        raise PersonalSourceDenied("source_integrity_mismatch")
+                    destination.write(chunk)
+                    digest.update(chunk)
+                    md5.update(chunk)
+                    count += len(chunk)
+            if (expected_size is not None and count != expected_size) or (
+                    expected_md5 and expected_md5.lower() != md5.hexdigest()):
+                raise PersonalSourceDenied("source_integrity_mismatch")
+            return count, digest.hexdigest()
+        finally:
+            self._close(response)
 
 
 def open_personal_source(session_factory, *, actor_id, production_id, settings, extensions, transport):

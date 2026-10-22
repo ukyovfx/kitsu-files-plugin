@@ -100,12 +100,22 @@ def get_personal_google_policy(session, production_id, *, lock=False) -> str:
     return value if value in (POLICY_ALLOWED, POLICY_BLOCKED) else POLICY_BLOCKED  # unknown values fail closed
 
 
+def _policy_lock(session, production_id):
+    """Transaction-scoped lock shared by policy writers and the grant-saving transaction.
+
+    A row lock cannot serialize against a settings row that does not exist yet (first-ever change), so both sides
+    take this advisory lock before reading or writing the policy.
+    """
+    _advisory_lock(session, f"vfx-files-personal-google-policy:{production_id}")
+
+
 def set_personal_google_policy(session, production_id, policy, actor_id) -> None:
     from sqlalchemy.dialects.postgresql import insert
     from sqlalchemy import func
 
     if policy not in (POLICY_ALLOWED, POLICY_BLOCKED):
         raise ValueError("Unsupported personal Google policy")
+    _policy_lock(session, production_id)
     setting = _models().ProductionOutputSetting
     session.execute(insert(setting).values(
         production_id=production_id, personal_google_policy=policy, updated_by=actor_id,
@@ -258,6 +268,7 @@ def complete_user_authorization(session_factory, *, state, code, oauth_error, se
                 raise UserOAuthError(409, "authorization_replayed")
             # The admin may have blocked personal Google while we were talking to Google. Re-check in the saving
             # transaction under a share lock: a concurrent block now waits for this commit instead of slipping past it.
+            _policy_lock(session, production_id)
             if get_personal_google_policy(session, production_id, lock=True) != POLICY_ALLOWED:
                 refused_token = refresh_token if (credential is None or credential.state == "revoked") else None
                 raise _RefusedAfterExchange(403, "personal_google_blocked", refused_token)

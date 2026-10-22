@@ -30,6 +30,7 @@ def reserve_output_package(
     storage_connection_id: UUID,
     frame_start: int | None = None, frame_end: int | None = None,
     color_space: str | None = None, source_working_revision_id: UUID | None = None,
+    source_kind: str = "production",
 ) -> PackageReservation:
     """Reserve a package version and verification job in one PostgreSQL commit."""
     manifest, manifest_bytes, manifest_sha256 = canonical_package_manifest(
@@ -39,7 +40,11 @@ def reserve_output_package(
     if not idempotency_key or len(idempotency_key) > 128:
         raise ValueError("A bounded idempotency key is required")
     source_working_id = str(source_working_revision_id) if source_working_revision_id else None
-    request_sha256 = hashlib.sha256(manifest_bytes + (source_working_id or "").encode("ascii")).hexdigest()
+    if source_kind not in ("production", "personal"):
+        raise ValueError("Unsupported Output source kind")
+    request_sha256 = hashlib.sha256(
+        manifest_bytes + (source_working_id or "").encode("ascii") + (b"" if source_kind == "production" else b"personal")
+    ).hexdigest()
     with session_factory.begin() as session:
         job_key = f"output-package:{task_id}:{idempotency_key}"
         existing_job = session.scalar(select(Job).where(Job.idempotency_key == job_key))
@@ -79,7 +84,7 @@ def reserve_output_package(
             output_type_id=output_type_id, package_type=package_type, version=latest + 1,
             state="verifying", qc_state="pending", manifest_bytes=manifest_bytes,
             manifest_sha256=manifest_sha256, source_working_revision_id=source_working_revision_id,
-            created_by=actor_id, event_activation_epoch=event_activation_epoch,
+            created_by=actor_id, event_activation_epoch=event_activation_epoch, source_kind=source_kind,
         )
         session.add(package)
         session.flush()

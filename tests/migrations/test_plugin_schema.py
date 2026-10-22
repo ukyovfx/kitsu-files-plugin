@@ -309,3 +309,12 @@ def test_personal_google_migration_is_additive_and_blocks_unsafe_downgrade():
     assert "restore a consistent snapshot instead of downgrading" in source
     assert "schema_epoch = 21" in source and "schema_epoch = 20" in source
     assert "INSERT INTO" not in source and "DELETE FROM" not in source
+
+
+def test_package_source_kind_migration_is_additive_and_blocks_unsafe_downgrade():
+    source = (ROOT / "plugin/migrations/versions/0023_output_package_source_kind.py").read_text(encoding="utf-8")
+    assert 'revision = "vxf_0023"' in source and 'down_revision = "vxf_0022"' in source
+    assert "source_kind IN ('production','personal')" in source and 'server_default="production"' in source
+    assert "restore a consistent snapshot instead of downgrading" in source
+    assert "schema_epoch = 22" in source and "schema_epoch = 21" in source
+    assert "INSERT INTO" not in source and "DELETE FROM" not in source
