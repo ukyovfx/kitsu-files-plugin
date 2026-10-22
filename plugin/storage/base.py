@@ -22,6 +22,10 @@ class AmbiguousOutcome(StorageError):
     pass
 
 
+class ObjectNotFound(AmbiguousOutcome):
+    """Provider answered 404: absent or invisible to this credential. Still ambiguous for callers that do not own the ID."""
+
+
 class AlreadyExists(StorageError):
     pass
 
@@ -68,6 +72,9 @@ class StorageAdapter(Protocol):
     def capabilities(self, root_id: str) -> StorageCapabilities: ...
     def list_children(self, parent_id: str, page_token: str | None = None) -> Listing: ...
     def assert_parent_within_root(self, parent_id: str) -> None: ...
+    def delete(self, object_id: str) -> bool:
+        """Permanently delete exactly one object; True if removed, False if already absent. Never recursive."""
+        ...
 
 
 def resolve_storage_adapter(adapter_or_factory, connection):

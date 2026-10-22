@@ -3,7 +3,7 @@
 from sqlalchemy import inspect, text
 
 
-def test_vxf_0011_to_0020_and_runtime_compatibility_are_installed_on_pinned_postgres(zou_app):
+def test_vxf_0011_to_0021_and_runtime_compatibility_are_installed_on_pinned_postgres(zou_app):
     from plugin.authz import assert_compatible_host
     from plugin.compat import HOST_ZOU_VERSION, SCHEMA_EPOCH, WORKER_BUILD, assert_runtime_host
     from plugin.models import PluginState
@@ -14,12 +14,14 @@ def test_vxf_0011_to_0020_and_runtime_compatibility_are_installed_on_pinned_post
         installed_epoch = db.session.execute(
             text("SELECT schema_epoch FROM plugin_vfx_files_state WHERE id = 1")
         ).scalar_one()
-        assert installed_epoch == 19
+        assert installed_epoch == 20
         assert installed_epoch == SCHEMA_EPOCH
         assert_runtime_host()
         assert_compatible_host(HOST_ZOU_VERSION, installed_epoch, WORKER_BUILD)
         assert db.session.query(PluginState).filter_by(id=1).one().schema_epoch == installed_epoch
         expected_tables = {
+            "plugin_vfx_files_output_package_deletion",
+            "plugin_vfx_files_production_output_setting",
             "plugin_vfx_files_kitsusync_desired_config",
             "plugin_vfx_files_kitsusync_management_idempotency",
             "plugin_vfx_files_kitsusync_snapshot",

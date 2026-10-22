@@ -203,6 +203,32 @@ export function createFilesApi(client) {
       return readJson(await client.request('GET', `${ROOT}/output-packages/${encodeURIComponent(packageId)}/files?${query}`))
     },
 
+    async getOutputPackageDeletionImpact(packageId) {
+      if (!packageId) throw new TypeError('An Output Package ID is required')
+      return readJson(await client.request('GET', `${ROOT}/output-packages/${encodeURIComponent(packageId)}/deletion`))
+    },
+
+    async deleteOutputPackage(packageId, impactSha256) {
+      if (!packageId || !impactSha256) throw new TypeError('An Output Package and its reviewed impact are required')
+      return readJson(await mutation('POST', `${ROOT}/output-packages/${encodeURIComponent(packageId)}/deletion`, {
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ confirm: true, impact_sha256: impactSha256 })
+      }))
+    },
+
+    async getOutputDeletePolicy(productionId) {
+      if (!productionId) throw new TypeError('A Production ID is required')
+      return readJson(await client.request('GET', `${ROOT}/productions/${encodeURIComponent(productionId)}/output-delete-policy`))
+    },
+
+    async setOutputDeletePolicy(productionId, policy) {
+      if (!productionId || !policy) throw new TypeError('A Production and policy are required')
+      return readJson(await mutation('POST', `${ROOT}/productions/${encodeURIComponent(productionId)}/output-delete-policy`, {
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ policy })
+      }))
+    },
+
     outputPackageDownloadUrl(fileId) {
       return `/api/${ROOT}/output-package-files/${encodeURIComponent(fileId)}/download`
     },

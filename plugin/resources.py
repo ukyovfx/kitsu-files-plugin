@@ -342,8 +342,26 @@ class TaskOutputPackages(MethodView):
         jobs = {}
         if rows:
             from .models import Job
-            for job in Job.query.filter(Job.payload["package_id"].astext.in_([str(row.id) for row in rows])).all():
+            for job in Job.query.filter(
+                Job.job_type == "verify_output_package",
+                Job.payload["package_id"].astext.in_([str(row.id) for row in rows]),
+            ).all():
                 jobs[job.payload["package_id"]] = job
+        from .models import OutputPackageDeletion
+        from .packages.deletion import get_delete_policy, may_delete
+        deletions = {
+            str(row.package_id): row for row in OutputPackageDeletion.query.filter(
+                OutputPackageDeletion.package_id.in_([row.id for row in rows])).all()
+        } if rows else {}
+        delete_policy = get_delete_policy(current_app.extensions["sqlalchemy"].session, rows[0].production_id) if rows else None
+        deletion_jobs = {}
+        if deletions:
+            from .packages.deletion import JOB_TYPE as DELETE_JOB_TYPE, _job_is_stuck
+            for job in Job.query.filter(
+                Job.job_type == DELETE_JOB_TYPE,
+                Job.payload["package_id"].astext.in_(list(deletions)),
+            ).all():
+                deletion_jobs[job.payload["package_id"]] = (job, _job_is_stuck(current_app.extensions["sqlalchemy"].session, job))
         pointers = {
             (str(row.output_type_id), row.package_type): row
             for row in OutputPackagePointer.query.filter_by(task_id=parsed_task_id).all()
@@ -353,6 +371,17 @@ class TaskOutputPackages(MethodView):
             "entity_id": str(row.entity_id), "task_id": str(row.task_id),
             "output_type_id": str(row.output_type_id), "package_type": row.package_type,
             "version": row.version, "state": row.state, "qc_state": row.qc_state,
+            "created_by": str(row.created_by),
+            "deleted": str(row.id) in deletions,
+            "deletion_state": deletions[str(row.id)].state if str(row.id) in deletions else None,
+            "deleted_by": str(deletions[str(row.id)].requested_by) if str(row.id) in deletions else None,
+            "deleted_at": deletions[str(row.id)].completed_at.isoformat() if str(row.id) in deletions and deletions[str(row.id)].completed_at else None,
+            "deletion_stuck": bool(str(row.id) in deletions and deletions[str(row.id)].state == "deleting"
+                                   and str(row.id) in deletion_jobs and deletion_jobs[str(row.id)][1]),
+            "deletion_error_code": deletion_jobs[str(row.id)][0].last_error_code if str(row.id) in deletion_jobs else None,
+            "can_retry_delete": str(row.id) in deletions and deletions[str(row.id)].state == "deleting"
+            and may_delete(delete_policy, actor.project_role, actor.actor_id, row.created_by),
+            "can_delete": row.state == "completed" and str(row.id) not in deletions and may_delete(delete_policy, actor.project_role, actor.actor_id, row.created_by),
             "job_state": jobs[str(row.id)].state if str(row.id) in jobs else None,
             "job_error_code": jobs[str(row.id)].last_error_code if str(row.id) in jobs else None,
             "qc_report": row.qc_report, "manifest_sha256": row.manifest_sha256,
@@ -840,21 +869,23 @@ class OutputPackageFiles(MethodView):
             abort(403)
         except (ValueError, TypeError):
             abort(404)
+        from .packages.deletion import package_is_deleted
+        deleted = package_is_deleted(current_app.extensions["sqlalchemy"].session, package.id)
         rows = OutputPackageFile.query.filter_by(package_id=package.id).order_by(
             OutputPackageFile.ordinal
         ).limit(limit + 1).offset(offset).all()
         has_more = len(rows) > limit
         rows = rows[:limit]
         return {
-            "package_id": str(package.id), "limit": limit, "offset": offset,
+            "package_id": str(package.id), "deleted": deleted, "limit": limit, "offset": offset,
             "next_offset": offset + limit if has_more else None,
             "files": [{
                 "id": str(row.id), "ordinal": row.ordinal, "file_name": row.file_name,
-                "provider_object_id": row.provider_object_id if package.state == "completed" else None,
+                "provider_object_id": row.provider_object_id if package.state == "completed" and not deleted else None,
                 "frame_number": row.frame_number, "byte_count": row.byte_count,
                 "sha256": row.sha256, "file_format": row.file_format,
                 "color_space": row.color_space, "is_proxy": row.is_proxy,
-                "download_url": f"/api/vfx_files/output-package-files/{row.id}/download" if package.state == "completed" else None,
+                "download_url": f"/api/vfx_files/output-package-files/{row.id}/download" if package.state == "completed" and not deleted else None,
             } for row in rows],
         }
 
@@ -871,6 +902,9 @@ class OutputPackageFileDownload(MethodView):
             package = OutputPackage.query.filter_by(id=file_row.package_id).one_or_none() if file_row else None
             if package is None or file_row is None or package.state != "completed":
                 abort(404)
+            from .packages.deletion import package_is_deleted
+            if package_is_deleted(current_app.extensions["sqlalchemy"].session, package.id):
+                abort(410, description="This Output version has been deleted")
             actor = _request_actor(str(package.production_id))
             scope = _resolve_scope(actor, str(package.production_id), str(package.task_id))
             authorize(actor, Capability.READ, scope)
@@ -905,6 +939,130 @@ class OutputPackageFileDownload(MethodView):
             abort(403)
         except (ValueError, TypeError):
             abort(404)
+
+
+def _load_package(package_id):
+    from .models import OutputPackage
+    try:
+        parsed = UUID(str(package_id))
+    except (ValueError, TypeError):
+        abort(404)
+    package = OutputPackage.query.filter_by(id=parsed).one_or_none()
+    if package is None:
+        abort(404)
+    return package
+
+
+def _package_actor_scope(package):
+    actor = _request_actor(str(package.production_id))
+    scope = _resolve_scope(actor, str(package.production_id), str(package.task_id))
+    authorize(actor, Capability.READ, scope)
+    from .compat import authorize_task_read
+    if not authorize_task_read(actor, package.task_id):
+        raise PermissionDenied("Actor cannot read this Task")
+    return actor, scope
+
+
+class OutputPackageDeletionResource(MethodView):
+    """Impact preview (GET) and permanent file deletion request (POST) for one Output version."""
+
+    @jwt_required()
+    def get(self, package_id):
+        _require_enabled()
+        _assert_compatible()
+        package = _load_package(package_id)
+        try:
+            actor, _scope = _package_actor_scope(package)
+        except (PermissionDenied, NotFound):
+            abort(403)
+        from .models import OutputPackageDeletion
+        from .packages.deletion import build_delete_impact, get_delete_policy, impact_digest, may_delete
+        session = current_app.extensions["sqlalchemy"].session
+        policy = get_delete_policy(session, package.production_id)
+        deletion = OutputPackageDeletion.query.filter_by(package_id=package.id).one_or_none()
+        impact = build_delete_impact(session, package)
+        return {
+            "package_id": str(package.id), "policy": policy, "impact": impact,
+            "impact_sha256": impact_digest(impact),
+            "deletion_state": deletion.state if deletion else None,
+            "can_delete": package.state == "completed" and deletion is None
+            and may_delete(policy, actor.project_role, actor.actor_id, package.created_by),
+        }
+
+    @jwt_required()
+    def post(self, package_id):
+        _require_enabled()
+        _assert_compatible()
+        try:
+            _require_mutation_origin()
+        except PermissionDenied:
+            abort(403)
+        package = _load_package(package_id)
+        try:
+            actor, _scope = _package_actor_scope(package)
+        except (PermissionDenied, NotFound):
+            abort(403)
+        payload = request.get_json(silent=True) or {}
+        if payload.get("confirm") is not True:
+            abort(400, description="Explicit confirmation is required")
+        impact_sha256 = payload.get("impact_sha256")
+        if not isinstance(impact_sha256, str) or len(impact_sha256) != 64:
+            abort(400, description="The reviewed impact digest is required")
+        from sqlalchemy.orm import sessionmaker
+        from .packages.deletion import DeletionConflict, DeletionDenied, DeletionNotFound, request_package_deletion
+        sessions = sessionmaker(bind=current_app.extensions["sqlalchemy"].engine, expire_on_commit=False)
+        try:
+            result = request_package_deletion(
+                sessions, package_id=package.id, actor_id=actor.actor_id, actor_role=actor.project_role,
+                expected_impact_sha256=impact_sha256,
+            )
+        except DeletionDenied:
+            abort(403)
+        except DeletionNotFound:
+            abort(404)
+        except DeletionConflict as error:
+            abort(409, description=error.code)
+        return {"package_id": str(result.package_id), "state": result.state, "job_id": str(result.job_id)}, 202
+
+
+class ProductionOutputDeletePolicy(MethodView):
+    """Production Settings: who may permanently delete Output versions."""
+
+    @jwt_required()
+    def get(self, production_id):
+        _require_enabled()
+        _assert_compatible()
+        try:
+            actor = _request_actor(str(production_id))
+            scope = _resolve_scope(actor, str(production_id))
+            authorize(actor, Capability.READ, scope)
+        except (PermissionDenied, NotFound):
+            abort(403)
+        from .packages.deletion import ADMIN_ROLES, DELETE_POLICIES, get_delete_policy
+        return {
+            "policy": get_delete_policy(current_app.extensions["sqlalchemy"].session, scope.production_id),
+            "policies": list(DELETE_POLICIES),
+            "can_change": actor.project_role in ADMIN_ROLES,
+        }
+
+    @jwt_required()
+    def post(self, production_id):
+        _require_enabled()
+        _assert_compatible()
+        try:
+            _require_mutation_origin()
+            actor, scope = _production_provision_scope(production_id)
+        except (PermissionDenied, NotFound):
+            abort(403)
+        policy = (request.get_json(silent=True) or {}).get("policy")
+        from sqlalchemy.orm import sessionmaker
+        from .packages.deletion import DELETE_POLICIES, set_delete_policy
+        if policy not in DELETE_POLICIES:
+            abort(400, description="Unsupported Output deletion policy")
+        sessions = sessionmaker(bind=current_app.extensions["sqlalchemy"].engine, expire_on_commit=False)
+        with sessions.begin() as session:
+            set_delete_policy(session, scope.production_id, policy, actor.actor_id)
+        return {"policy": policy}
 
 
 class TaskPublishes(MethodView):
@@ -2714,6 +2872,8 @@ routes = [
     ("/tasks/<task_id>/received-link-shares", TaskReceivedLinkShares),
     ("/output-packages/<package_id>/files", OutputPackageFiles),
     ("/output-package-files/<package_file_id>/download", OutputPackageFileDownload),
+    ("/output-packages/<package_id>/deletion", OutputPackageDeletionResource),
+    ("/productions/<production_id>/output-delete-policy", ProductionOutputDeletePolicy),
     ("/tasks/<task_id>/publishes", TaskPublishes),
     ("/tasks/<task_id>/publish-options", TaskPublishOptions),
     ("/tasks/<task_id>/uploads", TaskUploads),
