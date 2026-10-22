@@ -177,6 +177,10 @@ onUnmounted(() => requests.invalidate())
         <HandoffPanel :handoffs="receivedHandoffs" :busy-id="busyId" @respond="respond" />
       </section>
       </div>
+      <details class="panel task-personal-google">
+        <summary>My Google account</summary>
+        <PersonalGoogleAccount :production-id="productionId" :api="api" />
+      </details>
       </template>
     </template>
   </main>

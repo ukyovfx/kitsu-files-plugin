@@ -479,3 +479,115 @@ def test_database_constraints_for_personal_grants_and_policy(pg):
         with pytest.raises(DBAPIError):
             with pg.db.begin() as session:
                 session.execute(text(statement))
+
+
+def test_policy_block_during_the_google_round_trip_rejects_before_any_grant_is_stored(pg):
+    from sqlalchemy import select
+    from plugin.integrations.user_oauth import set_personal_google_policy
+    from plugin.models import GoogleUserAuthorizationIntent, GoogleUserCredential
+
+    user_id, user = _member(pg)
+    state = _state(_start(pg, user))
+
+    for hook in ("/token", "/userinfo"):
+        class Racing(GoogleMock):
+            def request(self, method, url, **kwargs):
+                response = super().request(method, url, **kwargs)
+                if url.endswith(hook):  # the admin blocks while the exchange is in flight
+                    with pg.db.begin() as session:
+                        set_personal_google_policy(session, pg.production_id, "blocked", uuid4())
+                return response
+
+        racing = Racing()
+        racing.subject, racing.refresh_token = pg.google.subject, pg.google.refresh_token
+        pg.monkeypatch.setitem(pg.app.extensions, "vfx_files_oauth_transport", racing)
+        if hook == "/userinfo":
+            with pg.db.begin() as session:
+                set_personal_google_policy(session, pg.production_id, "allowed", uuid4())
+            state = _state(_start(pg, user, key=f"personal-google:{uuid4()}"))
+        result = _callback(user, state)
+        assert "error=personal_google_blocked" in result.headers["Location"], hook
+        with pg.db.begin() as session:
+            assert session.get(GoogleUserCredential, user_id) is None, hook
+            assert "connected" not in {row for row in session.scalars(select(GoogleUserAuthorizationIntent.status).where(
+                GoogleUserAuthorizationIntent.actor_id == user_id, GoogleUserAuthorizationIntent.state_sha256
+                == hashlib.sha256(state.encode()).hexdigest()))}
+        # The refresh token Google just issued was never stored, so it is revoked rather than left live.
+        assert racing.calls_to("/revoke") and racing.calls_to("/revoke")[0][2]["data"] == {"token": racing.refresh_token}
+        assert _status(pg, user)["state"] == "not_linked"
+
+    # With an existing live grant of ours, a refused re-link must not revoke the stored one.
+    with pg.db.begin() as session:
+        set_personal_google_policy(session, pg.production_id, "allowed", uuid4())
+    pg.monkeypatch.setitem(pg.app.extensions, "vfx_files_oauth_transport", pg.google)
+    _connect(pg, user)
+    revokes = len(pg.google.calls_to("/revoke"))
+    with pg.db.begin() as session:
+        set_personal_google_policy(session, pg.production_id, "blocked", uuid4())
+    assert _status(pg, user)["state"] == "active"  # blocking never deletes the existing link
+    assert len(pg.google.calls_to("/revoke")) == revokes
+
+
+def test_revoke_pending_is_retried_automatically_by_the_shared_job_queue(pg):
+    from datetime import timedelta
+    from sqlalchemy import func, select
+    from plugin.integrations.user_oauth import make_personal_revoke_handler
+    from plugin.jobs.queue import LeasedJob
+    from plugin.models import GoogleUserCredential, Job
+    from plugin.worker_runtime import _authorize_job
+
+    user_id, user = _member(pg)
+    _connect(pg, user)
+    pg.google.revoke_status = 503
+    assert user.post(f"{BASE}/me/google-account/disconnect", json={}, headers=_hdr(user)).json == {"state": "revoke_pending"}
+    key = f"revoke-personal-google:{user_id}"
+
+    def job():
+        with pg.db.begin() as session:
+            return session.scalar(select(Job).where(Job.idempotency_key == key))
+
+    def lease():
+        worker_id = uuid4()
+        with pg.db.begin() as session:
+            row = session.scalar(select(Job).where(Job.idempotency_key == key))
+            row.state, row.lease_owner = "leased", worker_id
+            row.lease_generation += 1
+            row.attempts += 1
+            row.lease_expires_at = session.scalar(select(func.now())) + timedelta(minutes=2)
+            return LeasedJob(row.id, row.job_type, dict(row.payload), worker_id, row.lease_generation, row.attempts)
+
+    queued = job()
+    assert queued.job_type == "revoke_personal_google" and queued.state == "queued"
+    # Repeating the Disconnect button does not duplicate the job.
+    user.post(f"{BASE}/me/google-account/disconnect", json={}, headers=_hdr(user))
+    with pg.db.begin() as session:
+        assert session.scalar(select(func.count()).select_from(Job).where(Job.idempotency_key == key)) == 1
+
+    with pg.app.app_context():
+        assert _authorize_job(queued.payload) is True
+        assert _authorize_job({**queued.payload, "actor_id": str(uuid4())}) is False  # no such grant
+        assert _authorize_job({"job_type": "revoke_personal_google", "actor_id": "bad"}) is False
+    handler = make_personal_revoke_handler(pg.db, pg.app.config, pg.app.extensions, transport=pg.google)
+    still_down = handler(lease())
+    assert (still_down.state, still_down.retry_after_seconds) == ("retry", 300) and _status(pg, user)["state"] == "revoke_pending"
+    pg.google.revoke_status = 200  # Google is back
+    assert handler(lease()).state == "completed"
+    with pg.db.begin() as session:
+        row = session.get(GoogleUserCredential, user_id)
+        assert row.state == "revoked" and row.ciphertext is None and row.google_subject is None
+    assert handler(lease()).state == "completed"  # replay after completion is idempotent
+    with pg.app.app_context():
+        assert _authorize_job(queued.payload) is True  # a finished (revoked) grant needs no further work and is harmless
+
+    # An exhausted job is revived by pressing Disconnect again after a fresh failure.
+    _connect(pg, user)
+    pg.google.revoke_status = 503
+    user.post(f"{BASE}/me/google-account/disconnect", json={}, headers=_hdr(user))
+    with pg.db.begin() as session:
+        row = session.scalar(select(Job).where(Job.idempotency_key == key))
+        row.state, row.attempts = "retry", row.max_attempts
+    user.post(f"{BASE}/me/google-account/disconnect", json={}, headers=_hdr(user))
+    revived = job()
+    assert (revived.state, revived.attempts) == ("queued", 0)
+    pg.google.revoke_status = 200
+    assert handler(lease()).state == "completed" and _status(pg, user)["state"] == "not_linked"

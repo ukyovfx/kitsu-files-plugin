@@ -28,9 +28,13 @@ start (`POST …/personal-google/authorizations`: Kitsu membership, CSRF/Origin,
 (state + PKCE S256, scope exactly `openid drive.file`, offline) → fixed callback → state consumed before provider I/O,
 single use, 10-minute expiry → token exchange with `code_verifier` → scope set must equal exactly the requested scopes →
 OIDC `sub` read server-to-server → one Google account per Kitsu user and one Kitsu user per Google account → encrypted
-store. A different signed-in Kitsu user hitting the callback is refused before the state is consumed
+store. The Production allow/block setting is re-checked inside the saving transaction under a row share lock, so a block
+that lands during the Google round trip prevents the grant from being stored (and the fresh Google grant is revoked).
+A different signed-in Kitsu user hitting the callback is refused before the state is consumed
 (`account_mismatch`). Google-side revocation shows up on refresh/`check` as `reauth_required`. Unlink: disable locally,
-revoke at Google, erase only after Google confirms (`revoke_pending` is retryable).
+revoke at Google, erase only after Google confirms. If Google cannot confirm, the grant stays `revoke_pending` (unusable) and a
+durable `revoke_personal_google` Job (shared queue, one per user, 5-minute retries) finishes it automatically; pressing
+Disconnect again also re-queues a Job that ran out of attempts.
 
 ## Routes
 `GET …/productions/<id>/personal-google` (own status + policy), `POST …/personal-google/authorizations`,

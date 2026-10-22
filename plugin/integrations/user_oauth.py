@@ -87,8 +87,15 @@ def _encode(value):
     return base64.urlsafe_b64encode(value).decode("ascii").rstrip("=")
 
 
-def get_personal_google_policy(session, production_id) -> str:
-    row = session.get(_models().ProductionOutputSetting, production_id)
+def get_personal_google_policy(session, production_id, *, lock=False) -> str:
+    """`lock=True` takes a row share lock so a concurrent admin change waits for this transaction to commit."""
+    from sqlalchemy import select
+
+    setting = _models().ProductionOutputSetting
+    if lock:
+        row = session.scalar(select(setting).where(setting.production_id == production_id).with_for_update(read=True))
+    else:
+        row = session.get(setting, production_id)
     value = row.personal_google_policy if row is not None else POLICY_ALLOWED
     return value if value in (POLICY_ALLOWED, POLICY_BLOCKED) else POLICY_BLOCKED  # unknown values fail closed
 
@@ -249,6 +256,11 @@ def complete_user_authorization(session_factory, *, state, code, oauth_error, se
             credential = session.scalar(select(Credential).where(Credential.actor_id == actor_id).with_for_update())
             if intent is None:
                 raise UserOAuthError(409, "authorization_replayed")
+            # The admin may have blocked personal Google while we were talking to Google. Re-check in the saving
+            # transaction under a share lock: a concurrent block now waits for this commit instead of slipping past it.
+            if get_personal_google_policy(session, production_id, lock=True) != POLICY_ALLOWED:
+                refused_token = refresh_token if (credential is None or credential.state == "revoked") else None
+                raise _RefusedAfterExchange(403, "personal_google_blocked", refused_token)
             if credential is not None and credential.state in {"revoking", "revoke_pending"}:
                 raise UserOAuthError(409, "account_disconnect_in_progress")
             if credential is not None and credential.state != "revoked" and credential.google_subject != subject:
@@ -287,15 +299,91 @@ def complete_user_authorization(session_factory, *, state, code, oauth_error, se
                         stuck.status = "failed"
             except Exception:
                 pass
+        if isinstance(exc, _RefusedAfterExchange) and exc.token:
+            # Google already issued a grant that we refuse to keep and never stored: do not leave it live there.
+            try:
+                _provider_request(transport, "POST", GOOGLE_REVOKE_URL, data={"token": exc.token},
+                                  headers={"Accept": "application/json", "Content-Type": "application/x-www-form-urlencoded"})
+            except Exception:
+                pass
         raise _translate(exc) from None
 
 
-def disconnect_user_drive_account(session_factory, *, actor_id, settings, extensions, transport):
-    """Disable local use first; erase the grant only after Google confirms revoke. Safe to repeat."""
+class _RefusedAfterExchange(UserOAuthError):
+    def __init__(self, status, code, token):
+        super().__init__(status, code)
+        self.token = token
+
+
+REVOKE_JOB_TYPE = "revoke_personal_google"
+_REVOKE_RETRY_SECONDS = 300
+
+
+def revoke_job_key(actor_id) -> str:
+    return f"revoke-personal-google:{actor_id}"
+
+
+def enqueue_personal_revoke(session_factory, actor_id):
+    """Queue (or re-queue) the durable retry for a `revoke_pending` grant. One job per user; idempotent."""
+    from sqlalchemy import func, select
+
+    Job = _models().Job
+    actor_id = _uuid(actor_id)
+    with session_factory.begin() as session:
+        job = session.scalar(select(Job).where(Job.idempotency_key == revoke_job_key(actor_id)).with_for_update())
+        if job is None:
+            session.add(Job(job_type=REVOKE_JOB_TYPE, idempotency_key=revoke_job_key(actor_id), state="queued",
+                            payload={"job_type": REVOKE_JOB_TYPE, "actor_id": str(actor_id)}))
+        elif job.state in ("completed", "failed", "reconcile_required", "blocked_authorization") or (
+                job.attempts >= job.max_attempts and job.state in ("retry", "queued")):
+            job.state, job.attempts, job.last_error_code = "queued", 0, None
+            job.lease_owner, job.lease_expires_at, job.available_at = None, None, func.now()
+
+
+def make_personal_revoke_handler(session_factory, settings, extensions, *, transport=None):
+    """Durable, retry-safe completion of an unfinished personal disconnect (reuses the shared Job queue)."""
+    from ..jobs.queue import JobResult
+    from ..storage.worker_factory import RequestsDriveTransport
+
+    provider = transport or RequestsDriveTransport(timeout=(10, 30))
+
+    def handle(leased):
+        try:
+            actor_id = _uuid(leased.payload.get("actor_id"))
+        except UserOAuthError:
+            return JobResult("failed", error_code="invalid_revoke_payload")
+        try:
+            result = disconnect_user_drive_account(
+                session_factory, actor_id=actor_id, settings=settings, extensions=extensions, transport=provider,
+                schedule_retry=False)
+        except UserOAuthError:
+            return JobResult("retry", error_code="personal_revoke_unavailable", retry_after_seconds=_REVOKE_RETRY_SECONDS)
+        if result.get("state") == "revoked":
+            return JobResult("completed")
+        return JobResult("retry", error_code="personal_revoke_pending", retry_after_seconds=_REVOKE_RETRY_SECONDS)
+
+    return handle
+
+
+def disconnect_user_drive_account(session_factory, *, actor_id, settings, extensions, transport, schedule_retry=True):
+    """Disable local use first; erase the grant only after Google confirms revoke. Safe to repeat.
+
+    If Google cannot confirm now, the grant stays `revoke_pending` (unusable) and a durable retry Job is queued;
+    repeating this call (the Disconnect button) also re-queues a Job that ran out of attempts.
+    """
     from sqlalchemy import select
 
     Credential = _models().GoogleUserCredential
     actor_id = _uuid(actor_id)
+    result = _disconnect_once(session_factory, actor_id=actor_id, settings=settings, extensions=extensions,
+                              transport=transport, Credential=Credential)
+    if result.get("state") == "revoke_pending" and schedule_retry:
+        enqueue_personal_revoke(session_factory, actor_id)
+    return result
+
+
+def _disconnect_once(session_factory, *, actor_id, settings, extensions, transport, Credential):
+    from sqlalchemy import select
 
     def mark(state):
         with session_factory.begin() as session:

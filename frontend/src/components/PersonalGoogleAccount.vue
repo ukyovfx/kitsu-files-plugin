@@ -18,7 +18,9 @@ const errorText = {
   identity_unverified: 'Your Google identity could not be verified.',
   account_switch_requires_disconnect: 'Disconnect the current Google account before linking another.',
   google_account_already_linked: 'That Google account is already linked to another Kitsu user.',
-  reauthorization_required: 'Google did not return a long-lived grant. Connect again.'
+  reauthorization_required: 'Google did not return a long-lived grant. Connect again.',
+  account_mismatch: 'A different Kitsu user is signed in in this browser. Sign in as the user who started the link and try again.',
+  account_disconnect_in_progress: 'The previous disconnect is still finishing. Try again shortly.'
 }
 const stateText = computed(() => ({
   not_linked: 'Not connected', active: 'Connected', reauth_required: 'Reconnect required (Google no longer accepts the grant)',
@@ -49,6 +51,8 @@ async function connect() {
     const started = await props.api.startPersonalGoogleAuthorization(props.productionId, `personal-google:${crypto.randomUUID()}`)
     const target = safeGoogleAuthUrl(started.authorization_url)
     if (!target) throw new Error('authorization_failed')
+    // Google returns to the Plugin settings page, which restores its Production from this key (see main.js).
+    try { window.sessionStorage.setItem('vfx-files-plugin-drive-production-id', props.productionId) } catch { /* storage unavailable */ }
     window.location.assign(target)
   } catch (cause) {
     error.value = describe(cause, 'Google sign-in could not be started.')
@@ -98,10 +102,10 @@ async function savePolicy() {
   }
 }
 
-onMounted(() => {
+onMounted(async () => {
+  await load() // load() resets the messages, so show the result of the Google round trip afterwards
   if (returned.get('personal_google') === 'connected') notice.value = 'Google account connected.'
   if (returned.get('personal_google') === 'failed') error.value = describe({ message: returned.get('error') || '' }, 'Google sign-in failed.')
-  load()
 })
 watch(() => props.productionId, load)
 </script>
