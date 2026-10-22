@@ -78,7 +78,7 @@ No existing database was reset and no Staging/Production or real Google account 
 | Python syntax | PASS: 183 files | AST parse of plugin/worker/tests, without bytecode artifacts |
 | Bandit 1.8.6 | PASS | `bandit --recursive plugin --severity-level medium --confidence-level medium`; no findings at configured threshold |
 | npm audit | PASS | `npm audit --audit-level=high`: zero vulnerabilities |
-| Pinned-host pip-audit 2.10.1 | FAIL | 52 advisories: certifi 2026.7.22 (1), cryptography 43.0.3 (10), pillow 12.3.0 (35), pyopenssl 24.2.1 (4), pytest 8.4.2 (2). No ignore or dependency changes |
+| Synthetic test-runner pip-audit 2.10.1 | FAIL | 52 advisories: certifi 2026.7.22 (1), cryptography 43.0.3 (10), pillow 12.3.0 (35), pyopenssl 24.2.1 (4), pytest 8.4.2 (2). No ignore or dependency changes |
 | Full backend diagnostic | FAIL | 479 passed / 19 failed / 2 skipped / 1 error before final focused fixes; not an acceptance PASS |
 | Installed native Kitsu browser | BLOCKED | Existing test runner has no published browser port and its installed frontend HTTP route returns 404. No shared UAT stack changed; fixture tests do not substitute for this gate |
 | Independent review | Completed, limited | Read-only source review found three defects, now resolved; reviewer did not execute tests or Google calls |
@@ -93,7 +93,10 @@ The offline-bundle unit error in the copied runner was missing `.git`, not a pro
 The historical task-share browser fixture also fails looking for the superseded `Share` tab; checked-out baseline uses
 Send/Receive. It was not rewritten to mask this stale fixture.
 
-Security and installed-browser failures remain release gates. A Draft PR is reviewable work, not M4 acceptance.
+Exact-head hosted CI run `39828312670`: frontend dependency/tests/build and secret scan PASS; immutable-image dependency
+ audit FAIL with 50 advisories in four runtime packages. Local runner inventory additionally includes pytest (two advisories),
+ accounting for its 52/5 result. Hosted Python syntax/Bandit step was SKIPPED after the failed audit; local static results
+ above are separate evidence. Security and installed-browser failures remain release gates. A Draft PR is reviewable work, not M4 acceptance.
 Recovery archives and the earlier OAuth prototype remain untouched. Evidence and disposable scripts are retained by this
 task under the KitsuSync `artifacts/m4-implementation-20261023` directory; they are not packaged or committed here.
 
