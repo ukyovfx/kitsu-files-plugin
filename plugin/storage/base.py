@@ -26,6 +26,14 @@ class AlreadyExists(StorageError):
     pass
 
 
+# FakeStorage reports "folder"; Google Drive reports its own MIME type.
+FOLDER_MIME_TYPES = ("folder", "application/vnd.google-apps.folder")
+
+
+def is_folder(obj) -> bool:
+    return getattr(obj, "mime_type", None) in FOLDER_MIME_TYPES
+
+
 @dataclass(frozen=True)
 class StorageObject:
     object_id: str

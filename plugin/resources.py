@@ -395,6 +395,7 @@ class TaskOutputPackages(MethodView):
 
         from .packages.manifest import canonical_package_manifest
         from .packages.service import PackageConflict, reserve_output_package
+        from .storage.base import is_folder
         from zou.app.models.output_type import OutputType
         from zou.app.models.task import Task
         task = Task.query.filter_by(id=parsed_task_id).one_or_none()
@@ -417,7 +418,7 @@ class TaskOutputPackages(MethodView):
                 if not isinstance(provider_id, str) or not provider_id or len(provider_id) > 255:
                     abort(400)
                 obj = adapter.get(provider_id)
-                if obj is None or obj.object_id != provider_id or obj.trashed or obj.mime_type == "folder" or obj.parent_id is None:
+                if obj is None or obj.object_id != provider_id or obj.trashed or is_folder(obj) or obj.parent_id is None:
                     abort(404)
                 adapter.assert_parent_within_root(obj.parent_id)
                 if obj.size is None:
