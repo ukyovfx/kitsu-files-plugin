@@ -54,6 +54,15 @@ class DeletionRequest:
     created: bool
 
 
+def _job_is_stuck(session, job) -> bool:
+    """Terminal, or out of attempts with nothing running. Nothing sweeps exhausted jobs, so check here."""
+    if job.state in _TERMINAL_JOB_STATES:
+        return True
+    if job.attempts < job.max_attempts or job.state not in ("queued", "retry", "leased"):
+        return False
+    return job.state != "leased" or job.lease_expires_at is None         or job.lease_expires_at < session.scalar(select(func.now()))
+
+
 def deletion_job_key(package_id) -> str:
     return f"delete-output-package:{package_id}"
 
@@ -138,8 +147,8 @@ def request_package_deletion(
             OutputPackageDeletion.package_id == package.id).with_for_update())
         if existing is not None:
             job = session.scalar(select(Job).where(Job.idempotency_key == job_key).with_for_update())
-            if existing.state == "deleting" and job is not None and job.state in _TERMINAL_JOB_STATES:
-                # Explicit operator retry of a stuck deletion; the job re-derives all state from the provider.
+            if existing.state == "deleting" and job is not None and _job_is_stuck(session, job):
+                # Explicit retry of a stuck deletion; the job re-derives all state from the provider.
                 job.state, job.attempts, job.last_error_code = "queued", 0, None
                 job.lease_owner, job.lease_expires_at = None, None
                 job.available_at = func.now()
@@ -177,11 +186,28 @@ def _listing(adapter, parent_id):
     raise AmbiguousOutcome("Provider listing did not terminate")
 
 
-def _lookup(adapter, object_id):
+_FOLDER_MIME_TYPES = ("folder", "application/vnd.google-apps.folder")  # FakeStorage / Google Drive
+
+
+def _is_folder(obj) -> bool:
+    return obj.mime_type in _FOLDER_MIME_TYPES
+
+
+def _present(adapter, object_id, parent_id):
+    """Return the object, or None only when its verified parent's complete listing proves it is gone.
+
+    A provider "not found" can also mean "not visible to this credential", so on its own it is never
+    treated as deleted; a lookup that disagrees with the listing fails closed.
+    """
     try:
-        return adapter.get(object_id)
+        found = adapter.get(object_id)
     except ObjectNotFound:
-        return None
+        found = None
+    if found is not None:
+        return found
+    if any(item.object_id == object_id for item in _listing(adapter, parent_id)):
+        raise AmbiguousOutcome("Provider lookup and parent listing disagree")
+    return None
 
 
 def make_output_package_deletion_handler(session_factory, adapter_factory):
@@ -238,10 +264,12 @@ def make_output_package_deletion_handler(session_factory, adapter_factory):
         adapter.assert_parent_within_root(allowed_root_id)
 
         result = {"files_deleted": 0, "files_already_absent": 0, "files_retained_shared": 0,
-                  "folder": "absent"}
-        folder = _lookup(adapter, folder_id)
-        if folder is not None:
-            if folder_id in protected or folder.object_id != folder_id or folder.mime_type != "folder" \
+                  "folder": "absent_confirmed"}
+        folder = _present(adapter, folder_id, allowed_root_id)
+        if folder is None:
+            result["files_already_absent"] = sum(1 for _o, target_id, _n in targets if target_id not in protected)
+        else:
+            if folder_id in protected or folder.object_id != folder_id or not _is_folder(folder) \
                     or folder.parent_id != allowed_root_id or folder.name != folder_name:
                 return JobResult("failed", error_code="output_delete_folder_ownership_mismatch")
             adapter.assert_parent_within_root(folder.object_id)
@@ -252,29 +280,25 @@ def make_output_package_deletion_handler(session_factory, adapter_factory):
                 if target_id in protected:
                     result["files_retained_shared"] += 1
                     continue
-                obj = _lookup(adapter, target_id)
+                obj = _present(adapter, target_id, folder_id)
                 if obj is None:
                     result["files_already_absent"] += 1
                     continue
-                if obj.object_id != target_id or obj.parent_id != folder_id or obj.mime_type == "folder" \
+                if obj.object_id != target_id or obj.parent_id != folder_id or _is_folder(obj) \
                         or obj.name != file_name:
                     return JobResult("failed", error_code="output_delete_target_ownership_mismatch")
                 to_delete.append(target_id)
 
             for target_id in to_delete:
                 adapter.delete(target_id)
-                if _lookup(adapter, target_id) is not None:
+                if _present(adapter, target_id, folder_id) is not None:
                     raise AmbiguousOutcome("Provider delete was not confirmed")
                 result["files_deleted"] += 1
 
-            # Drive folder deletion cascades, so the folder goes only when provably empty.
-            if _listing(adapter, folder_id):
-                result["folder"] = "retained_not_empty"
-            else:
-                adapter.delete(folder_id)
-                if _lookup(adapter, folder_id) is not None:
-                    raise AmbiguousOutcome("Provider folder delete was not confirmed")
-                result["folder"] = "deleted"
+            # Drive folder deletion cascades to every descendant and has no "only if empty" form, so a
+            # file added between a check and the delete would be destroyed. The version folder is therefore
+            # never deleted; it stays as an empty (or foreign-content) container.
+            result["folder"] = "retained_not_empty" if _listing(adapter, folder_id) else "retained_empty"
 
         with session_factory.begin() as session:
             lease = session.scalar(select(Job).where(Job.id == job.job_id).with_for_update())

@@ -178,6 +178,17 @@ async function startDelete(item) {
   }
 }
 
+async function retryDelete(item) {
+  error.value = ''
+  try {
+    const review = await props.api.getOutputPackageDeletionImpact(item.id)
+    await props.api.deleteOutputPackage(item.id, review.impact_sha256)
+    await refresh()
+  } catch (cause) {
+    error.value = cause.message || 'The deletion could not be retried.'
+  }
+}
+
 async function confirmDelete() {
   if (!pendingDelete.value || deleting.value) return
   deleting.value = true
@@ -270,6 +281,8 @@ onUnmounted(() => {
           <span>{{ deletionLabel(item) || item.state }} · QC {{ item.qc_state }}</span>
           <span class="muted">{{ item.file_count }} files · {{ item.manifest_sha256 }}</span>
           <span v-if="item.deleted" class="muted deleted-note">削除済み · The files were permanently deleted<template v-if="item.deleted_at"> on {{ new Date(item.deleted_at).toLocaleString() }}</template>. Name, version, sender and delivery history are kept.</span>
+          <span v-if="item.deletion_state === 'deleting'" class="muted deleted-note">Downloads are blocked while the files are being deleted.<template v-if="item.deletion_stuck"> The deletion did not finish<template v-if="item.deletion_error_code"> ({{ item.deletion_error_code }})</template>; check the Drive connection and retry.</template></span>
+          <button v-if="item.deletion_stuck && item.can_retry_delete" class="button secondary" @click="retryDelete(item)">Retry deletion</button>
           <button v-if="item.can_delete" class="button danger" :aria-label="`Delete ${item.package_type} v${String(item.version).padStart(3, '0')}`" @click="startDelete(item)">Delete files…</button>
           <div v-if="pendingDelete?.item.id === item.id" class="delete-confirm" role="alertdialog" aria-label="Confirm permanent deletion">
             <p><strong>Permanently delete {{ item.package_type }} v{{ String(item.version).padStart(3, '0') }}?</strong> This removes {{ pendingDelete.review.impact.file_count }} file(s) from the shared Drive. Copies in personal Drives are not touched. This cannot be undone.</p>

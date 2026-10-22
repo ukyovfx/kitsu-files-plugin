@@ -354,6 +354,14 @@ class TaskOutputPackages(MethodView):
                 OutputPackageDeletion.package_id.in_([row.id for row in rows])).all()
         } if rows else {}
         delete_policy = get_delete_policy(current_app.extensions["sqlalchemy"].session, rows[0].production_id) if rows else None
+        deletion_jobs = {}
+        if deletions:
+            from .packages.deletion import JOB_TYPE as DELETE_JOB_TYPE, _job_is_stuck
+            for job in Job.query.filter(
+                Job.job_type == DELETE_JOB_TYPE,
+                Job.payload["package_id"].astext.in_(list(deletions)),
+            ).all():
+                deletion_jobs[job.payload["package_id"]] = (job, _job_is_stuck(current_app.extensions["sqlalchemy"].session, job))
         pointers = {
             (str(row.output_type_id), row.package_type): row
             for row in OutputPackagePointer.query.filter_by(task_id=parsed_task_id).all()
@@ -368,6 +376,11 @@ class TaskOutputPackages(MethodView):
             "deletion_state": deletions[str(row.id)].state if str(row.id) in deletions else None,
             "deleted_by": str(deletions[str(row.id)].requested_by) if str(row.id) in deletions else None,
             "deleted_at": deletions[str(row.id)].completed_at.isoformat() if str(row.id) in deletions and deletions[str(row.id)].completed_at else None,
+            "deletion_stuck": bool(str(row.id) in deletions and deletions[str(row.id)].state == "deleting"
+                                   and str(row.id) in deletion_jobs and deletion_jobs[str(row.id)][1]),
+            "deletion_error_code": deletion_jobs[str(row.id)][0].last_error_code if str(row.id) in deletion_jobs else None,
+            "can_retry_delete": str(row.id) in deletions and deletions[str(row.id)].state == "deleting"
+            and may_delete(delete_policy, actor.project_role, actor.actor_id, row.created_by),
             "can_delete": row.state == "completed" and str(row.id) not in deletions and may_delete(delete_policy, actor.project_role, actor.actor_id, row.created_by),
             "job_state": jobs[str(row.id)].state if str(row.id) in jobs else None,
             "job_error_code": jobs[str(row.id)].last_error_code if str(row.id) in jobs else None,

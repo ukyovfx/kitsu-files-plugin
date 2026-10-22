@@ -194,7 +194,7 @@ def test_registrant_deletes_own_past_versions_without_touching_others_or_reusing
     assert artist.get(f"{BASE}/output-package-files/{files1[0][0]}/download").status_code == 410
     _run_delete(c, v1.package_id, response)
 
-    assert files1[0][1] not in c.storage.objects and folder1 not in c.storage.objects
+    assert files1[0][1] not in c.storage.objects and folder1 in c.storage.objects  # the folder is never deleted
     assert files2[0][1] in c.storage.objects and folder2 in c.storage.objects
     assert source_ids <= set(c.storage.objects)  # the copy sources are never deleted
     assert artist.get(f"{BASE}/output-package-files/{files2[0][0]}/download").status_code == 200
@@ -220,7 +220,7 @@ def test_registrant_deletes_own_past_versions_without_touching_others_or_reusing
         assert session.scalar(select(OutputPackageFile.id).where(OutputPackageFile.package_id == v1.package_id)) is not None
         deletion = session.scalar(select(OutputPackageDeletion).where(OutputPackageDeletion.package_id == v1.package_id))
         assert deletion.requested_by == artist_id and deletion.completed_at is not None
-        assert deletion.result == {"files_deleted": 1, "files_already_absent": 0, "files_retained_shared": 0, "folder": "deleted"}
+        assert deletion.result == {"files_deleted": 1, "files_already_absent": 0, "files_retained_shared": 0, "folder": "retained_empty"}
 
 
 def test_other_users_outsiders_and_other_productions_are_rejected_server_side(ctx):
@@ -418,6 +418,15 @@ def test_drive_failures_never_report_success_and_recover_on_retry(ctx):
     assert artist.get(f"{BASE}/output-package-files/{files[2][0]}/download").status_code == 410
     c.storage.permission_denied_delete_ids.clear()
 
+    # Timeouts are retryable failures.
+    class Timeout(type(c.storage)):
+        def delete(self, object_id):
+            raise RetryableStorageFailure(5, "timeout")
+
+    with pytest.raises(RetryableStorageFailure):
+        _deletion_handler(c, storage=_clone_as(Timeout, c.storage))(_lease(c, job_id))
+    assert state() == "deleting"
+
     # Ambiguous provider outcome on a delete: still not success; the next attempt completes it.
     c.storage.fail_delete_ids.add(target_ids[2])
     with pytest.raises(AmbiguousOutcome):
@@ -430,18 +439,9 @@ def test_drive_failures_never_report_success_and_recover_on_retry(ctx):
         _deletion_handler(c)(_lease(c, job_id))
     assert target_ids[2] not in c.storage.objects and state() == "deleting"
 
-    # Timeouts are retryable failures.
-    class Timeout(type(c.storage)):
-        def delete(self, object_id):
-            raise RetryableStorageFailure(5, "timeout")
-
-    with pytest.raises(RetryableStorageFailure):
-        _deletion_handler(c, storage=_clone_as(Timeout, c.storage))(_lease(c, job_id))
-    assert state() == "deleting"
-
     assert _deletion_handler(c)(_lease(c, job_id)).state == "completed"
     assert state() == "deleted"
-    assert folder_id not in c.storage.objects and not set(target_ids) & set(c.storage.objects)
+    assert folder_id in c.storage.objects and not set(target_ids) & set(c.storage.objects)
     with c.db.begin() as session:
         deletion = session.scalar(select(OutputPackageDeletion).where(OutputPackageDeletion.package_id == package.package_id))
         assert deletion.result["files_deleted"] + deletion.result["files_already_absent"] == 3
@@ -493,10 +493,11 @@ def test_exr_sequence_deletes_only_its_own_files_and_never_recurses(ctx):
         result = session.scalar(select(OutputPackageDeletion.result).where(OutputPackageDeletion.package_id == sequence.package_id))
     assert result["files_deleted"] == 5 and result["folder"] == "retained_not_empty"
 
-    # Without foreign content the whole version folder goes with its files.
+    # Even without foreign content only the files go; the folder is never deleted (Drive folder delete cascades).
     response2 = _delete(artist, sibling.package_id)
     _run_delete(c, sibling.package_id, response2)
-    assert sibling_folder not in c.storage.objects and not {row[1] for row in sibling_files} & set(c.storage.objects)
+    assert sibling_folder in c.storage.objects and not {row[1] for row in sibling_files} & set(c.storage.objects)
+    assert ("delete", sibling_folder) not in c.storage.calls and ("delete", folder_id) not in c.storage.calls
 
 
 def test_shared_or_misowned_objects_are_protected_and_ownership_mismatch_deletes_nothing(ctx):
@@ -581,3 +582,238 @@ def test_worker_authorization_and_history_immutability(ctx):
         with pytest.raises(DBAPIError):
             with c.db.begin() as session:
                 session.execute(text(statement + f" WHERE package_id = '{package.package_id}'"))
+
+
+def _count_deletes(storage):
+    return len([call for call in storage.calls if call[0] == "delete"])
+
+
+def _deletion_state(c, package_id):
+    from sqlalchemy import select
+    from plugin.models import OutputPackageDeletion
+
+    with c.db.begin() as session:
+        return session.scalar(select(OutputPackageDeletion.state).where(OutputPackageDeletion.package_id == package_id))
+
+
+def test_provider_not_found_is_never_proof_of_deletion(ctx):
+    from plugin.storage.base import AmbiguousOutcome, ObjectNotFound
+    from plugin.storage.fake import FakeStorage
+
+    c = ctx
+    artist_id = _person(c)
+    artist = _user_client(c.app, artist_id)
+    package = _register(c, artist_id, count=3, sequence=True)
+    folder_id, files = _package_files(c, package.package_id)
+    job_id = UUID(_delete(artist, package.package_id).json["job_id"])
+
+    # The object exists and is listed, but lookups answer "not found" (e.g. not visible to this credential).
+    class Invisible(FakeStorage):
+        def get(self, object_id):
+            if object_id == files[1][1]:
+                raise ObjectNotFound("404")
+            return super().get(object_id)
+
+    before = _count_deletes(c.storage)
+    with pytest.raises(AmbiguousOutcome):
+        _deletion_handler(c, storage=_clone_as(Invisible, c.storage))(_lease(c, job_id))
+    assert _count_deletes(c.storage) == before  # validation fails before any destructive call
+    assert all(row[1] in c.storage.objects for row in files) and _deletion_state(c, package.package_id) == "deleting"
+
+    # A DELETE that answers 404 while the object is still present is not success either.
+    class DeleteSays404(FakeStorage):
+        def delete(self, object_id):
+            self.calls.append(("delete", object_id))
+            return False
+
+    with pytest.raises(AmbiguousOutcome):
+        _deletion_handler(c, storage=_clone_as(DeleteSays404, c.storage))(_lease(c, job_id))
+    assert all(row[1] in c.storage.objects for row in files) and _deletion_state(c, package.package_id) == "deleting"
+
+    # A missing version folder that the root still lists is inconsistent, not "already deleted".
+    class FolderInvisible(FakeStorage):
+        def get(self, object_id):
+            if object_id == folder_id:
+                raise ObjectNotFound("404")
+            return super().get(object_id)
+
+    with pytest.raises(AmbiguousOutcome):
+        _deletion_handler(c, storage=_clone_as(FolderInvisible, c.storage))(_lease(c, job_id))
+    assert _deletion_state(c, package.package_id) == "deleting" and folder_id in c.storage.objects
+
+    # Retrying with a consistent provider finishes without touching anything else.
+    assert _deletion_handler(c)(_lease(c, job_id)).state == "completed"
+    assert not {row[1] for row in files} & set(c.storage.objects)
+
+
+def test_already_vanished_objects_are_confirmed_by_listing_before_recording_success(ctx):
+    from sqlalchemy import select
+    from plugin.models import OutputPackageDeletion
+
+    c = ctx
+    artist_id = _person(c)
+    artist = _user_client(c.app, artist_id)
+    package = _register(c, artist_id, count=2, sequence=True)
+    folder_id, files = _package_files(c, package.package_id)
+    for _fid, object_id, _name in files:  # removed out-of-band, e.g. by a previous run that crashed
+        c.storage.delete(object_id)
+    assert c.storage.delete(folder_id) is True
+    _run_delete(c, package.package_id, _delete(artist, package.package_id))
+    with c.db.begin() as session:
+        result = session.scalar(select(OutputPackageDeletion.result).where(OutputPackageDeletion.package_id == package.package_id))
+    assert result == {"files_deleted": 0, "files_already_absent": 2, "files_retained_shared": 0, "folder": "absent_confirmed"}
+
+
+def test_files_added_to_the_version_folder_during_deletion_are_never_deleted(ctx):
+    from plugin.storage.base import StorageObject
+    from plugin.storage.fake import FakeStorage
+
+    c = ctx
+    artist_id = _person(c)
+    artist = _user_client(c.app, artist_id)
+    package = _register(c, artist_id, count=2, sequence=True)
+    folder_id, files = _package_files(c, package.package_id)
+
+    class RacingStorage(FakeStorage):
+        def delete(self, object_id):
+            result = super().delete(object_id)
+            if object_id == files[-1][1]:  # someone drops a file in right after the last copy is removed
+                self.objects["late-file"] = StorageObject("late-file", folder_id, 1, "0" * 64, "synthetic-drive-id",
+                                                          "text/plain", name="late.txt")
+                self._bytes["late-file"] = b"x"
+            return result
+
+    response = _delete(artist, package.package_id)
+    result = _deletion_handler(c, storage=_clone_as(RacingStorage, c.storage))(_lease(c, UUID(response.json["job_id"])))
+    assert result.state == "completed"
+    assert "late-file" in c.storage.objects  # the foreign file survives
+    assert folder_id in c.storage.objects and ("delete", folder_id) not in c.storage.calls  # and so does its folder
+
+
+def test_stuck_deletions_are_visible_and_recoverable_after_retry_exhaustion(ctx):
+    from datetime import timedelta
+    from sqlalchemy import func, select
+    from plugin.models import Job
+
+    c = ctx
+    artist_id = _person(c)
+    artist = _user_client(c.app, artist_id)
+    package = _register(c, artist_id)
+    response = _delete(artist, package.package_id)
+    job_id = UUID(response.json["job_id"])
+
+    def set_job(**values):
+        with c.db.begin() as session:
+            job = session.get(Job, job_id)
+            for key, value in values.items():
+                if value == "expired":
+                    value = session.scalar(select(func.now())) - timedelta(minutes=1)
+                setattr(job, key, value)
+
+    def row():
+        return next(item for item in artist.get(f"{BASE}/tasks/{c.task_id}/output-packages").json if item["id"] == str(package.package_id))
+
+    # Still being worked on: not stuck, a repeated request does not disturb it.
+    with c.db.begin() as session:
+        session.get(Job, job_id).lease_expires_at = session.scalar(select(func.now())) + timedelta(minutes=5)
+    set_job(state="leased", attempts=1)
+    assert row()["deletion_stuck"] is False
+    assert _delete(artist, package.package_id).status_code == 202
+    with c.db.begin() as session:
+        assert session.get(Job, job_id).state == "leased"
+
+    # Retry limit reached while "retry" (nothing sweeps these): surfaced, and the user can re-request.
+    set_job(state="retry", attempts=5, last_error_code="provider_permission_denied", lease_owner=None, lease_expires_at=None)
+    stuck = row()
+    assert stuck["deletion_stuck"] is True and stuck["deletion_error_code"] == "provider_permission_denied"
+    assert stuck["can_retry_delete"] is True and stuck["deleted"] is True and stuck["deletion_state"] == "deleting"
+    assert _delete(artist, package.package_id).status_code == 202
+    with c.db.begin() as session:
+        job = session.get(Job, job_id)
+        assert (job.state, job.attempts) == ("queued", 0)
+
+    # A crashed worker whose lease expired after exhausting attempts is recoverable too.
+    set_job(state="leased", attempts=5, lease_expires_at="expired")
+    assert row()["deletion_stuck"] is True
+    assert _delete(artist, package.package_id).status_code == 202
+    with c.db.begin() as session:
+        assert session.get(Job, job_id).state == "queued"
+    assert _deletion_handler(c)(_lease(c, job_id)).state == "completed"
+    assert row()["deletion_stuck"] is False and row()["can_retry_delete"] is False
+
+
+class _R:
+    def __init__(self, status_code, data=None):
+        self.status_code, self._data, self.headers = status_code, data or {}, {}
+
+    def json(self):
+        return self._data
+
+
+class _DriveEmulator:
+    """Serves FakeStorage state through the Google Drive v3 wire shape for the real adapter."""
+
+    def __init__(self, storage, hidden=()):
+        self.storage, self.hidden, self.requests = storage, set(hidden), []
+
+    def _json(self, obj):
+        from plugin.storage.google_drive import FOLDER_MIME
+
+        folder = obj.mime_type == "folder"
+        data = {"id": obj.object_id, "name": obj.name, "mimeType": FOLDER_MIME if folder else obj.mime_type,
+                "driveId": obj.drive_id, "trashed": False, "capabilities": {"canAddChildren": True}}
+        if obj.parent_id:
+            data["parents"] = [obj.parent_id]
+        if obj.size is not None and not folder:
+            data["size"] = str(obj.size)
+        return data
+
+    def request(self, method, url, params=None, json=None, data=None, headers=None):
+        self.requests.append((method, url.split("/files", 1)[1], dict(params or {})))
+        tail = url.split("/files", 1)[1].lstrip("/")
+        if method == "GET" and not tail:
+            parent = params["q"].split("'")[1]
+            return _R(200, {"files": [self._json(o) for o in self.storage.objects.values() if o.parent_id == parent]})
+        if method == "GET":
+            obj = self.storage.objects.get(tail)
+            return _R(404) if obj is None or tail in self.hidden else _R(200, self._json(obj))
+        if method == "DELETE":
+            return _R(204) if self.storage.delete(tail) else _R(404)
+        raise AssertionError(f"unexpected Drive request {method} {url}")
+
+
+def test_real_drive_adapter_wire_behaviour_deletes_only_exact_file_ids_and_fails_closed_on_404(ctx):
+    from plugin.storage.base import AmbiguousOutcome
+    from plugin.storage.google_drive import DriveConfig, GoogleDriveStorageAdapter
+
+    c = ctx
+    artist_id = _person(c)
+    artist = _user_client(c.app, artist_id)
+    package = _register(c, artist_id, count=2, sequence=True)
+    folder_id, files = _package_files(c, package.package_id)
+    sources = {key for key in c.storage.objects if key.startswith("src-")}
+    job_id = UUID(_delete(artist, package.package_id).json["job_id"])
+
+    def adapter_for(transport):
+        config = DriveConfig("shared_drive", "synthetic-root-id", "synthetic-drive-id", None)
+        return GoogleDriveStorageAdapter(config, lambda: "synthetic-token", transport)
+
+    # 404 for a listed object (invisible, not deleted): nothing is deleted and nothing is recorded.
+    blind = _DriveEmulator(c.storage, hidden={files[0][1]})
+    with pytest.raises(AmbiguousOutcome):
+        _deletion_handler(c, storage=adapter_for(blind))(_lease(c, job_id))
+    assert not [r for r in blind.requests if r[0] == "DELETE"]
+    assert _deletion_state(c, package.package_id) == "deleting" and all(row[1] in c.storage.objects for row in files)
+
+    # Normal run: exactly the two recorded file IDs are deleted; folder, root and sources are never requested.
+    clear = _DriveEmulator(c.storage)
+    assert _deletion_handler(c, storage=adapter_for(clear))(_lease(c, job_id)).state == "completed"
+    deletes = [r for r in clear.requests if r[0] == "DELETE"]
+    assert sorted(r[1].lstrip("/") for r in deletes) == sorted(row[1] for row in files)
+    assert all(r[2] == {"supportsAllDrives": "true"} for r in deletes)
+    assert folder_id in c.storage.objects and sources <= set(c.storage.objects)
+
+    # Replaying after success (or after a crash that already removed the files) finds them absent via listing.
+    replay = _DriveEmulator(c.storage)
+    assert _deletion_handler(c, storage=adapter_for(replay))(_lease(c, job_id)).state == "completed"
+    assert not [r for r in replay.requests if r[0] == "DELETE"]

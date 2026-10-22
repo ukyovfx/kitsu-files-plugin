@@ -1,0 +1,7 @@
+# Reviewed false positives: test fixtures naming an Idempotency-Key header or a job type, no credentials.
+# Exact commit:file:rule:line fingerprints only; any new finding still fails the scan.
+1e095e2f25eac7d87beba0f6fcc87d44e9df0536:tests/api/test_kitsusync_management_api.py:generic-api-key:338
+1e095e2f25eac7d87beba0f6fcc87d44e9df0536:tests/api/test_kitsusync_management_api.py:generic-api-key:358
+585020d5cd6fa0ae9946659110d874a41f27f493:tests/integrations/test_oauth_postgres_host.py:generic-api-key:150
+9affe509b18f4f681fefa62bd96cef6153fecbe0:tests/integrations/test_oauth_vault.py:generic-api-key:674
+a6d6d3a057aa73efd829352734560eee108dd613:tests/integrations/test_oauth_postgres_host.py:generic-api-key:163
