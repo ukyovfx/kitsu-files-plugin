@@ -4,6 +4,7 @@ import { outputPayloadTransferAvailable } from '../outputTransferAvailability.js
 import { safeDriveUrl } from '../driveLinks.js'
 import { importText } from '../personalImportLocale.js'
 import { PickerError, pickDriveFiles } from '../googlePicker.js'
+import { inferSequenceSelection } from '../sequenceFrameInference.js'
 
 const props = defineProps({ taskId: { type: String, required: true }, api: { type: Object, required: true }, locale: { type: String, default: 'en' } })
 const emit = defineEmits(['changed'])
@@ -25,6 +26,7 @@ const packageType = ref('tracking-data')
 const outputTypeId = ref('')
 const frameStart = ref('')
 const frameEnd = ref('')
+const autoRangeHint = ref(false)
 const colorSpace = ref('')
 const expandedPackage = ref('')
 const packageFiles = ref({})
@@ -250,11 +252,30 @@ const sequenceCheck = computed(() => {
   const frames = pickedFiles.value.map((file) => frameNumbers.value[file.id]).map((value) => (value === '' || value === undefined ? NaN : Number(value)))
   const start = Number(frameStart.value)
   const end = Number(frameEnd.value)
-  const valid = Number.isSafeInteger(start) && Number.isSafeInteger(end) && end - start <= 10000 && frameStart.value !== '' && frameEnd.value !== '' && end >= start && frames.every((value) => Number.isInteger(value) && value >= start && value <= end)
+  const valid = Number.isSafeInteger(start) && Number.isSafeInteger(end) && end - start <= 10000 && frameStart.value !== '' && frameEnd.value !== '' && end >= start && frames.every((value) => Number.isSafeInteger(value) && value >= start && value <= end)
   const duplicates = valid && new Set(frames).size !== frames.length
-  const missing = valid && !duplicates ? Array.from({ length: end - start + 1 }, (_unused, index) => start + index).filter((frame) => !frames.includes(frame)) : []
+  const frameSet = new Set(frames)
+  const missing = valid && !duplicates ? Array.from({ length: end - start + 1 }, (_unused, index) => start + index).filter((frame) => !frameSet.has(frame)) : []
   return { valid, duplicates, missing }
 })
+const guessedSelection = computed(() => sequencePackage.value && pickedFiles.value.length ? inferSequenceSelection(pickedFiles.value) : null)
+// Autofill only when every selected name belongs to one sequence. Never override manual frame edits.
+watch([pickedFiles, sequencePackage], () => {
+  const guessed = guessedSelection.value
+  if (!guessed) return
+  const next = { ...frameNumbers.value }
+  for (const [id, frame] of Object.entries(guessed.frames)) {
+    if (next[id] === undefined || next[id] === '') next[id] = String(frame)
+  }
+  frameNumbers.value = next
+  // Inferred endpoints cannot detect missing head/tail frames. Keep them editable.
+  if (frameStart.value === '' && frameEnd.value === '') {
+    frameStart.value = String(guessed.start)
+    frameEnd.value = String(guessed.end)
+    autoRangeHint.value = true
+  }
+})
+
 const personalCanRegister = computed(() => personalReady.value && pickedFiles.value.length && outputTypeId.value &&
   (!folderScopeLimited.value || folderAcknowledged.value) &&
   (!sequencePackage.value || (sequenceCheck.value?.valid && !sequenceCheck.value?.duplicates)))
@@ -334,6 +355,10 @@ async function registerPersonalFiles() {
     if (requestId !== requestGeneration.value) return
     personalKey = ''
     pickedFiles.value = []
+    frameNumbers.value = {}
+    frameStart.value = ''
+    frameEnd.value = ''
+    autoRangeHint.value = false
     emit('changed')
     await refreshPackageList()
   } catch (cause) {
@@ -378,6 +403,9 @@ watch(taskScope, () => {
   folderAcknowledged.value = false
   pickedFiles.value = []
   frameNumbers.value = {}
+  frameStart.value = ''
+  frameEnd.value = ''
+  autoRangeHint.value = false
   personalKey = ''
   pickerBusy.value = false
   personalSubmitting.value = false
@@ -427,8 +455,8 @@ onUnmounted(() => {
             <option v-for="[value, label] in packageTypes" :key="value" :value="value">{{ t(label) }}</option>
           </select>
         </label>
-        <label v-if="sequencePackage">{{ t('Frame start') }}<input v-model="frameStart" type="number" step="1" :aria-label="t('Frame start')"></label>
-        <label v-if="sequencePackage">{{ t('Frame end') }}<input v-model="frameEnd" type="number" step="1" :aria-label="t('Frame end')"></label>
+        <label v-if="sequencePackage">{{ t('Frame start') }}<input v-model="frameStart" type="number" step="1" @input="autoRangeHint = false" :aria-label="t('Frame start')"></label>
+        <label v-if="sequencePackage">{{ t('Frame end') }}<input v-model="frameEnd" type="number" step="1" @input="autoRangeHint = false" :aria-label="t('Frame end')"></label>
         <label>{{ t('Color space') }}<input v-model="colorSpace" maxlength="128" placeholder="e.g. ACEScg"></label>
       </div>
       <section class="personal-import" :aria-label="t('Import from my Google Drive')">
@@ -448,10 +476,13 @@ onUnmounted(() => {
               <label v-if="sequencePackage" class="frame-number">{{ t('Frame') }}<input v-model="frameNumbers[file.id]" type="number" step="1" :aria-label="`${t('Frame number')} ${file.name}`"></label>
               <button class="text-button" :aria-label="`${t('Remove')} ${file.name}`" @click="removePicked(file)">{{ t('Remove') }}</button>
             </div>
+            <p v-if="sequencePackage && pickedFiles.length && !guessedSelection" class="muted" role="status">{{ t('Frame numbers could not be safely inferred from one filename pattern. Enter them manually or select one sequence.') }}</p>
+            <p v-if="sequencePackage && autoRangeHint" class="muted" role="status">{{ t('Frame range inferred from visible filenames. Check the expected shot start/end: missing first or last frames cannot be inferred.') }}</p>
+            <p v-if="sequencePackage && folderScopeLimited" class="muted" role="status">{{ t('Frame QC covers selected readable files only. Hidden or inaccessible Drive items are not verified.') }}</p>
             <p v-if="sequenceCheck && !sequenceCheck.valid" class="upload-error" role="status">{{ t('Enter the frame range and a frame number inside it for every file.') }}</p>
             <p v-else-if="sequenceCheck?.duplicates" class="upload-error" role="status">{{ t('Two files use the same frame number.') }}</p>
             <p v-else-if="sequenceCheck?.missing.length" class="upload-error" role="status">{{ t('Missing frames:') }} {{ sequenceCheck.missing.slice(0, 20).join(', ') }}<template v-if="sequenceCheck.missing.length > 20"> … ({{ sequenceCheck.missing.length }} total)</template>. {{ t('You can still register; QC will flag the gap.') }}</p>
-            <p v-else-if="sequenceCheck" class="muted" role="status">{{ t('Sequence complete: no missing frames.') }}</p>
+            <p v-else-if="sequenceCheck" class="muted" role="status">{{ t('No gaps in the selected files within the entered frame range.') }}</p>
           </div>
           <button class="button primary" :disabled="!personalCanRegister || personalSubmitting || pickerBusy" @click="registerPersonalFiles">{{ personalSubmitting ? t('Registering…') : t('Register {count} Google Drive file(s) as one Output version', { count: pickedFiles.length }) }}</button>
         </template>
