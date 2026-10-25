@@ -269,7 +269,7 @@ watch([pickedFiles, sequencePackage], () => {
   }
   frameNumbers.value = next
   // Inferred endpoints cannot detect missing head/tail frames. Keep them editable.
-  if (frameStart.value === '' && frameEnd.value === '') {
+  if (autoRangeHint.value || (frameStart.value === '' && frameEnd.value === '')) {
     frameStart.value = String(guessed.start)
     frameEnd.value = String(guessed.end)
     autoRangeHint.value = true
