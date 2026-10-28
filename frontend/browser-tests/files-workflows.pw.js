@@ -76,6 +76,54 @@ test('Working snapshot resumes after a deterministic part-transfer failure and f
   expect(finalizeCount).toBe(1)
 })
 
+test('A stale Working base conflict is surfaced without uploading files or duplicating a revision', async ({ page }) => {
+  let reservationCount = 0
+  let uploadMutationCount = 0
+  let reservation = null
+  const currentRevision = {
+    id: revisionId,
+    production_id: productionId,
+    task_id: taskId,
+    version: 1,
+    version_label: 'w001',
+    state: 'completed',
+    files: [{ id: revisionFileId, name: 'existing.nk', category: 'working', size: 3, sha256, state: 'completed' }]
+  }
+
+  await page.route('**/api/plugins/vfx_files/**', async (route) => {
+    const request = route.request()
+    const url = new URL(request.url())
+    if (url.pathname.endsWith('/csrf-token')) return json(route, { csrf_token: 'synthetic-csrf', expires_in: 900 })
+    if (url.pathname.endsWith('/overview')) return json(route, { production_id: productionId, tasks: [{ id: taskId, task_type_id: 'Animation', entity_id: 'SHOT010' }], upload_ready: true, publishes: [], handoffs: [] })
+    if (url.pathname.endsWith('/output-package-options')) return json(route, { task_id: taskId, output_types: [], storage_root_id: '' })
+    if (url.pathname.endsWith('/output-packages')) return json(route, [])
+    if (url.pathname.endsWith('/storage-objects')) return json(route, { task_id: taskId, parent_id: null, items: [], next_page_token: null })
+    if (url.pathname.endsWith(`/productions/${productionId}/tasks/${taskId}/shared-folders`)) return json(route, { task_id: taskId, folders: [] })
+    if (/link-shares|share-candidates/.test(url.pathname)) return json(route, { items: [], shares: [], recipients: [], candidates: [] })
+    if (url.pathname.endsWith(`/tasks/${taskId}/working-revisions`) && request.method() === 'GET') {
+      return json(route, { task_id: taskId, latest_working_id: revisionId, revisions: [currentRevision] })
+    }
+    if (url.pathname.endsWith(`/tasks/${taskId}/working-revisions`) && request.method() === 'POST') {
+      reservationCount += 1
+      reservation = { headers: request.headers(), body: JSON.parse(request.postData()) }
+      return json(route, { error: 'The Working base revision changed. Refresh and retry.' }, 409)
+    }
+    if (url.pathname.includes('/uploads/')) uploadMutationCount += 1
+    return json(route, { error: 'unexpected test request' }, 500)
+  })
+
+  await openFiles(page)
+  await page.getByRole('tab', { name: 'Send', exact: true }).click()
+  await page.locator('input[type="file"]').setInputFiles({ name: 'new.nk', mimeType: 'application/octet-stream', buffer: Buffer.from('new') })
+
+  await expect(page.locator('.upload-panel').getByRole('alert')).toContainText('Files request failed (409)')
+  await expect(page.locator('.upload-panel .revision-version').getByText('w001', { exact: true })).toBeVisible()
+  expect(reservationCount).toBe(1)
+  expect(reservation.body).toMatchObject({ base_revision_id: revisionId, files: [{ name: 'new.nk', category: 'working', size: 3 }] })
+  expect(reservation.headers['idempotency-key']).toMatch(/^working:/)
+  expect(uploadMutationCount).toBe(0)
+})
+
 test('Needs Fix requires feedback and Accepted persists after the page reloads', async ({ page }) => {
   const states = { [handoffId]: 'pending', [acceptedHandoffId]: 'pending' }
   let responseCount = 0
