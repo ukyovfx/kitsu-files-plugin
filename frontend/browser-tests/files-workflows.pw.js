@@ -18,6 +18,20 @@ async function openFiles(page) {
   await expect(page.locator('.files-page[data-mode="task"]')).toBeVisible()
 }
 
+test('Task Files hides file controls and records when the server denies Task membership access', async ({ page }) => {
+  await page.route('**/api/plugins/vfx_files/**', async (route) => {
+    const url = new URL(route.request().url())
+    if (url.pathname.endsWith('/overview')) return json(route, { error: 'forbidden' }, 403)
+    return json(route, { error: 'unexpected test request' }, 500)
+  })
+
+  await openFiles(page)
+  await expect(page.getByRole('alert')).toContainText('Files request failed (403)')
+  await expect(page.getByRole('tablist', { name: 'Task file operations' })).toHaveCount(0)
+  await expect(page.locator('.upload-panel')).toHaveCount(0)
+  await expect(page.locator('.task-section')).toHaveCount(0)
+})
+
 test('Working snapshot resumes after a deterministic part-transfer failure and finalizes once', async ({ page }) => {
   const storedParts = new Map()
   let failedFirstPart = false
