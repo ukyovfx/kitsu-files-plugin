@@ -3,6 +3,7 @@ import { expect, test } from '@playwright/test'
 const productionId = '11111111-1111-4111-8111-111111111111'
 const taskId = '22222222-2222-4222-8222-222222222222'
 const handoffId = '33333333-3333-4333-8333-333333333333'
+const acceptedHandoffId = '88888888-8888-4888-8888-888888888888'
 const uploadId = '44444444-4444-4444-8444-444444444444'
 const revisionId = '66666666-6666-4666-8666-666666666666'
 const revisionFileId = '77777777-7777-4777-8777-777777777777'
@@ -76,7 +77,7 @@ test('Working snapshot resumes after a deterministic part-transfer failure and f
 })
 
 test('Needs Fix requires feedback and Accepted persists after the page reloads', async ({ page }) => {
-  let state = 'pending'
+  const states = { [handoffId]: 'pending', [acceptedHandoffId]: 'pending' }
   let responseCount = 0
   await page.route('**/api/plugins/vfx_files/**', async (route) => {
     const request = route.request()
@@ -88,19 +89,25 @@ test('Needs Fix requires feedback and Accepted persists after the page reloads',
       tasks: [],
       upload_ready: false,
       publishes: [{ id: 'p1', task_id: taskId, output_family_id: 'family1', output_family_name: 'Comp', version: 4, state: 'completed', qc_state: 'passed', latest_published: true, latest_approved: false }, { id: 'p2', task_id: taskId, output_family_id: 'family1', output_family_name: 'Comp', version: 3, state: 'completed', qc_state: 'passed', latest_published: false, latest_approved: true }],
-      handoffs: [{ id: handoffId, task_id: taskId, publish_id: 'p1', recipient_id: 'synthetic-recipient', state }]
+      handoffs: [
+        { id: handoffId, task_id: taskId, publish_id: 'p1', recipient_id: 'synthetic-recipient', state: states[handoffId] },
+        { id: acceptedHandoffId, task_id: taskId, publish_id: 'p1', recipient_id: 'synthetic-recipient', state: states[acceptedHandoffId] }
+      ]
     })
     if (url.pathname.endsWith('/output-package-options')) return json(route, { task_id: taskId, output_types: [], storage_root_id: '' })
     if (url.pathname.endsWith('/output-packages')) return json(route, [])
     if (url.pathname.endsWith('/storage-objects')) return json(route, { task_id: taskId, parent_id: null, items: [], next_page_token: null })
     if (url.pathname.endsWith(`/productions/${productionId}/tasks/${taskId}/shared-folders`)) return json(route, { task_id: taskId, folders: [] })
     if (/link-shares|share-candidates/.test(url.pathname)) return json(route, { items: [], shares: [], recipients: [], candidates: [] })
-    if (url.pathname.endsWith(`/handoffs/${handoffId}/respond`)) {
+    if (url.pathname.endsWith(`/handoffs/${handoffId}/respond`) || url.pathname.endsWith(`/handoffs/${acceptedHandoffId}/respond`)) {
+      const handoff = url.pathname.includes(handoffId) ? handoffId : acceptedHandoffId
       const payload = JSON.parse(request.postData())
-      expect(payload).toMatchObject({ target: 'accepted', feedback: '' })
-      state = payload.target
+      expect(payload).toMatchObject(handoff === handoffId
+        ? { target: 'needs_fix', feedback: 'Please include the missing frame range.' }
+        : { target: 'accepted', feedback: '' })
+      states[handoff] = payload.target
       responseCount += 1
-      return json(route, { id: handoffId, state, publish_id: 'p1' })
+      return json(route, { id: handoff, state: states[handoff], publish_id: 'p1' })
     }
     return json(route, { error: 'unexpected test request' }, 500)
   })
@@ -108,13 +115,19 @@ test('Needs Fix requires feedback and Accepted persists after the page reloads',
   await openFiles(page)
   await page.getByRole('tab', { name: 'Receive', exact: true }).click()
   await expect(page.getByRole('heading', { name: 'Awaiting your response', exact: true })).toBeVisible()
-  await expect(page.getByRole('button', { name: 'Needs Fix' })).toBeDisabled()
-  await page.getByRole('button', { name: 'Accept' }).click()
-  await expect(page.locator('[data-state="accepted"]')).toBeVisible()
-  expect(responseCount).toBe(1)
+  const firstHandoff = page.locator('.handoff-row').nth(0)
+  const secondHandoff = page.locator('.handoff-row').nth(1)
+  await expect(firstHandoff.getByRole('button', { name: 'Needs Fix' })).toBeDisabled()
+  await firstHandoff.getByLabel('Needs Fix feedback').fill('Please include the missing frame range.')
+  await firstHandoff.getByRole('button', { name: 'Needs Fix' }).click()
+  await expect(firstHandoff.locator('[data-state="needs_fix"]')).toBeVisible()
+  await secondHandoff.getByRole('button', { name: 'Accept' }).click()
+  await expect(secondHandoff.locator('[data-state="accepted"]')).toBeVisible()
+  expect(responseCount).toBe(2)
 
   await page.reload()
   await page.getByRole('tab', { name: 'Receive', exact: true }).click()
+  await expect(page.locator('[data-state="needs_fix"]')).toBeVisible()
   await expect(page.locator('[data-state="accepted"]')).toBeVisible()
 })
 
