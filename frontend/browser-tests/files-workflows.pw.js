@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test'
+import { createHash } from 'node:crypto'
 
 const productionId = '11111111-1111-4111-8111-111111111111'
 const taskId = '22222222-2222-4222-8222-222222222222'
@@ -223,6 +224,7 @@ test('Working revision downloads the exact completed bytes and displays the reco
     return { status: response.status, bytes: Array.from(new Uint8Array(await response.arrayBuffer())) }
   })
   expect(result).toEqual({ status: 200, bytes: [97, 98, 99] })
+  expect(createHash('sha256').update(Buffer.from(result.bytes)).digest('hex')).toBe(sha256)
 })
 
 test('Production settings expose the Plugin Drive authority without a Task selector', async ({ page }) => {
