@@ -35,6 +35,8 @@ test('Working snapshot resumes after a deterministic part-transfer failure and f
     if (url.pathname.endsWith('/output-package-options')) return json(route, { task_id: taskId, output_types: [], storage_root_id: '' })
     if (url.pathname.endsWith('/output-packages')) return json(route, [])
     if (url.pathname.endsWith('/storage-objects')) return json(route, { task_id: taskId, parent_id: null, items: [], next_page_token: null })
+    if (url.pathname.endsWith(`/productions/${productionId}/tasks/${taskId}/shared-folders`)) return json(route, { task_id: taskId, folders: [] })
+    if (/link-shares|share-candidates/.test(url.pathname)) return json(route, { items: [], shares: [], recipients: [], candidates: [] })
     if (url.pathname.endsWith(`/tasks/${taskId}/working-revisions`) && request.method() === 'GET') return json(route, { task_id: taskId, latest_working_id: latestWorkingId, revisions: reserved ? [revision] : [] })
     if (url.pathname.endsWith(`/tasks/${taskId}/working-revisions`) && request.method() === 'POST') { reserved = true; return json(route, revision, 201) }
     if (url.pathname.endsWith(`/uploads/${uploadId}`) && request.method() === 'GET') return json(route, { ...session, parts: [...storedParts.values()] })
@@ -57,10 +59,11 @@ test('Working snapshot resumes after a deterministic part-transfer failure and f
   })
 
   await openFiles(page)
-  await page.getByRole('tab', { name: 'Working', exact: true }).click()
+  await page.getByRole('tab', { name: 'Send', exact: true }).click()
+  await expect(page.getByRole('heading', { name: 'Working Files', exact: true })).toBeVisible()
   const fileInput = page.locator('input[type="file"]')
   await fileInput.setInputFiles({ name: 'plate.mov', mimeType: 'video/quicktime', buffer: Buffer.from('abc') })
-  await expect(page.getByRole('alert')).toContainText('Files is temporarily unavailable')
+  await expect(page.locator('.upload-panel').getByRole('alert')).toContainText('Files is temporarily unavailable')
   await expect(page.getByRole('button', { name: 'Resume upload' })).toBeVisible()
   expect(storedParts.size).toBe(0)
   expect(finalizeCount).toBe(0)
@@ -90,6 +93,8 @@ test('Needs Fix requires feedback and Accepted persists after the page reloads',
     if (url.pathname.endsWith('/output-package-options')) return json(route, { task_id: taskId, output_types: [], storage_root_id: '' })
     if (url.pathname.endsWith('/output-packages')) return json(route, [])
     if (url.pathname.endsWith('/storage-objects')) return json(route, { task_id: taskId, parent_id: null, items: [], next_page_token: null })
+    if (url.pathname.endsWith(`/productions/${productionId}/tasks/${taskId}/shared-folders`)) return json(route, { task_id: taskId, folders: [] })
+    if (/link-shares|share-candidates/.test(url.pathname)) return json(route, { items: [], shares: [], recipients: [], candidates: [] })
     if (url.pathname.endsWith(`/handoffs/${handoffId}/respond`)) {
       const payload = JSON.parse(request.postData())
       expect(payload).toMatchObject({ target: 'accepted', feedback: '' })
@@ -101,7 +106,7 @@ test('Needs Fix requires feedback and Accepted persists after the page reloads',
   })
 
   await openFiles(page)
-  await page.getByRole('tab', { name: 'Department Handoff', exact: true }).click()
+  await page.getByRole('tab', { name: 'Receive', exact: true }).click()
   await expect(page.getByRole('heading', { name: 'Awaiting your response', exact: true })).toBeVisible()
   await expect(page.getByRole('button', { name: 'Needs Fix' })).toBeDisabled()
   await page.getByRole('button', { name: 'Accept' }).click()
@@ -109,8 +114,40 @@ test('Needs Fix requires feedback and Accepted persists after the page reloads',
   expect(responseCount).toBe(1)
 
   await page.reload()
-  await page.getByRole('tab', { name: 'Department Handoff', exact: true }).click()
+  await page.getByRole('tab', { name: 'Receive', exact: true }).click()
   await expect(page.locator('[data-state="accepted"]')).toBeVisible()
+})
+
+test('Working revision downloads the exact completed bytes and displays the recorded SHA-256', async ({ page }) => {
+  const fileName = 'synthetic-w001.exr'
+  await page.route('**/api/plugins/vfx_files/**', async (route) => {
+    const request = route.request()
+    const url = new URL(request.url())
+    if (url.pathname.endsWith('/csrf-token')) return json(route, { csrf_token: 'synthetic-csrf', expires_in: 900 })
+    if (url.pathname.endsWith('/overview')) return json(route, { production_id: productionId, tasks: [{ id: taskId, task_type_id: 'Animation', entity_id: 'SHOT010' }], upload_ready: true, publishes: [], handoffs: [] })
+    if (url.pathname.endsWith('/output-package-options')) return json(route, { task_id: taskId, output_types: [], storage_root_id: '' })
+    if (url.pathname.endsWith('/output-packages')) return json(route, [])
+    if (url.pathname.endsWith('/storage-objects')) return json(route, { task_id: taskId, parent_id: null, items: [], next_page_token: null })
+    if (url.pathname.endsWith(`/productions/${productionId}/tasks/${taskId}/shared-folders`)) return json(route, { task_id: taskId, folders: [] })
+    if (/link-shares|share-candidates/.test(url.pathname)) return json(route, { items: [], shares: [], recipients: [], candidates: [] })
+    if (url.pathname.endsWith(`/tasks/${taskId}/working-revisions`) && request.method() === 'GET') {
+      const revision = { id: revisionId, production_id: productionId, task_id: taskId, version: 1, version_label: 'w001', state: 'completed', files: [{ id: revisionFileId, name: fileName, category: 'working', size: 3, sha256, state: 'completed' }] }
+      return json(route, { task_id: taskId, latest_working_id: revisionId, revisions: [revision] })
+    }
+    if (url.pathname.endsWith(`/working-files/${revisionFileId}/download`)) return route.fulfill({ status: 200, contentType: 'application/octet-stream', body: Buffer.from('abc') })
+    return json(route, { error: 'unexpected test request' }, 500)
+  })
+
+  await openFiles(page)
+  const panel = page.locator('.upload-panel')
+  const link = panel.getByRole('link', { name: fileName, exact: true })
+  await expect(link).toBeVisible()
+  await expect(panel.locator('.revision-file small')).toContainText(sha256.slice(0, 12))
+  const result = await link.evaluate(async (anchor) => {
+    const response = await fetch(anchor.href)
+    return { status: response.status, bytes: Array.from(new Uint8Array(await response.arrayBuffer())) }
+  })
+  expect(result).toEqual({ status: 200, bytes: [97, 98, 99] })
 })
 
 test('Production settings expose the Plugin Drive authority without a Task selector', async ({ page }) => {

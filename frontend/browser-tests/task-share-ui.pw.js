@@ -99,13 +99,13 @@ test('Task Files UI shares an original Drive reference and displays it in Receiv
 
   await page.goto(`/?production_id=${productionId}&task_id=${sourceTaskId}`)
   await expect(page.locator('.files-page[data-mode="task"]')).toBeVisible()
-  await expect(page.getByRole('tab', { name: 'Share', exact: true })).toBeVisible()
-  await page.getByRole('tab', { name: 'Share', exact: true }).click()
+  await expect(page.getByRole('tab', { name: 'Send', exact: true })).toBeVisible()
+  await page.getByRole('tab', { name: 'Send', exact: true }).click()
 
   await page.getByLabel('Select plate.exr as original reference').check()
   await page.getByLabel('SH020 · Compositing · Comp').check()
   await page.getByRole('button', { name: 'Share reference', exact: true }).click()
-  await expect(page.getByRole('status')).toContainText('Reference saved')
+  await expect(page.locator('.task-link-share .upload-result')).toContainText('Reference saved')
   await expect(page.getByRole('link', { name: 'plate.exr', exact: true })).toHaveAttribute('href', objectUrl)
 
   expect(shareRequest).toMatchObject({
@@ -117,7 +117,7 @@ test('Task Files UI shares an original Drive reference and displays it in Receiv
 
   await page.goto(`/?production_id=${productionId}&task_id=${recipientTaskId}`)
   await expect(page.locator('.files-page[data-mode="task"]')).toBeVisible()
-  await page.getByRole('tab', { name: 'Received Files', exact: true }).click()
+  await page.getByRole('tab', { name: 'Receive', exact: true }).click()
   await expect(page.getByRole('heading', { name: 'Received Files', exact: true })).toBeVisible()
   await expect(page.getByRole('link', { name: 'plate.exr', exact: true })).toHaveAttribute('href', objectUrl)
   await expect(page.getByText('From SH010 · Compositing')).toBeVisible()
