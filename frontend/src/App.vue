@@ -8,6 +8,7 @@ import OutputDeletionSettings from './components/OutputDeletionSettings.vue'
 import DriveAccessPolicy from './components/DriveAccessPolicy.vue'
 import PersonalGoogleAccount from './components/PersonalGoogleAccount.vue'
 import TaskLinkShares from './components/TaskLinkShares.vue'
+import UploadPanel from './components/UploadPanel.vue'
 import { taskSections } from './taskNavigation.js'
 import { createRequestGeneration, filesSurfaceMode } from './taskContext.js'
 import { safeTaskFolderLinks } from './taskFolderLinks.js'
@@ -163,6 +164,7 @@ onUnmounted(() => requests.invalidate())
           <p v-else-if="verifiedFolderLinks.length" class="folder-links"><a v-for="folder in verifiedFolderLinks" :key="folder.scope_key" :href="folder.url" target="_blank" rel="noopener noreferrer">Open {{ folder.name }}</a></p>
           <p v-else class="muted">No verified Task folder bindings are ready yet. Folder setup is managed in VFX Files Plugin settings.</p>
         </section>
+        <UploadPanel :enabled="Boolean(overview.upload_ready)" :fixed-task-id="taskId" :tasks="overview.tasks" :api="api" @uploaded="load" />
         <OutputPackagePanel :task-id="taskId" :tasks="overview.tasks" :publishes="overview.publishes" :fixed-task-id="taskId" :api="api" @changed="load" />
         <TaskLinkShares :task-id="taskId" mode="share" :api="api" />
         <section class="panel prior-output-history" aria-label="Existing Publish history and approvals">
